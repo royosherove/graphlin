@@ -157,6 +157,23 @@ export function liveNodeChanges(previous, next, eligible) {
   };
 }
 
+export function filterDiagram(graph, query) {
+  if (!query) return graph;
+  const needle = query.toLowerCase();
+  const nodes = graph.nodes.filter(node => node.label.toLowerCase().includes(needle));
+  const visible = new Set(nodes.map(node => node.id));
+  return { ...graph, nodes, edges: graph.edges.filter(edge => visible.has(edge.source) && visible.has(edge.target)) };
+}
+
+function isSearchTypingTarget(target) {
+  for (let element = target; element; element = element.parentElement) {
+    if (['input', 'textarea', 'select', 'dialog'].includes(element.tagName?.toLowerCase()) ||
+      element.isContentEditable || ['textbox', 'combobox', 'searchbox'].includes(element.getAttribute?.('role')) ||
+      ['true', '', 'plaintext-only'].includes(element.getAttribute?.('contenteditable'))) return true;
+  }
+  return false;
+}
+
 function nodeTitleWidth(shapeName) {
   return { queue: 132, component: 142, parallelogram: 144, diamond: 140 }[shapeName] || 158;
 }
@@ -816,6 +833,94 @@ export function friendlyProjectName(projectRoot) {
   return safeText(projectRoot, 4096).replace(/\/+$/, '').split('/').at(-1)?.slice(0, 120) || 'Local project';
 }
 
+export function startDashboardInfo({ load = signal => request('/api/about', { signal }) } = {}) {
+  const $ = id => document.getElementById(id);
+  let closed = false, controller = null, timer = null, pending = null, command = '';
+  function render(info) {
+    if (!record(info) || typeof info.projectRoot !== 'string' ||
+      !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/.test(info.version ?? '')) {
+      throw new Error('invalid_dashboard_info');
+    }
+    $('project-path').textContent = safeText(info.projectRoot, 4096) || 'Path unavailable';
+    $('graphlin-version').textContent = info.version;
+    $('version-update-steps').textContent = info.mode === 'demo'
+      ? 'Press Ctrl+C in the demo terminal, then run this command to restart the updated offline demo.'
+      : 'Press Ctrl+C in the viewer terminal, then run this command. Start a new Claude Code or Codex session after setup finishes.';
+    const branch = info.branch;
+    $('project-branch').textContent = branch?.status === 'branch'
+      ? safeText(branch.name, 1024) || 'Branch unavailable'
+      : branch?.status === 'detached' ? `Detached HEAD${branch.commit ? ` · ${safeText(branch.commit, 12)}` : ''}`
+      : branch?.status === 'not_git' ? 'Not a Git repository' : 'Branch unavailable';
+    const latest = typeof info.update?.latest === 'string' &&
+      /^\d+\.\d+\.\d+$/.test(info.update.latest) ? info.update.latest : null;
+    const available = info.update?.status === 'available' && latest;
+    $('version-update-status').textContent = available ? `Graphlin ${latest} is available`
+      : info.update?.status === 'current' ? 'No newer release found'
+      : 'Update check unavailable';
+    const nextCommand = info.update?.command;
+    command = available && typeof nextCommand === 'string' && nextCommand.trim() &&
+      nextCommand.length <= 8192 && !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(nextCommand)
+      ? nextCommand : '';
+    $('version-update-guide').hidden = !command;
+    if ($('version-update-command').textContent !== command) {
+      $('version-update-command').textContent = command;
+      $('version-update-copy-status').textContent = '';
+    }
+  }
+  function refresh() {
+    if (closed) return Promise.resolve();
+    if (pending) return pending;
+    clearTimeout(timer);
+    controller = new AbortController();
+    pending = (async () => {
+      try {
+        await Promise.resolve();
+        if (closed) return;
+        const info = await load(controller.signal);
+        if (!closed) render(info);
+      } catch {
+        if (!closed) {
+          $('project-branch').textContent = 'Branch unavailable';
+          if ($('project-path').textContent === 'Checking…') $('project-path').textContent = 'Path unavailable';
+          if ($('graphlin-version').textContent === 'Checking…') $('graphlin-version').textContent = 'Version unavailable';
+          $('version-update-status').textContent = 'Update check unavailable';
+          $('version-update-guide').hidden = true;
+          $('version-update-command').textContent = '';
+          command = '';
+        }
+      } finally {
+        pending = null;
+        controller = null;
+        if (!closed) timer = setTimeout(() => { void refresh(); }, 30000);
+      }
+    })();
+    return pending;
+  }
+  const onCopy = async () => {
+    if (closed || !command) return;
+    const copied = command;
+    try {
+      await window.navigator.clipboard.writeText(copied);
+      if (!closed && command === copied) $('version-update-copy-status').textContent = 'Copied';
+    } catch {
+      if (!closed && command === copied) {
+        $('version-update-copy-status').textContent = 'Select the command and copy it manually.';
+        $('version-update-command').focus();
+      }
+    }
+  };
+  $('version-update-copy').addEventListener('click', onCopy);
+  return {
+    refresh,
+    close() {
+      closed = true;
+      controller?.abort();
+      clearTimeout(timer);
+      $('version-update-copy').removeEventListener('click', onCopy);
+    },
+  };
+}
+
 export const ORIENTATION_PROMPT = 'Orient yourself in this project: read its main files and explain how the components connect.';
 
 // Observations are not an installation or trust audit. Activity (including
@@ -1450,12 +1555,13 @@ export function startViewer() {
     connection: 'connecting', busy: false, exporting: false, epoch: 0, connectEpoch: 0,
     viewport: null, fitBounds: null, zoom: 1, followFit: true, lastGraphSignature: '', inspectorSignature: '',
     nodeElements: new Map(), edgeElements: new Map(), activityElements: new Map(),
-    views: new Map(), viewKey: null, view: null, displayGraph: null,
-    effects: new Map(), motionReady: false, movement: null, closed: false, projectName: '',
+    views: new Map(), viewKey: null, view: null, displayGraph: null, searchQuery: '',
+    effects: new Map(), liveReady: false, motionReady: false, movement: null, closed: false, projectName: '',
   };
   const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)');
   const sketches = createSketchCache();
   const detailSketches = createSketchCache(sketchDetails);
+  const dashboardInfo = startDashboardInfo();
   const connectionDialog = startConnectionDialog({ onInfo: info => {
     state.projectName = friendlyProjectName(info.projectRoot);
     renderStatus();
@@ -1524,7 +1630,7 @@ export function startViewer() {
     $('onboarding-action').dataset.action = progress.next.action;
     // Preserve a manual text selection while live snapshots arrive.
     if ($('orientation-prompt').textContent !== ORIENTATION_PROMPT) $('orientation-prompt').textContent = ORIENTATION_PROMPT;
-    $('orientation').hidden = Boolean(state.replayFrame || state.snapshot?.mode === 'demo' || state.snapshot?.mode === 'replay');
+    $('orientation').hidden = Boolean(state.searchQuery || state.replayFrame || state.snapshot?.mode === 'demo' || state.snapshot?.mode === 'replay');
   }
   function currentGraph() { return state.replayFrame?.graph || state.snapshot?.graph; }
   function applyTheme() {
@@ -1537,6 +1643,7 @@ export function startViewer() {
     if (state.viewKey !== key) {
       finishPan();
       clearMotion();
+      state.liveReady = false;
       state.motionReady = false;
       let view = state.views.get(key);
       if (!view) view = createPresentation();
@@ -1580,14 +1687,14 @@ export function startViewer() {
     state.effects.set(id, effect);
     target.addEventListener('animationend', finish);
   }
-  function cancelMovement() {
+  function cancelMovement({ fit = true } = {}) {
     const movement = state.movement;
     if (!movement) return;
     state.movement = null;
     window.cancelAnimationFrame?.(movement.frame);
     clearTimeout(movement.timer);
     if (state.displayGraph) paintGeometry(state.displayGraph);
-    if (movement.fitAfter) fitCamera(movement.fitAfter);
+    if (fit && movement.fitAfter) fitCamera(movement.fitAfter);
   }
   function clearMotion() {
     cancelMovement();
@@ -1595,10 +1702,11 @@ export function startViewer() {
   }
   function resetMotionBaseline() {
     finishPan();
+    state.liveReady = false;
     state.motionReady = false;
     clearMotion();
   }
-  function animateChanges(changes, before) {
+  function animateChanges(changes, before, focusNodeId) {
     // Re-addition always cancels a removal, even when motion is suppressed.
     for (const node of currentGraph().nodes) if (state.effects.get(node.id)?.element) finishEffect(node.id);
     if (!motionAllowed()) return;
@@ -1627,7 +1735,7 @@ export function startViewer() {
       removals.push(decoration);
     }
     if (removals.length) {
-      fitCamera(state.movement?.fitDuring || graphBounds(state.displayGraph));
+      if (!focusNodeId) fitCamera(state.movement?.fitDuring || graphBounds(state.displayGraph));
       $('empty-canvas').hidden = true;
       $('effects-layer').append(...removals);
     }
@@ -1677,15 +1785,21 @@ export function startViewer() {
     const eligible = streamed && state.motionReady && !switched && !state.replayFrame &&
       snapshot.mode !== 'replay' && state.snapshot?.mode !== 'replay' && motionAllowed();
     const changes = liveNodeChanges(state.snapshot?.graph, snapshot.graph, eligible);
+    // A live baseline is independent of animation preferences. Reconnects and
+    // initial/session snapshots establish it without focusing an old arrival.
+    const live = streamed && state.liveReady && !switched && !state.replayFrame &&
+      snapshot.mode !== 'replay' && state.snapshot?.mode !== 'replay';
+    const focusNodeId = liveNodeChanges(state.snapshot?.graph, snapshot.graph, live).added.at(-1);
     const before = state.displayGraph;
-    cancelMovement();
+    cancelMovement({ fit: !focusNodeId });
     if (switched) resetView();
     state.snapshot = snapshot;
     state.epoch += 1;
     state.frames = historyFrames(snapshot);
     state.replayFrame = reconcileReplayFrame(state.frames, state.replayFrame);
-    render();
-    animateChanges(changes, before);
+    render({ focusNodeId });
+    animateChanges(changes, before, focusNodeId);
+    state.liveReady = streamed && !state.replayFrame && snapshot.mode !== 'replay';
     state.motionReady = streamed && !state.replayFrame && snapshot.mode !== 'replay' && motionAllowed();
     $('updated-at').textContent = `Snapshot received ${formatTime(Date.now())}`;
   }
@@ -1869,6 +1983,23 @@ export function startViewer() {
     cancelMovement();
     fitCamera(graphBounds(graph));
   }
+  function focusNode(node, bounds) {
+    finishPan();
+    const zoom = Math.max(.5, state.zoom);
+    const scale = state.zoom / zoom;
+    const width = state.viewport.width * scale;
+    const height = state.viewport.height * scale;
+    state.viewport = {
+      x: node.x + NODE_WIDTH / 2 - width / 2,
+      y: node.y + NODE_HEIGHT / 2 - height / 2,
+      width, height,
+    };
+    state.zoom = zoom;
+    state.fitBounds = bounds;
+    // Removal cleanup must not replace arrival focus with a later fit-all.
+    state.followFit = false;
+    setViewBox();
+  }
   function zoom(factor, anchor = { x: .5, y: .5 }) {
     if (!state.viewport || !state.fitBounds) return;
     cancelMovement();
@@ -1885,20 +2016,23 @@ export function startViewer() {
     state.followFit = false;
     setViewBox();
   }
-  function renderGraph({ forceFit = false } = {}) {
+  function renderGraph({ forceFit = false, focusNodeId } = {}) {
     const canonical = currentGraph();
     if (!canonical) return;
     const view = presentation();
     applyTheme();
-    const graph = projectPresentation(canonical, view);
+    // Search only projects visibility; layout, evidence and live arrival
+    // detection retain the complete source graph.
+    const graph = filterDiagram(projectPresentation(canonical, view), state.searchQuery);
     state.displayGraph = graph;
     const routes = graphEdgeRoutes(graph);
     const bounds = graphBounds(graph, routes);
     const signature = cameraGraphSignature(graph, view.algorithm);
-    // Set the physical viewport before inserting newcomers or starting motion.
-    // A manual camera survives status updates, but the next diagram change fits
-    // the complete map, even with automatic arrangement disabled.
-    if (forceFit || !state.viewport || signature !== state.lastGraphSignature) fitCamera(bounds);
+    // Focus the final projected position before inserting newcomers. Other
+    // diagram changes retain fit-all; metadata-only updates keep the camera.
+    const newest = graph.nodes.find(node => node.id === focusNodeId);
+    if (newest && state.viewport && !forceFit) focusNode(newest, bounds);
+    else if (forceFit || !state.viewport || signature !== state.lastGraphSignature) fitCamera(bounds);
     state.lastGraphSignature = signature;
     $('layout').value = view.algorithm;
     $('auto-arrange').checked = view.auto;
@@ -1966,6 +2100,7 @@ export function startViewer() {
           center,
           svgElement('rect', { class: 'selection-ring', x: -7, y: -7, width: NODE_WIDTH + 14, height: NODE_HEIGHT + 14, rx: 14 }),
         );
+        group.setAttribute('transform', `translate(${node.x} ${node.y})`);
         state.nodeElements.set(node.id, group);
         $('node-layer').append(group);
       }
@@ -2009,6 +2144,9 @@ export function startViewer() {
     $('diagram-title').textContent = `${state.replayFrame ? 'Historical' : 'Live'} architecture, revision ${graph.revision}`;
     $('diagram-desc').textContent = `${graph.nodes.length} components and ${graph.edges.length} relationships. Code interpretation does not establish runtime connectivity. Use Tab and Enter to inspect a component or relationship. With the diagram focused, use plus and minus to zoom, arrow keys to pan, and 0 to fit.`;
     $('graph-count').textContent = `${graph.nodes.length} components · ${graph.edges.length} relationships`;
+    $('diagram-search-status').textContent = state.searchQuery
+      ? `${graph.nodes.length} of ${canonical.nodes.length} components shown` : '';
+    $('diagram-search-clear').hidden = !state.searchQuery;
     $('empty-canvas').hidden = graph.nodes.length > 0 || removalBounds().length > 0;
     const classifier = state.snapshot.paused ? 'paused' : state.snapshot.status.classifier;
     const emptyMessages = {
@@ -2018,7 +2156,9 @@ export function startViewer() {
       unavailable: ['Waiting for classification.', 'The classifier is unavailable. Safe activity continues below; supported architecture will appear when classification recovers.'],
       timeout: ['Evidence needs another moment.', 'Classification exceeded its deadline. Activity still appears below, and no unsupported components are added.'],
     };
-    const message = state.replayFrame
+    const message = state.searchQuery
+      ? ['No matching components.', `No labels contain “${state.searchQuery}”. Try another search or press Esc to restore the diagram.`]
+      : state.replayFrame
       ? ['No components in this revision.', 'Move through the recent revisions or return to Live to follow the current map.']
       : emptyMessages[classifier] || ['Your architecture starts here.', 'Work in a connected agent session. Components appear when approved evidence supports them; activity can arrive first.'];
     $('empty-title').textContent = message[0];
@@ -2305,10 +2445,10 @@ export function startViewer() {
     $('activity-empty').hidden = events.length > 0;
     $('activity-list').hidden = events.length === 0;
   }
-  function render() {
+  function render(graphOptions) {
     renderStatus();
     renderOnboarding();
-    renderGraph();
+    renderGraph(graphOptions);
     renderInspector();
     renderHistory();
     renderActivity();
@@ -2384,6 +2524,7 @@ export function startViewer() {
         connection('reconnecting');
         error('The live connection was lost. Displaying the last received snapshot while the viewer reconnects.');
       });
+      void dashboardInfo.refresh();
       // Optional authenticated metadata must not hold up the event stream or
       // turn an older server's missing endpoint into a connection failure.
       const controller = new AbortController();
@@ -2392,6 +2533,7 @@ export function startViewer() {
         const info = normalizeConnectionInfo(await request('/api/connection-info', { signal: controller.signal }));
         if (!state.closed && attempt === state.connectEpoch) {
           state.projectName = friendlyProjectName(info.projectRoot);
+          $('project-path').textContent = info.projectRoot;
           renderStatus();
         }
       } catch { /* The project ID remains a usable fallback. */ }
@@ -2455,6 +2597,37 @@ export function startViewer() {
   $('onboarding-action').addEventListener('click', onOnboardingAction);
   $('orientation-copy').addEventListener('click', onCopyOrientation);
   $('activity-toggle').addEventListener('click', onToggleActivity);
+  const onSearchInput = () => {
+    if (state.closed || state.searchQuery === $('diagram-search').value) return;
+    state.searchQuery = $('diagram-search').value;
+    // Filtering is not a source change: cancel existing decoration/movement
+    // and render directly, without changing the snapshot arrival baseline.
+    finishPan();
+    clearMotion();
+    renderOnboarding();
+    renderGraph({ forceFit: true });
+  };
+  const clearSearch = () => {
+    $('diagram-search').value = '';
+    onSearchInput();
+    $('diagram-search').focus({ preventScroll: true });
+  };
+  const onSearchKeyDown = event => {
+    if (state.closed || event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey ||
+      $('diagnostics-dialog').open || $('connection-dialog').open || document.querySelector?.('dialog[open], [role="dialog"][aria-modal="true"]')) return;
+    const target = event.target || document.activeElement;
+    if (target !== $('diagram-search') && isSearchTypingTarget(target)) return;
+    if (event.key === '/' && target !== $('diagram-search')) {
+      event.preventDefault();
+      $('diagram-search').focus({ preventScroll: true });
+    } else if (event.key === 'Escape' && state.searchQuery) {
+      event.preventDefault();
+      clearSearch();
+    }
+  };
+  $('diagram-search').addEventListener('input', onSearchInput);
+  $('diagram-search-clear').addEventListener('click', clearSearch);
+  window.addEventListener('keydown', onSearchKeyDown);
   $('pause').addEventListener('click', () => control(state.snapshot?.paused ? 'resume' : 'pause'));
   $('session').addEventListener('change', () => control('session', $('session').value));
   $('export').addEventListener('click', exportJSON);
@@ -2595,9 +2768,13 @@ export function startViewer() {
       state.closed = true;
       projectController?.abort();
       projectController = null;
+      dashboardInfo.close();
       $('onboarding-action').removeEventListener('click', onOnboardingAction);
       $('orientation-copy').removeEventListener('click', onCopyOrientation);
       $('activity-toggle').removeEventListener('click', onToggleActivity);
+      $('diagram-search').removeEventListener('input', onSearchInput);
+      $('diagram-search-clear').removeEventListener('click', clearSearch);
+      window.removeEventListener?.('keydown', onSearchKeyDown);
       $('architecture').removeEventListener('wheel', onDiagramWheel);
       connectionDialog.dispose();
       diagnosticsDialog.dispose();

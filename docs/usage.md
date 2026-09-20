@@ -313,16 +313,32 @@ hook feed. Receipts from before that restart cannot be reconstructed.
 
 ## Arrange the diagram
 
+The dashboard shows the active Git branch, full project path, and running
+Graphlin version. Branch information refreshes every 30 seconds. The update
+check asks npm only for Graphlin's public release metadata and caches the result
+for 30 minutes. If a newer release is available, **How to update** provides a
+copyable command that preserves this project's data directory. Stop the viewer
+with **Ctrl+C**, run that command, and start a new agent session after setup.
+
 Choose **Hierarchy**, **Dependency flow**, **Group by type**, **Circular**,
 **Grid**, or **Original**. Auto-arrange responds to changes in the diagram;
 turn it off to keep existing shapes in place, then use **Arrange** when ready.
 Hierarchy follows the arrows and handles cycles; it does not imply ownership.
 
-Architecture changes, layout switches, and **Arrange** automatically fit the
-diagram to the available width and height. The view zooms out before new shapes
-appear, including below 50% for large hierarchies. Removal effects remain visible
-before the view settles around the remaining shapes. Ordinary hook and status
-updates preserve manual zoom and pan.
+Scroll up over the diagram to zoom in around the pointer; scroll down to zoom
+out. Drag the background to pan. **Fit**, layout switches, and **Arrange** show
+the whole diagram, including below 50% for large hierarchies.
+
+When a new shape arrives, the camera centers on it before its balloon animation.
+A view below 50% zoom moves to 50%; a closer view keeps its zoom. If several
+shapes arrive together, the last added shape gets the focus. Initial loads and
+session switches show the whole diagram. Ordinary hook and status updates
+preserve manual zoom and pan.
+
+Type in the search box above the diagram, or press **/** to focus it. Search
+matches any part of a node name, ignoring case, and shows only matching nodes
+and connections between them. Press **Esc** to clear the search. Filtering
+changes the view without deleting nodes or changing exports.
 
 Twelve component kinds map to distinct shapes, including functions, classes,
 interfaces, events, configuration, packages, queues, and datastores.

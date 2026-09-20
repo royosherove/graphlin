@@ -117,7 +117,7 @@ async function harness(initial = snapshot(), size = { width: 920, height: 510 })
     throw error;
   }
   return {
-    $, media, frames, observers, pointers, listeners, wheelOptions,
+    $, media, frames, streams, observers, pointers, listeners, wheelOptions,
     get current() { return current; },
     get dimensions() { return dimensions; },
     viewport() {
@@ -172,6 +172,15 @@ async function wheel(h, properties = {}, target = h.$('architecture')) {
 function near(actual, expected) {
   assert.ok(Math.abs(actual - expected) <= 1e-8 * Math.max(1, Math.abs(expected)),
     `${actual} should be close to ${expected}`);
+}
+
+function assertFocused(h, node, zoom) {
+  const viewport = h.viewport();
+  near(h.dimensions.width / viewport.width, zoom);
+  near(h.dimensions.height / viewport.height, zoom);
+  near(viewport.x + viewport.width / 2, node.x + 190 / 2);
+  near(viewport.y + viewport.height / 2, node.y + 104 / 2);
+  contains(viewport, { x: node.x, y: node.y, width: 190, height: 104 }, 'newest node is visible');
 }
 
 test('diagram wheel zooms up/in and down/out around the cursor, including bubbling from a shape', async () => {
@@ -336,7 +345,7 @@ test('an initial long hierarchy fits the real canvas and remains manually zoomab
   } finally { h.close(); }
 });
 
-test('new shapes fit before insertion and balloon animation, while status, hooks, and activity preserve a manual camera', async () => {
+test('newest shape is centered before insertion and balloon animation, while status, hooks, and activity preserve a manual camera', async () => {
   const h = await harness(snapshot({ graph: chain(3) }), { width: 640, height: 360 });
   try {
     h.send(h.current);
@@ -353,21 +362,179 @@ test('new shapes fit before insertion and balloon animation, while status, hooks
     assert.deepEqual(h.viewport(), manual);
 
     const next = { ...progress, graph: chain(40, 2) };
-    const bounds = graphBounds(presented(next.graph));
+    const newest = presented(next.graph).nodes.at(-1);
+    const zoom = Math.max(.5, h.dimensions.width / manual.width);
     const layer = h.$('node-layer');
     const append = layer.append.bind(layer);
     let inserted = 0;
     layer.append = (...items) => {
-      contains(h.viewport(), bounds, 'camera fits the next graph before the first new SVG node is inserted');
+      assertFocused(h, newest, zoom);
+      for (const item of items) {
+        assert.ok(item.getAttribute('transform'), 'position is assigned before DOM insertion');
+        assert.equal(item.visual.classList.contains('is-appearing'), false, 'camera is set before balloon animation');
+      }
       inserted += items.length;
       append(...items);
     };
     h.send(next);
     assert.equal(inserted, 37);
     assert.ok(layer.children.some(group => group.visual.classList.contains('is-appearing')));
-    contains(h.viewport(), bounds);
-    assert.ok(h.viewport().height > manual.height);
+    assertFocused(h, newest, zoom);
+    const focused = h.viewport();
+    h.send({ ...next, status: { ...next.status, pending: 0 } });
+    h.advance(1000);
+    assert.deepEqual(h.viewport(), focused, 'status and animation cleanup retain arrival focus');
   } finally { h.close(); }
+});
+
+test('additions raise a below-50% camera to exactly 50% and preserve both 50% and closer zoom', async () => {
+  for (const initialLength of [30, 3]) {
+    const h = await harness(snapshot({ graph: chain(initialLength) }));
+    try {
+      h.send(h.current);
+      if (initialLength === 3) await h.$('zoom-in').fire('click');
+      const initialZoom = h.dimensions.width / h.viewport().width;
+      assert.equal(initialZoom < .5, initialLength === 30);
+      for (let count = initialLength + 1; count <= initialLength + 2; count++) {
+        h.send({ ...h.current, graph: chain(count, count) });
+        assertFocused(h, presented(h.current.graph).nodes.at(-1), Math.max(.5, initialZoom));
+        if (initialLength === 30) assert.equal(h.$('zoom-level').textContent, '50%');
+      }
+    } finally { h.close(); }
+  }
+});
+
+test('multiple additions select the last new ID in incoming order, even with held layout and existing nodes last', async () => {
+  const h = await harness(snapshot({ graph: chain(3) }));
+  try {
+    h.send(h.current);
+    h.$('auto-arrange').checked = false;
+    await h.$('auto-arrange').fire('change');
+    const before = h.$('node-layer').children.map(group => group.getAttribute('transform'));
+    const zoom = Math.max(.5, h.dimensions.width / h.viewport().width);
+    const next = graph(2, {
+      nodes: [node('z-new'), node('a-new'), ...h.current.graph.nodes],
+      edges: h.current.graph.edges,
+    });
+    const view = createPresentation();
+    projectPresentation(normalizeGraph(h.current.graph), view);
+    view.auto = false;
+    const target = projectPresentation(normalizeGraph(next), view).nodes.find(node => node.id === 'a-new');
+    h.send({ ...h.current, graph: next });
+    assertFocused(h, target, zoom);
+    assert.deepEqual(h.$('node-layer').children.slice(0, 3).map(group => group.getAttribute('transform')), before);
+    assert.equal(h.$('node-layer').children.filter(group => group.visual.classList.contains('is-appearing')).length, 2);
+    const focused = h.viewport();
+    h.send({ ...h.current, graph: { ...next, nodes: [...next.nodes].reverse() } });
+    assert.deepEqual(h.viewport(), focused, 'reordering existing IDs is not an addition');
+  } finally { h.close(); }
+});
+
+test('initial SSE and reconnect baselines fit changed graphs without focusing old additions; identical reconnects keep the camera', async () => {
+  const h = await harness(snapshot({ graph: chain(30) }));
+  try {
+    h.send({ ...h.current, graph: chain(31, 2) });
+    assert.deepEqual(h.viewport(), fitViewport(graphBounds(presented(h.current.graph)), h.dimensions).viewport);
+    await h.$('zoom-in').fire('click');
+    await h.$('architecture').fire('keydown', { key: 'ArrowDown' });
+    const manual = h.viewport();
+    h.streams.at(-1).emit('error');
+    h.streams.at(-1).emit('open');
+    h.send(h.current);
+    assert.deepEqual(h.viewport(), manual);
+    h.streams.at(-1).emit('error');
+    h.streams.at(-1).emit('open');
+    h.send({ ...h.current, graph: chain(32, 3) });
+    assert.deepEqual(h.viewport(), fitViewport(graphBounds(presented(h.current.graph)), h.dimensions).viewport);
+    assert.equal(h.$('node-layer').children.some(group => group.visual.classList.contains('is-appearing')), false);
+    h.send({ ...h.current, graph: chain(33, 4) });
+    assertFocused(h, presented(h.current.graph).nodes.at(-1), .5);
+    h.send({ ...h.current, sessionId: 'session-2', graph: chain(40, 1) });
+    assert.deepEqual(h.viewport(), fitViewport(graphBounds(presented(h.current.graph)), h.dimensions).viewport);
+    const initialSession = h.viewport();
+    h.send(h.current);
+    h.advance(1000);
+    assert.deepEqual(h.viewport(), initialSession);
+  } finally { h.close(); }
+});
+
+test('reduced motion still focuses actual live additions without a balloon animation', async () => {
+  const h = await harness(snapshot({ graph: chain(30) }));
+  try {
+    h.media.change(true);
+    h.send(h.current);
+    h.send({ ...h.current, graph: chain(31, 2) });
+    assertFocused(h, presented(h.current.graph).nodes.at(-1), .5);
+    assert.equal(h.$('node-layer').children.some(group => group.visual.classList.contains('is-appearing')), false);
+  } finally { h.close(); }
+});
+
+test('an addition takes priority over simultaneous removals, including their balloon and pop cleanup', async () => {
+  const h = await harness(snapshot({ graph: chain(30) }));
+  try {
+    h.send(h.current);
+    const next = chain(3, 2);
+    next.nodes.push(node('new-component'));
+    const target = presented(next).nodes.at(-1);
+    h.send({ ...h.current, graph: next });
+    assertFocused(h, target, .5);
+    assert.ok(h.$('effects-layer').children.length > 0);
+    const focused = h.viewport();
+    h.send({ ...h.current, status: { ...h.current.status, calls: 3 } });
+    h.advance(1000);
+    assert.deepEqual(h.viewport(), focused);
+    await h.$('fit').fire('click');
+    assert.deepEqual(h.viewport(), fitViewport(graphBounds(presented(next)), h.dimensions).viewport);
+  } finally { h.close(); }
+});
+
+test('edge-only changes still fit the complete graph after an arrival focus', async () => {
+  const h = await harness(snapshot({ graph: chain(30) }));
+  try {
+    h.send(h.current);
+    h.send({ ...h.current, graph: chain(31, 2) });
+    assertFocused(h, presented(h.current.graph).nodes.at(-1), .5);
+    h.advance(1000);
+    h.send({ ...h.current, graph: { ...h.current.graph, revision: 3, edges: [] } });
+    assert.deepEqual(h.viewport(), fitViewport(graphBounds(presented(h.current.graph)), h.dimensions).viewport);
+    assert.equal(h.$('node-layer').children.some(group => group.visual.classList.contains('is-appearing')), false);
+  } finally { h.close(); }
+});
+
+test('arrival during interpolated layout uses final positions and cancels the pending fit without changing closer zoom', async () => {
+  for (const completion of ['frames', 'timeout']) {
+    const h = await harness(snapshot({ graph: chain(3) }));
+    try {
+      h.send(h.current);
+      h.$('layout').value = 'dependency';
+      await h.$('layout').fire('change');
+      assert.equal(h.frames.size, 1);
+      h.frame(0);
+      h.frame(100);
+      const displayed = h.$('node-layer').children.map(group => group.getAttribute('transform'));
+      const oldTarget = presented(h.current.graph, 'dependency');
+      assert.ok(oldTarget.nodes.some((node, index) => displayed[index] !== `translate(${node.x} ${node.y})`));
+      const zoom = Math.max(.5, h.dimensions.width / h.viewport().width);
+      const next = chain(4, 2);
+      const target = presented(next, 'dependency').nodes.at(-1);
+      const layer = h.$('node-layer'), append = layer.append.bind(layer);
+      layer.append = (...items) => {
+        assertFocused(h, target, zoom);
+        assert.equal(items[0].getAttribute('transform'), `translate(${target.x} ${target.y})`,
+          'the newcomer is inserted at its final layout position');
+        append(...items);
+      };
+      h.send({ ...h.current, graph: next });
+      assertFocused(h, target, zoom);
+      const focused = h.viewport();
+      if (completion === 'frames') { h.frame(200); h.frame(350); }
+      h.advance(1000);
+      assert.deepEqual(h.viewport(), focused, 'neither interpolation nor fallback timer steals focus');
+      assert.equal(h.frames.size, 0);
+      await h.$('arrange').fire('click');
+      assert.deepEqual(h.viewport(), fitViewport(graphBounds(presented(next, 'dependency')), h.dimensions).viewport);
+    } finally { h.close(); }
+  }
 });
 
 test('a shrinking hierarchy shows every removal burst until the last finishes, then fits the remaining graph', async () => {
@@ -428,12 +595,12 @@ test('manual camera choices during removal survive status snapshots and effect c
     assert.equal(h.$('effects-layer').children.length, 0);
     assert.deepEqual(h.viewport(), manual, 'fallback cleanup must not overwrite manual zoom or pan');
     h.send({ ...h.current, graph: chain(4, 3) });
-    contains(h.viewport(), graphBounds(presented(h.current.graph)));
-    assert.notDeepEqual(h.viewport(), manual, 'the next actual graph change resumes automatic fitting');
+    assertFocused(h, presented(h.current.graph).nodes.at(-1), Math.max(.5, h.dimensions.width / manual.width));
+    assert.notDeepEqual(h.viewport(), manual, 'the next actual addition focuses the newcomer');
   } finally { h.close(); }
 });
 
-test('resize keeps live bursts visible; fallback completion fits the latest remaining graph to the resized canvas', async () => {
+test('resize keeps live bursts visible; a later addition takes focus and burst cleanup cannot steal it', async () => {
   const h = await harness(snapshot({ graph: chain(30) }));
   try {
     h.send(h.current);
@@ -444,13 +611,13 @@ test('resize keeps live bursts visible; fallback completion fits the latest rema
     assert.ok(Math.abs(temporary.width / temporary.height - 360 / 280) < 1e-9);
     h.advance(200);
     h.send({ ...h.current, graph: chain(5, 3) });
-    assertBurstsVisible(h);
-    contains(h.viewport(), graphBounds(presented(h.current.graph)));
+    assertFocused(h, presented(h.current.graph).nodes.at(-1), .5);
+    const focused = h.viewport();
     h.advance(179);
     assert.equal(h.$('effects-layer').children.length, 14, 'the two re-added identities cancel their old pops');
     h.advance(2);
     assert.equal(h.$('effects-layer').children.length, 0);
-    assert.deepEqual(h.viewport(), fitViewport(graphBounds(presented(h.current.graph)), h.dimensions).viewport);
+    assert.deepEqual(h.viewport(), focused);
   } finally { h.close(); }
 });
 

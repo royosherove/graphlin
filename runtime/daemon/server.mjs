@@ -10,6 +10,7 @@ import { createAuth } from './auth.mjs';
 import { createPersistence } from './persistence.mjs';
 import { exportSnapshot } from './export.mjs';
 import { createDiagnostics } from './diagnostics.mjs';
+import { createDashboardInfoProvider } from './dashboard-info.mjs';
 
 const WEB = new URL('../web/', import.meta.url);
 const assets = new Map([
@@ -52,10 +53,13 @@ async function bodyJSON(req) {
 }
 
 export async function startServer({ projectRoot, dataDir, policy: policyOptions,
-  decisionService, apiKey: configuredKey, mode = 'live', port = 0 } = {}) {
+  decisionService, apiKey: configuredKey, mode = 'live', port = 0, dashboardInfoDependencies } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw runtimeError('invalid_port');
   if (!['live', 'demo'].includes(mode)) throw runtimeError('invalid_mode');
   const paths = await projectPaths(projectRoot, dataDir, { create: true });
+  const dashboardInfo = createDashboardInfoProvider({
+    projectRoot: paths.projectRoot, dataDir: paths.dataDir, mode,
+  }, dashboardInfoDependencies);
   const lock = await acquireLock(paths);
   let finished;
   const whenClosed = new Promise(resolve => { finished = resolve; });
@@ -157,6 +161,10 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
           return;
         }
         if (!auth.authorized(req)) return json(res, 401, { error: 'authentication_required' });
+        if (req.method === 'GET' && req.url === '/api/about') {
+          try { return json(res, 200, await dashboardInfo()); }
+          catch { return json(res, 503, { error: 'dashboard_info_unavailable' }); }
+        }
         if (req.method === 'GET' && req.url === '/api/diagnostics') {
           return json(res, 200, diagnostics.snapshot());
         }

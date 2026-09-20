@@ -35,6 +35,7 @@ async function harness({ initial = empty(), info = async () => connectionInfo(),
   };
   globalThis.fetch = async (url, options) => {
     requests.push({ url, ...options });
+    if (url === '/api/about') return new Response('{}', { status: 404 });
     if (url === '/api/auth') return new Response('{"ok":true}');
     if (url === '/api/connection-info') return new Response(JSON.stringify(await info(options)));
     if (url === '/api/diagnostics') return new Response('{"schemaVersion":1,"records":[]}');
@@ -125,7 +126,7 @@ test('startup authenticates before loading the friendly project name and preserv
   }) });
   try {
     await h.ready();
-    assert.deepEqual(h.requests.map(item => item.url), ['/api/auth', '/api/state', '/api/connection-info']);
+    assert.deepEqual(h.requests.map(item => item.url), ['/api/auth', '/api/state', '/api/connection-info', '/api/about']);
     const request = h.requests.at(-1);
     assert.equal(request.method, 'GET');
     assert.equal(request.credentials, 'same-origin');
@@ -133,7 +134,8 @@ test('startup authenticates before loading the friendly project name and preserv
     assert.equal(h.$('project-label').textContent, 'Notes <img src=x> project');
     assert.equal(h.$('project-label').title, 'project-1');
     assert.equal(h.$('project-label').querySelector('img'), null);
-    assert.doesNotMatch(h.document.body.textContent, /private-parent|fixture-secret-never-display|fixture-token-never-display/);
+    assert.equal(h.$('project-path').textContent, '/fixture/private-parent/Notes <img src=x> project/');
+    assert.doesNotMatch(h.document.body.textContent, /fixture-secret-never-display|fixture-token-never-display/);
     assert.equal(h.$('onboarding-server').textContent, 'Server connected');
     assert.equal(h.$('onboarding-setup').dataset.state, 'unverified');
     assert.equal(h.$('classifier-label').textContent, 'Classifier ready');

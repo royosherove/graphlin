@@ -32,6 +32,22 @@
         <p id="project-label" class="project-label">Local project</p>
       </div>
 
+      <section class="project-details" aria-label="Project and Graphlin version">
+        <dl>
+          <div><dt>Branch</dt><dd id="project-branch">Checking…</dd></div>
+          <div class="project-path"><dt>Path</dt><dd id="project-path">Checking…</dd></div>
+          <div><dt>Graphlin</dt><dd id="graphlin-version">Checking…</dd></div>
+        </dl>
+        <p id="version-update-status" role="status">Checking for updates…</p>
+        <details id="version-update-guide" hidden>
+          <summary>How to update</summary>
+          <p id="version-update-steps">Press Ctrl+C in the viewer terminal, then run this command. Start a new Claude Code or Codex session after setup finishes.</p>
+          <pre id="version-update-command" tabindex="0"></pre>
+          <button id="version-update-copy" type="button">Copy update command</button>
+          <span id="version-update-copy-status" role="status"></span>
+        </details>
+      </section>
+
       <div id="demo-banner" class="notice demo-notice" role="status" hidden>
         <strong>Demo session</strong>
         <span>Generated project and fixture classifier answers. This is an offline illustration, not a live Jev evaluation.</span>
@@ -106,6 +122,13 @@
               </div>
               <span class="screen-reader" id="theme-note">Colors follow component types. Themes change appearance only.</span>
               <span id="layout-note">Arranges when components or connections change.</span>
+            </div>
+            <div class="diagram-search-bar" role="search" aria-label="Diagram search">
+              <label for="diagram-search">Find components</label>
+              <input id="diagram-search" type="search" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Search labels…" aria-controls="architecture" aria-describedby="diagram-search-hint" aria-keyshortcuts="/">
+              <button id="diagram-search-clear" type="button" hidden>Clear search</button>
+              <span id="diagram-search-hint">/ to search · Esc to clear</span>
+              <span id="diagram-search-status" role="status" aria-live="polite" aria-atomic="true"></span>
             </div>
             <div class="diagram-stage" id="diagram-stage">
               <svg id="architecture" viewBox="0 0 920 510" role="group" tabindex="0" aria-labelledby="diagram-title diagram-desc">
