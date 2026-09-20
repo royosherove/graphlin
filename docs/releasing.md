@@ -12,10 +12,9 @@ Actions variable `NPM_PUBLISH_ENABLED=true`. The release guard rejects missing
 settings, other repositories, private repositories, other branches, tags,
 and inconsistent package versions. Keep the variable unset or `false` until
 publication is separately authorized and the remaining release gates are ready.
-The maintainer has configured `NPM_TOKEN` as a **repository Actions secret**.
-The workflow supports this location without moving or duplicating the secret.
-The repository and package remain private; adding the secret does not enable
-publishing.
+The workflow supports `NPM_TOKEN` as either a repository Actions secret or a
+secret in the `npm` environment. If both exist, the environment secret takes
+precedence. Adding a secret alone does not enable publishing.
 
 After activation, a push or merge to `main` runs the complete CI matrix and
 publishes a new package version only if every check succeeds. An already
@@ -104,19 +103,21 @@ These are maintainer actions for when public release is authorized:
    `npm publish`. Legacy tokens are no longer supported.
 3. Before enabling publication, create or review the GitHub Actions environment
    named `npm`. This deployment environment is independent of where the token
-   is stored. Under deployment
-   restrictions choose **Selected branches and tags**, add a **Branch**
-   rule for exactly `main`, and allow no tags or other branches. Configure
+   is stored. Under deployment restrictions choose **Selected branches and
+   tags**, add a **Branch** rule for exactly `main`, and allow no tags or other
+   branches. Configure
    required reviewers if releases should wait for approval. Restrict who
    can change the workflow, environment, and repository variables. Protect
    `main` with the complete CI checks required before merge; select the
    actual check names shown by GitHub after the workflows have run.
-4. Keep the existing repository Actions secret **`NPM_TOKEN`**. Future rotation
-   is managed directly in GitHub under **Settings → Secrets and variables →
-   Actions → Repository secrets**. No move into the `npm` environment and no
-   duplicate secret are required. An environment-scoped `NPM_TOKEN` is also
-   supported as an alternative; if both scopes contain that name, GitHub uses
-   the environment secret for that job.
+4. Configure **`NPM_TOKEN`** as either a repository Actions secret or a secret
+   in the `npm` environment. Prefer environment scope to limit availability
+   to jobs using that deployment environment. Repository scope is supported
+   without migration or duplication; if both scopes contain that name, the
+   environment secret takes precedence for the publish job.
+   Manage environment secrets under **Settings → Environments → npm →
+   Environment secrets**, or repository secrets under **Settings → Secrets
+   and variables → Actions → Repository secrets**.
    Never put the value in chat, source files, command arguments, or logs.
    The workflow reads `${{ secrets.NPM_TOKEN }}` and maps it to `NODE_AUTH_TOKEN`
    only in the final publish step; `actions/setup-node` configures the registry
