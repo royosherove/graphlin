@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,7 +68,39 @@ export async function verifyNpmPack(root = SOURCE) {
     assert.match(help.stdout, /Graphlin/);
     const installed = path.join(prefix, 'node_modules', 'graphlin');
     await validatePackage(installed);
-    return { name: metadata.name, version: metadata.version, files: expectedFiles.length, installedCli: true };
+    const dataDir = path.join(base, 'stable data');
+    // Only package preparation: no host detection, installation, saved key, or
+    // personal host configuration. Import the actual npm-installed entry point.
+    const smokeEnv = { PATH: process.env.PATH, GRAPHLIN_DATA_DIR: dataDir, GRAPHLIN_NODE: process.execPath };
+    await exec(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import path from 'node:path';
+      import { pathToFileURL } from 'node:url';
+      const [installed, dataDir, version] = process.argv.slice(1);
+      const { preparePackages } = await import(pathToFileURL(path.join(installed, 'scripts/onboarding.mjs')));
+      const stable = await preparePackages(dataDir, version);
+      assert.equal(stable, path.join(dataDir, 'plugins', 'graphlin', version));
+    `, installed, dataDir, metadata.version], { cwd: work, env: smokeEnv, timeout: 20_000 });
+    const stable = path.join(dataDir, 'plugins', 'graphlin', metadata.version);
+    for (const host of ['claude', 'codex']) await validatePackage(path.join(stable, host, 'graphlin'));
+    // Remove every disposable package source, including the tarball and npm
+    // cache. Never remove the caller's checkout. A new process below has no
+    // installed-module cache and must load the copied stable runtime from disk.
+    for (const disposable of [prefix, unpacked, tarball, env.npm_config_cache]) {
+      await rm(disposable, { recursive: true, force: true });
+      await assert.rejects(lstat(disposable), { code: 'ENOENT' });
+    }
+    const smoke = await exec(process.execPath, [
+      fileURLToPath(new URL('./smoke-stable-packages.mjs', import.meta.url)),
+      stable, dataDir, path.join(base, 'synthetic projects'),
+    ], { cwd: work, env: smokeEnv, timeout: 20_000, killSignal: 'SIGKILL' });
+    const stablePlugins = JSON.parse(smoke.stdout);
+    assert.deepEqual(stablePlugins, [
+      { host: 'claude', sourceEvidence: true, hooks: 2 },
+      { host: 'codex', sourceEvidence: true, hooks: 2 },
+    ]);
+    return { name: metadata.name, version: metadata.version, files: expectedFiles.length,
+      installedCli: true, temporaryInstallRemoved: true, stablePlugins };
   } finally {
     await rm(base, { recursive: true, force: true });
   }
