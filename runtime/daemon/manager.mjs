@@ -283,6 +283,7 @@ export async function doctor({ projectRoot, dataDir } = {}) {
   const hosts = Object.fromEntries(Object.entries({ claude, codex }).map(([host, hostVersion]) => [host, {
     version: hostVersion,
     installation: settings.installation?.hosts.includes(host) ? 'recorded' : 'not_recorded',
+    setupPending: settings.installation?.pendingHosts?.includes(host) ?? false,
     packageFiles: packages[host] ? 'verified' : 'not_verified',
     activation: received[host] > 0 ? 'hook_observed' : 'not_verified',
     receivedHooks: received[host] ?? 0,
@@ -291,7 +292,8 @@ export async function doctor({ projectRoot, dataDir } = {}) {
   const nextActions = [];
   if (settingsResult.error) nextActions.push('Settings could not be safely read. Check permissions on the Graphlin data directory.');
   if (!settings.installation?.hosts.length) nextActions.push('Run graphlin init in this project to install an agent plugin.');
-  else if (settings.installation.hosts.some(host => !packages[host])) {
+  if (settings.installation?.pendingHosts?.length) nextActions.push('Agent setup is incomplete. Run graphlin again to resume the requested installations.');
+  else if (settings.installation?.hosts.some(host => !packages[host])) {
     nextActions.push('Installed package files are missing or invalid. Run graphlin init to repair the installation.');
   }
   if (!status.running) nextActions.push('Run graphlin in this project and keep that terminal open.');

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile, stat, chmod, symlink, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { workspace, run } from './helpers.mjs';
 import { saveSettings, readSettings, resolvePolicy } from '../../runtime/daemon/settings.mjs';
 import { projectPaths } from '../../runtime/daemon/paths.mjs';
@@ -64,6 +65,13 @@ test('policy omission reuses running or saved consent while explicit false wins'
 test('concurrent processes cannot restore a deleted credential while recording installation', async t => {
   const setup = await workspace(t);
   await saveSettings(setup, { apiKey: key });
+  const exited = await run(process.execPath, ['-e', 'process.stdout.write(String(process.pid))']);
+  assert.equal(exited.code, 0);
+  // Simulate a setup process killed immediately after claiming, before it
+  // could write a ticket. Concurrent successors must reclaim only this unique
+  // dead claim, never a new writer's claim.
+  const deadClaim = path.join(setup.dataDir, '.settings.claims', `${Number(exited.stdout)}-${randomUUID()}`);
+  await mkdir(deadClaim, { mode: 0o700 });
   const module = pathToFileURL(path.resolve('runtime/daemon/settings.mjs')).href;
   const results = await Promise.all(Array.from({ length: 10 }, (_, index) => {
     const patch = index % 2 ? { apiKey: null } : { installation: { hosts: ['claude'], version: '0.1.0' } };
@@ -74,6 +82,7 @@ test('concurrent processes cannot restore a deleted credential while recording i
   const saved = await readSettings(setup);
   assert.equal(saved.apiKey, undefined);
   assert.deepEqual(saved.installation.hosts, ['claude']);
+  await assert.rejects(stat(deadClaim), { code: 'ENOENT' });
 });
 
 test('saved key works in foreground; repeated start joins its policy and explicit opt-out does not replace it', async t => {

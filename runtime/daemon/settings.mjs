@@ -1,6 +1,7 @@
 import path from 'node:path';
-import { lstat, open, rm } from 'node:fs/promises';
+import { lstat } from 'node:fs/promises';
 import { projectPaths, privateDirectory, readPrivateJSON, atomicJSON, runtimeError, uid } from './paths.mjs';
+import { withPublicationGuard } from './lock.mjs';
 
 const LIMIT = 16 * 1024;
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -8,52 +9,12 @@ const validKey = value => typeof value === 'string' && value.length > 0 &&
   value.length <= 4096 && !/[\s\u0000-\u001f\u007f]/u.test(value);
 const validPolicy = value => record(value) && Object.keys(value).length === 3 &&
   ['allowSource', 'persistEvidence', 'displayEvidence'].every(key => typeof value[key] === 'boolean');
-const validInstallation = value => record(value) && Object.keys(value).length === 2 &&
-  Array.isArray(value.hosts) && value.hosts.length <= 2 &&
-  new Set(value.hosts).size === value.hosts.length && value.hosts.every(host => ['claude', 'codex'].includes(host)) &&
+const validHosts = value => Array.isArray(value) && value.length <= 2 &&
+  new Set(value).size === value.length && value.every(host => ['claude', 'codex'].includes(host));
+const validInstallation = value => record(value) &&
+  Object.keys(value).every(key => ['hosts', 'version', 'pendingHosts'].includes(key)) &&
+  validHosts(value.hosts) && (!('pendingHosts' in value) || validHosts(value.pendingHosts)) &&
   typeof value.version === 'string' && /^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(value.version);
-
-async function lockSettings(dataDir) {
-  const filename = path.join(dataDir, '.settings.lock');
-  const deadline = Date.now() + 3000;
-  while (Date.now() < deadline) {
-    let handle;
-    try {
-      handle = await open(filename, 'wx', 0o600);
-      await handle.writeFile(JSON.stringify({ pid: process.pid }));
-      await handle.sync();
-      return async () => { await handle.close(); await rm(filename, { force: true }); };
-    } catch (error) {
-      if (handle) { await handle.close(); await rm(filename, { force: true }); throw runtimeError('unsafe_settings'); }
-      if (error.code !== 'EEXIST') throw runtimeError('unsafe_settings');
-      // Recover a completed process's lock; never evict a live writer or
-      // overwrite an unsafe/symlinked lock. Compare identity before removal.
-      let validLock = false;
-      try {
-        const before = await lstat(filename);
-        validLock = before.isFile() && !before.isSymbolicLink() && before.nlink === 1 &&
-          (before.mode & 0o077) === 0 && (uid() === undefined || before.uid === uid());
-        if (!validLock) throw runtimeError('unsafe_settings');
-        const owner = await readPrivateJSON(filename, 128);
-        if (Number.isSafeInteger(owner.pid) && owner.pid > 0) {
-          let dead = false;
-          try { process.kill(owner.pid, 0); } catch (failure) { dead = failure.code === 'ESRCH'; }
-          if (dead) {
-            const after = await lstat(filename);
-            if (before.ino === after.ino && before.dev === after.dev) await rm(filename);
-          }
-        }
-      } catch (failure) {
-        // A writer can release after lstat/open; readPrivateJSON then rejects
-        // the now-unlinked handle (nlink=0). Retry acquisition in that case.
-        if (failure.code !== 'ENOENT' && !(validLock && failure.code === 'unsafe_state_file') &&
-            !(failure instanceof SyntaxError)) throw runtimeError('unsafe_settings');
-      }
-      await new Promise(resolve => setTimeout(resolve, 25));
-    }
-  }
-  throw runtimeError('settings_busy');
-}
 
 async function readFile(filename, allowed) {
   try {
@@ -102,8 +63,10 @@ export async function saveSettings(context, patch) {
       ('installation' in patch && !validInstallation(patch.installation))) throw runtimeError('invalid_settings');
   const paths = await projectPaths(context.projectRoot, context.dataDir, { create: true });
   await privateDirectory(paths.dataDir);
-  const release = await lockSettings(paths.dataDir);
-  try {
+  // Reuse the daemon's cross-process bakery guard. Each claim has a unique
+  // PID/UUID name before its ticket is written, so interrupted setup can be
+  // recovered without racing to delete a shared lock pathname.
+  await withPublicationGuard({ lock: path.join(paths.dataDir, '.settings') }, async () => {
     const current = await readSettings(paths);
     if ('apiKey' in patch || 'installation' in patch) {
       const user = { schemaVersion: 1 };
@@ -115,7 +78,10 @@ export async function saveSettings(context, patch) {
     }
     if ('policy' in patch) await atomicJSON(path.join(paths.directory, 'settings.json'),
       { schemaVersion: 1, policy: patch.policy }, LIMIT);
-  } finally { await release(); }
+  }).catch(error => {
+    if (error.code === 'daemon_busy') throw runtimeError('settings_busy');
+    throw error;
+  });
 }
 
 export function savedPolicy(policy) {

@@ -48,7 +48,7 @@ async function claims(directory) {
   return result;
 }
 
-async function withPublicationGuard(paths, action) {
+export async function withPublicationGuard(paths, action) {
   const directory = `${paths.lock}.claims`;
   await privateDirectory(directory);
   const id = `${process.pid}-${randomUUID()}`, claim = path.join(directory, id);
