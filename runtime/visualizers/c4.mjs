@@ -106,9 +106,12 @@ export function c4Scene(model, settings = {}) {
   function sourceChildren(members, parentId, excluded = new Set()) {
     for (const id of members) {
       if (excluded.has(id) || sourceNodes.has(id)) continue;
-      if (scene.nodes.length + scene.groups.length >= 255) { truncated = true; break; }
       const entity = byId.get(id);
-      scene.nodes.push({ id, entityId: id, label: entity.label, kind: sceneKind(entity.kind), parentId });
+      if (entity.validity === 'retracted') continue;
+      if (scene.nodes.length + scene.groups.length >= 255) { truncated = true; break; }
+      const style = entity.validity !== 'current' ? 'stale' :
+        entity.classification === 'tentative' ? 'tentative' : 'default';
+      scene.nodes.push({ id, entityId: id, label: entity.label, kind: sceneKind(entity.kind), parentId, style });
       sourceNodes.add(id);
     }
   }

@@ -38,6 +38,22 @@ test('source-backed anchor pairs show expanded applications and nested component
   assert.equal(collapsed.nodes.length, 0);
 });
 
+test('expanded current components exclude retracted methods and preserve descendant freshness', () => {
+  const input = fixture();
+  input.entities.push(
+    entity('stale-method', 'store', { kind: 'method', validity: 'stale' }),
+    entity('retracted-method', 'store', { kind: 'method', validity: 'retracted' }),
+    entity('tentative-method', 'store', { kind: 'method', classification: 'tentative' }),
+  );
+  const scene = validateScene(c4Scene(input, { expanded: ['c4.component'] }), { model: input });
+  const child = id => scene.nodes.find(node => node.entityId === id);
+  assert.equal(child('retracted-method'), undefined);
+  assert.equal(child('stale-method').parentId, 'c4.component');
+  assert.equal(child('stale-method').style, 'stale');
+  assert.equal(child('tentative-method').style, 'tentative');
+  assert.equal(child('save').style, 'default');
+});
+
 test('anchor nesting rejects missing, stale, duplicate, conflicting, and unsupported membership evidence', () => {
   const invalid = [
     [],

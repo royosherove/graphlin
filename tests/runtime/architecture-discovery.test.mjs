@@ -264,7 +264,7 @@ test('a pending deletion clear cannot erase a source recreated before commit wit
   assert.equal((await f.request('/api/architecture')).data.pending, 0);
 });
 
-test('model capacity reports partial discovery without evicting unrelated interpretations or retrying', options, async t => {
+test('model capacity preserves old boundaries and reports an unapplied discovery batch without retrying', options, async t => {
   const f = await fixture(t);
   const { application } = boundaries(await model(f));
   const store = f.pipeline.model;
@@ -278,19 +278,21 @@ test('model capacity reports partial discovery without evicting unrelated interp
   ]).accepted, true);
   assert.equal(store.stats().interpretations, 511);
   const unrelated = snapshot => snapshot.interpretations.filter(value => value.namespace === 'example.capacity');
-  const retained = unrelated(f.pipeline.getModelState());
+  const before = f.pipeline.getModelState();
+  const retained = unrelated(before), previous = supported(before);
   assert.equal(retained.length, 510);
+  assert.deepEqual(previous.map(value => value.kind), ['application']);
   const calls = f.provider.calls.length;
   assert.equal((await f.post('/api/architecture/discover')).status, 202);
   await f.pipeline.whenIdle();
   const status = await f.request('/api/architecture');
   assert.equal(status.status, 200, status.raw);
   assert.equal(status.data.status, 'partial');
-  assert.ok(status.data.omitted > 0, 'successful admission must report results lost to model capacity');
+  assert.equal(status.data.omitted, 3, 'the complete batch remains unapplied when it cannot fit');
   assert.equal(status.data.pending, 0);
   const snapshot = f.pipeline.getModelState();
-  assert.equal(snapshot.interpretations.length, 512);
-  assert.equal(supported(snapshot).length, 2, 'only two of the three discovery results fit');
+  assert.equal(snapshot.interpretations.length, 511, 'the existing model stays intact within the 512-record cap');
+  assert.deepEqual(supported(snapshot), previous, 'capacity cannot withdraw or replace the old supported boundary');
   assert.deepEqual(unrelated(snapshot), retained);
   assert.equal(f.provider.calls.length - calls, 5, 'capacity exhaustion completes one bounded analysis pass');
   await f.pipeline.reconcile();

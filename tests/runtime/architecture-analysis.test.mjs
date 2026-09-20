@@ -127,6 +127,14 @@ for (const [name, providerFactory] of [['recorded', createRecordedProvider], ['j
       ref.artifactId === capture.id && ref.hash === capture.hash && ref.generation === capture.generation)));
     assert.equal(app.calls.source.length, 2);
     assert.equal(app.calls.metadata.length, 1);
+    assert.ok(app.calls.metadata[0].state.proposals.every(value => value.sameProject === true
+      && value.resolvedLocalDependency === true && value.currentSourceVersions === true));
+    assert.ok(app.calls.metadata[0].state.boundaries.every(value =>
+      value.basis === 'decision' && value.anchorBasis === 'parsed'));
+    const sourceRequests = app.provider.calls.filter(call => call.request.questions.kind);
+    assert.equal(sourceRequests.length, 2);
+    for (const call of sourceRequests) assert.ok(call.request.state.evidence.every(value =>
+      [applicationSource, componentSource].includes(value.code)), 'A-approved B evidence retains the complete short source');
     assert.equal(result.diagnostics.providerRequests, 5, 'two A/B workflows plus one finite metadata call');
     assert.equal(app.apply(result).accepted, true);
     assert.equal(app.model.snapshot().interpretations.length, 3);
@@ -166,6 +174,27 @@ test('an application discovered later reconsiders an orphan component using prio
   assert.equal(app.apply(second).accepted, true);
   assert.deepEqual(app.model.snapshot().interpretations.map(value => value.kind).sort(),
     ['application', 'architecture_membership', 'component']);
+});
+
+test('only current parsed dependencies with references to both canonical local endpoints qualify for membership metadata', async t => {
+  const app = await fixture(t);
+  for (const alter of [
+    relation => { relation.basis = 'lexical'; },
+    relation => { relation.validity = 'stale'; },
+    relation => { relation.sourceRefs = relation.sourceRefs.slice(0, 1); },
+    relation => { relation.target = opaque('entity', 'not-in-project'); },
+  ]) {
+    const model = app.model.snapshot();
+    const dependency = model.relations.find(value => value.kind === 'imports');
+    assert.ok(dependency);
+    alter(dependency);
+    const result = await analyzeArchitecture(app.input({ model }));
+    assert.equal(result.status, 'complete');
+    assert.equal(result.coverage.supportedBoundaries, 2);
+    assert.equal(result.coverage.membershipProposals, 0);
+    assert.equal(result.interpretations.some(value => value.kind === 'architecture_membership'), false);
+  }
+  assert.equal(app.calls.metadata.length, 0);
 });
 
 test('boundary and membership IDs stay stable while exact source versions change', async t => {

@@ -607,7 +607,7 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
     const result = (accepted, changed = false, removed = 0, retained = 0) => ({
       ...stats(), accepted, changed, removed, retained,
     });
-    if (!interpretationNamespace(namespace) || !Array.isArray(values) || values.length > limits.interpretations ||
+    if (!interpretationNamespace(namespace) || !Array.isArray(values) || values.length > DEFAULT_LIMITS.interpretations ||
         !plain(options) || !currentPolicy(policy).readSource) return result(false);
     const scoped = options.affectedEntityIds !== undefined || options.artifactIds !== undefined;
     const validIds = (values, limit) => Array.isArray(values) && values.length <= limit && values.every(value => id(value));
@@ -638,20 +638,48 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
       if (old && !matches(old)) return result(false);
       incoming.set(record.id, record);
     }
-    const before = mutations, oldDeferred = deferred.interpretations;
-    let removed = 0, retained = 0;
-    for (const record of interpretations.values()) {
-      if (record.namespace === namespace && matches(record) && !incoming.has(record.id)) {
-        remove(interpretations, record.id, 'interpretations');
-        removed++;
+    const obsolete = new Set([...interpretations.values()].filter(record =>
+      record.namespace === namespace && matches(record) && !incoming.has(record.id)).map(record => record.id));
+    const updates = [...incoming.values()].map(record => ({
+      record, delta: byteSize(record) - (weights.get(interpretations.get(record.id)) ?? 0),
+    }));
+    let plannedCount = interpretations.size - obsolete.size +
+      updates.filter(({ record }) => !interpretations.has(record.id)).length;
+    let plannedBytes = bytes + historyBytes + updates.reduce((sum, update) => sum + update.delta, 0);
+    for (const recordId of obsolete) plannedBytes -= weights.get(interpretations.get(recordId)) ?? 0;
+    const victims = [];
+    const fits = () => plannedCount <= limits.interpretations && plannedBytes <= limits.bytes;
+    if (namespace === 'graphlin.architecture') {
+      for (const record of interpretations.values()) {
+        if (fits()) break;
+        if (record.namespace !== 'graphlin.legacy-role' || obsolete.has(record.id) || incoming.has(record.id)) continue;
+        victims.push(record.id);
+        plannedCount--;
+        plannedBytes -= weights.get(record) ?? 0;
       }
     }
-    for (const record of [...incoming.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
-      if (admitInterpretation(record)) retained++;
+    // Admission is all-or-nothing, including prospective legacy evictions.
+    // Capacity defers a valid answer; it must not withdraw supported old roles.
+    if (!fits()) {
+      deferred.interpretations += incoming.size;
+      commit('interpretations.replaced', { sessionId: options.event?.sessionId });
+      return result(true, true);
+    }
+    const before = mutations, oldDeferred = deferred.interpretations;
+    for (const recordId of obsolete) remove(interpretations, recordId, 'interpretations');
+    for (const recordId of victims) {
+      remove(interpretations, recordId, 'interpretations');
+      deferred.interpretations++;
+    }
+    // Shrink existing records first so intermediate writes also fit the plan.
+    updates.sort((a, b) => Number(a.delta > 0) - Number(b.delta > 0) ||
+      (a.record.id < b.record.id ? -1 : a.record.id > b.record.id ? 1 : 0));
+    for (const { record } of updates) {
+      put(interpretations, record.id, record, limits.interpretations, 'interpretations');
     }
     const changed = mutations !== before || oldDeferred !== deferred.interpretations;
     if (changed) commit('interpretations.replaced', { sessionId: options.event?.sessionId });
-    return result(true, changed, removed, retained);
+    return result(true, changed, obsolete.size, incoming.size);
   }
 
   function decisionFreshness(value, sourceRefs, fresh) {

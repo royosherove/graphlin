@@ -54,3 +54,29 @@ pause, policy, evidence-version, and branch changes.
 - Browser checks exercise the manual action and rendered nesting.
 - Normal CI and package verification pass. Large stress tests remain local
   through `npm run test:stress`.
+
+## Verified implementation
+
+The default daemon now registers the built-in source profile and starts bounded
+discovery after parsing settles. The manual action and subsequent source
+changes use the same controller. Current source versions are checked again
+before replacing a batch; capacity failures preserve the previous batch and
+report partial coverage.
+
+The browser check starts from generated source, without seeded interpretations,
+and verifies nested frames, manual discovery, automatic discovery of an added
+component, keyboard expansion, and frozen replay. The normal suite passes 1,122
+tests; the large pagination stress test remains a separate local command.
+
+A live Jev check through the default server factory used seven requests over
+three generated files. It accepted an application, a component, and their
+membership while rejecting a stub; C4 nested the result.
+It took about 4.3 seconds for that small fixture, with the production five-second
+per-workflow deadline. An unchanged reconciliation made no additional requests.
+This is a functional check, not a general performance or accuracy benchmark.
+
+Membership means a resolved local source dependency between accepted roles.
+Its decision context includes verified same-project and current-source facts,
+and distinguishes inferred roles from parsed anchors. It does not establish
+runtime hosting or exclusive ownership. Existing admission thresholds remain
+unchanged; unknown results remain unknown.

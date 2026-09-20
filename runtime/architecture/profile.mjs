@@ -1,7 +1,7 @@
 import { freeze } from '../core/common.mjs';
 
 export const ARCHITECTURE_NAMESPACE = 'graphlin.architecture';
-export const ARCHITECTURE_VERSION = 'source-boundaries-v2';
+export const ARCHITECTURE_VERSION = 'source-boundaries-v4';
 export const ROLE_PROFILE_ID = 'graphlin.architecture.roles';
 export const MEMBERSHIP_PROFILE_ID = 'graphlin.architecture.membership';
 
@@ -23,24 +23,22 @@ export const ARCHITECTURE_PROFILES = freeze([
       kind: {
         type: 'choice', requiredMetrics: ['probabilities', 'confidence'],
         instructions: {
-          question: 'What architectural boundary, if any, is implemented by this source scope '
-            + 'in `evidence`, containing the named declarations in `entities`?', focus: rules,
+          question: 'What does this source file locally implement in `evidence`?', focus: rules,
         },
         criteria: {
-          application: 'Visible executable bootstrap or composition of an application, server or worker.',
-          component: 'A cohesive implemented responsibility with an interface inside an application.',
-          unknown: 'No such boundary is established, or the needed implementation is not visible.',
+          application: 'Visible executable bootstrap or composition that starts an application, server or worker when invoked.',
+          component: 'A cohesive implemented API with visible operation bodies, beyond an incidental helper.',
+          unknown: 'Only imports, declarations, stubs, constants or incidental helpers; no such local responsibility is established.',
         },
       },
       supported: boolean(
-        'Does the code in `evidence` contain an implemented application entrypoint or cohesive component?',
-        'Judge this file’s visible implementation. An application entrypoint constructs and starts a server, '
-          + 'worker or user-facing program. A component implements a cohesive responsibility through callable operations '
-          + 'or a class interface, such as a business service with input validation and state operations. Class/function syntax '
-          + 'or a name alone does not suffice, but visible operation bodies do. External callers, deployment manifests, '
-          + 'other source files and runtime execution are not prerequisites for recognizing that local implementation.',
-        'Visible statements implement executable application startup or a cohesive component responsibility.',
-        'There is no such implementation: only incidental helpers, constants, declarations, names or placeholders.',
+        'Does `evidence` directly show implemented behavior for this source file?',
+        'Judge implementation presence, independently of the architectural role. Actual startup statements or '
+          + 'operation bodies show implementation. Imports, signatures, empty bodies, placeholder throws, comments '
+          + 'and a name alone do not. External callers, deployment manifests, imported collaborator internals '
+          + 'and runtime execution are not prerequisites for recognizing visible local implementation.',
+        'Executable statements directly implement startup or operations in this file.',
+        'Only imports, declarations, scalar constants, empty bodies or placeholders are visible.',
       ),
       missing_context: boolean(
         'Is a local statement or definition absent from `evidence` that prevents identifying what this file implements?',

@@ -77,9 +77,17 @@ function membershipPairs(index, roles, processed) {
     if (!parent || !child || parent.id === child.id || roles.get(parent.id)?.kind !== 'application'
       || roles.get(child.id)?.kind !== 'component'
       || ![parent.artifactId, child.artifactId].some(id => processed.has(id))
-      || relation.sourceRefs.some(ref => ![parent.artifactId, child.artifactId].includes(ref.artifactId))) continue;
+      || relation.sourceRefs.some(ref => ![parent.artifactId, child.artifactId].includes(ref.artifactId))
+      || ![parent.artifactId, child.artifactId].every(id => relation.sourceRefs.some(ref => ref.artifactId === id))) continue;
     const key = `${parent.id}:${child.id}`;
-    if (!pairs.has(key)) pairs.set(key, { parent: roles.get(parent.id), child: roles.get(child.id), kinds: new Set() });
+    // Both canonical parsed anchors belong to this single-project index, and
+    // the resolved parsed relation carries current versions of both artifacts.
+    if (!pairs.has(key)) pairs.set(key, {
+      parent: roles.get(parent.id), child: roles.get(child.id), kinds: new Set(),
+      sameProject: index.entities.has(parent.id) && index.entities.has(child.id),
+      resolvedLocalDependency: [parent.artifactId, child.artifactId].every(id => index.artifacts.has(id)),
+      currentSourceVersions: Boolean(index.currentRefs(relation.sourceRefs)),
+    });
     pairs.get(key).kinds.add(relation.kind);
   }
   return [...pairs].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value);
@@ -112,34 +120,47 @@ function membership(projectId, pair, accepted) {
 function membershipEvaluation(pairs, basis) {
   const roles = new Map();
   for (const pair of pairs) for (const role of [pair.parent, pair.child]) {
-    roles.set(role.anchor.id, { id: role.anchor.id, kind: role.kind, label: role.anchor.label });
+    roles.set(role.anchor.id, {
+      id: role.anchor.id, kind: role.kind, label: role.anchor.label, support: 'supported', classification: 'accepted',
+      basis: 'decision', anchorBasis: role.anchor.basis, validity: role.anchor.validity,
+    });
   }
   const state = {
     context: {
       basis: 'current_source_backed_roles_and_parsed_dependencies',
+      membership: 'A source composition link means an accepted application source module directly declares a parsed '
+        + 'import, call or depends_on dependency on an accepted component source module. This records a static source '
+        + 'dependency between the roles, not exclusive ownership, active usage, deployment or runtime hosting.',
       instruction: 'Roles were accepted from current source through privacy intake. Dependencies are parsed facts. '
+        + 'sameProject, resolvedLocalDependency and currentSourceVersions are core-verified from canonical parsed '
+        + 'anchors and exact current references for both endpoints, not inferred from their labels. '
         + 'Assess only the proposed finite pairs. Do not infer membership from folders or names, invent entities, '
         + 'or assert exclusive ownership, runtime deployment or successful execution.',
     },
     boundaries: [...roles.values()],
     proposals: pairs.map(pair => ({
       parentId: pair.parent.anchor.id, childId: pair.child.anchor.id, relationKinds: [...pair.kinds].sort(),
+      sameProject: pair.sameProject, resolvedLocalDependency: pair.resolvedLocalDependency,
+      currentSourceVersions: pair.currentSourceVersions,
     })),
   };
   const questions = pairs.flatMap((_pair, i) => [
     {
       id: `member_${i}`, kind: 'boolean', requiredMetrics: ['probability'],
-      question: `Do the source-backed roles and current parsed dependency facts for \`proposals[${i}]\` `
-        + 'support the child component participating in the parent application’s implementation? '
-        + 'Both endpoints must be declared in boundaries with application/component roles. '
-        + 'A folder/name match, unrelated component or external dependency is insufficient. '
-        + 'Shared components may participate in more than one application; no runtime hosting is asserted.',
+      question: `Do the accepted roles in \`boundaries\` and directed parsed dependency in \`proposals[${i}]\` `
+        + 'establish this exact source composition link as defined by `context.membership`?',
+      focus: 'Both endpoints must have accepted, supported application/component roles. A direct parsed import, call '
+        + 'or depends_on relation between these endpoints suffices for the declared source dependency. A folder/name '
+        + 'match, co-occurrence, unknown role or unrelated dependency does not. Imported implementation, proof of active '
+        + 'use, exclusive ownership, upstream callers and runtime hosting are outside this static claim.',
     },
     {
       id: `missing_${i}`, kind: 'boolean', requiredMetrics: ['probability'],
-      question: `Is information missing from the supplied roles and parsed dependency facts for \`proposals[${i}]\` `
-        + 'that is necessary to determine the exact source-composition membership? '
-        + 'If metadata is insufficient, report missing context. Runtime observations and optional documents are not required.',
+      question: `Is an accepted endpoint role or the exact directed parsed dependency missing from \`proposals[${i}]\` `
+        + 'and `boundaries`, preventing determination of the source composition link defined by `context.membership`?',
+      focus: 'The role analysis already inspected approved source. Both accepted roles and an exact parsed import, call '
+        + 'or depends_on relation are sufficient here. Do not require source bodies again, proof the import is actively '
+        + 'used, imported dependency internals, callers, runtime observations, deployment facts or optional documents.',
     },
   ]);
   return {
