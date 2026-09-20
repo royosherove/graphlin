@@ -2,6 +2,10 @@
 
 A local plugin for live architecture and activity diagrams while a coding agent works.
 
+![Graphlin's Sketchbook diagram showing function calls, a cache write, and a browser-to-service connection](docs/images/graphlin-preview.png)
+
+*A close-up from the offline demo. [See the full diagram](docs/images/graphlin-overview.png).*
+
 **Development preview.** Graphlin is not published to npm yet. Use this checkout
 to try it. The repository includes CI, plugin packaging, and a gated npm release
 workflow; see [releasing](docs/releasing.md) for the remaining publication setup.
