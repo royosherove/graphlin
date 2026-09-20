@@ -11,9 +11,11 @@ an explicit change to `private: false`, a public repository, and the repository
 Actions variable `NPM_PUBLISH_ENABLED=true`. The release guard rejects missing
 settings, other repositories, private repositories, other branches, tags,
 and inconsistent package versions. Keep the variable unset or `false` until
-publication is separately authorized and the maintainer has configured the
-`npm` environment secret `NPM_TOKEN`. This preparation neither supplies a
-token nor enables publishing.
+publication is separately authorized and the remaining release gates are ready.
+The maintainer has configured `NPM_TOKEN` as a **repository Actions secret**.
+The workflow supports this location without moving or duplicating the secret.
+The repository and package remain private; adding the secret does not enable
+publishing.
 
 After activation, a push or merge to `main` runs the complete CI matrix and
 publishes a new package version only if every check succeeds. An already
@@ -53,7 +55,16 @@ plugin packages expose only their runnable controls and validation commands.
 `pack:check` creates an actual tarball in a temporary directory, checks its file
 list and integrity, extracts it, checks public contents, installs it offline
 without lifecycle scripts, and executes the installed `graphlin --help`.
-Temporary files are removed afterward. It requires the system `tar` command,
+It then imports the installed `preparePackages(dataDir, version)` to create
+stable plugins under `dataDir/plugins/graphlin/<version>`. After deleting the
+temporary npm installation, extracted source, tarball, and npm cache, a fresh
+process starts each stable Claude and Codex bundle with an offline fixture
+service. Real packaged `collect.sh` hooks deliver `SessionStart` and
+`PostToolUse` through IPC. Authenticated HTTP must show the first accepted
+`saveNote` shape with the synthetic file's source hash; silent hooks alone
+do not pass. Servers close and temporary files are removed afterward.
+This invokes no real host CLI, reads no personal configuration or API keys,
+and uses only local HTTP and IPC. It requires the system `tar` command,
 which is available on the supported CI runners.
 
 The `files` array in `package.json` is an exact filename allowlist shared by npm
@@ -85,26 +96,33 @@ These are maintainer actions for when public release is authorized:
    npm provenance does not support private source repositories, even for public
    npm packages; this project's workflow deliberately blocks such publication.
 2. Confirm control or availability of the unscoped npm name `graphlin`.
-   Configure the publishing account and two-factor authentication. Create a
-   granular token with **Read and write (publish and stage)** package access
+   Configure the publishing account and two-factor authentication. The token
+   must have granular **Read and write (publish and stage)** package access
    and **Bypass 2FA** enabled for noninteractive publication. Limit access to
    the required package where possible and rotate it before expiration.
    Stage-only and read-only tokens cannot run this workflow's direct
    `npm publish`. Legacy tokens are no longer supported.
-3. Create the GitHub Actions environment named `npm`. Under deployment
+3. Before enabling publication, create or review the GitHub Actions environment
+   named `npm`. This deployment environment is independent of where the token
+   is stored. Under deployment
    restrictions choose **Selected branches and tags**, add a **Branch**
    rule for exactly `main`, and allow no tags or other branches. Configure
    required reviewers if releases should wait for approval. Restrict who
    can change the workflow, environment, and repository variables. Protect
    `main` with the complete CI checks required before merge; select the
    actual check names shown by GitHub after the workflows have run.
-4. When ready, the maintainer adds the token directly in GitHub:
-   **Settings → Environments → npm → Environment secrets → Add secret**,
-   name **`NPM_TOKEN`**. Never put the value in chat, source files, command
-   arguments, or logs. Do not create a repository-wide duplicate. The
-   workflow maps this secret to `NODE_AUTH_TOKEN` only in the final publish
-   step; `actions/setup-node` configures the registry authentication reference.
-   No token is passed to CI, guard, build, package smoke, or registry lookup.
+4. Keep the existing repository Actions secret **`NPM_TOKEN`**. Future rotation
+   is managed directly in GitHub under **Settings → Secrets and variables →
+   Actions → Repository secrets**. No move into the `npm` environment and no
+   duplicate secret are required. An environment-scoped `NPM_TOKEN` is also
+   supported as an alternative; if both scopes contain that name, GitHub uses
+   the environment secret for that job.
+   Never put the value in chat, source files, command arguments, or logs.
+   The workflow reads `${{ secrets.NPM_TOKEN }}` and maps it to `NODE_AUTH_TOKEN`
+   only in the final publish step; `actions/setup-node` configures the registry
+   authentication reference. This workflow does not pass the token to CI,
+   guard, build, package smoke, or registry lookup. Environment deployment
+   rules still gate the publish job when the token is stored at repository level.
 5. In a separately reviewed change, set `package.json` to `private: false`
    and keep all four versions equal: `package.json`, `plugin.json`,
    `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json`. Choose a
@@ -218,6 +236,10 @@ Verified against official documentation on September 20, 2026:
   `setup-node`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, and provenance.
 - [GitHub environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments) —
   environment secrets, branch restrictions, and required reviewers.
+- [GitHub Actions secrets](https://docs.github.com/en/actions/how-tos/security-for-github-actions/security-guides/using-secrets-in-github-actions) —
+  repository and environment secret configuration and the `secrets` context.
+- [GitHub secret precedence](https://docs.github.com/en/actions/reference/security/secrets) —
+  environment secrets override repository secrets with the same name.
 - [GitHub reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows) —
   same-commit local workflow reuse.
 - [GitHub workflow triggers](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow) —
