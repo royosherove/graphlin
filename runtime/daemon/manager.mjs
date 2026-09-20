@@ -298,7 +298,7 @@ export async function doctor({ projectRoot, dataDir } = {}) {
   if (!policy.allowSource) nextActions.push('Architecture classification needs source-sharing consent. Run graphlin init to choose it.');
   if (policy.allowSource && credential === 'missing') nextActions.push('Run graphlin init to save your TypeSafe key at its hidden prompt.');
   if (['unavailable', 'timeout'].includes(status.status?.classifier)) {
-    nextActions.push('Run graphlin logs for the classifier failure reason. If authentication failed, run graphlin init --reset-key, then restart Graphlin.');
+    nextActions.push('Run graphlin logs for the classifier failure reason. If authentication failed, run graphlin init --replace-key, then restart Graphlin.');
   }
   if (status.running && !Object.values(received).some(count => count > 0)) {
     nextActions.push('Start Claude Code or Codex with Graphlin installed, review its hook permissions, and ask it to explore this project.');
