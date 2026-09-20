@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import {
   createPolicy, normalizeHostEvent, metadataEvent, EvidenceStore,
@@ -8,6 +7,7 @@ import {
   applyPatch, projectGraph,
 } from './core/index.mjs';
 import { safeLabel, safeText, excluded } from './core/privacy.mjs';
+import { createPlatform } from './platform.mjs';
 
 const MAX_ACTIVITY = 200;
 const MAX_HOOK_EVENTS = 200;
@@ -23,11 +23,6 @@ const CLASSIFICATION_QUEUE_TTL_MS = 120_000;
 const DEADLINE_MS = 2000;
 const PENDING_LEASE_MS = 60_000;
 const TERMINAL = new Set(['succeeded', 'failed', 'interrupted', 'unresolved']);
-const SOURCE_EXT = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|rb|php|cs|swift|sql|ya?ml|json|toml|tf)$/i;
-const SKIP_DIR = new Set([
-  '.git', '.graphlin', '.graphlin-data', 'node_modules', 'dist', 'build',
-  'coverage', '.next', '.cache', '.venv', 'venv', 'vendor', 'research',
-]);
 const FIXED_CLASSIFIER = new Set([
   'ready', 'metadata_only', 'missing_key', 'paused', 'unavailable', 'timeout', 'demo',
 ]);
@@ -97,7 +92,7 @@ function restoreGraph(input, { stale = true } = {}) {
  */
 export function createPipeline({
   projectRoot, policy: policyOptions, decisionService, onChange = () => {},
-  onDiagnostic = () => {}, restoredState, mode = 'live', clock = Date.now,
+  onDiagnostic = () => {}, restoredState, restoredModel, mode = 'live', clock = Date.now,
   classificationDeadlineMs = DEADLINE_MS,
 } = {}) {
   if (!Number.isSafeInteger(classificationDeadlineMs) ||
@@ -108,7 +103,7 @@ export function createPipeline({
   const inputRoot = path.resolve(projectRoot);
   const projectId = opaque(root);
   const policy = createPolicy(policyOptions ?? {});
-  const evidence = new EvidenceStore({ projectRoot, policy });
+  const evidence = new EvidenceStore({ projectRoot, policy, maxTrackedPaths: 10000 });
   const sessions = new Map();
   const dedup = new Map();
   const sessionStarts = new Map();
@@ -130,16 +125,26 @@ export function createPipeline({
   let pending = 0;
   let classifier = mode === 'demo' ? 'demo' : policy.transmitSource ? 'ready' : 'metadata_only';
   let serial = Promise.resolve();
-  let lastDiscoveryAt = -Infinity;
-  let discoveredPaths = [];
   let reconciliationTask = null;
   let resumeScheduled = false;
+  let lineageId = null;
 
   const serialized = (fn) => {
     const operation = serial.then(fn);
     serial = operation.catch(() => {});
     return operation;
   };
+  const platform = createPlatform({
+    projectRoot: root, projectId: createHash('sha256').update(root).digest('hex'),
+    policy, restoredState: restoredModel, now: clock,
+    accept: operation => serialized(operation),
+    revalidate: refs => serialized(async () => {
+      if (closed) return false;
+      registerArtifacts(await evidence.reconcile({ refs }));
+      return evidence.isCurrent(refs);
+    }),
+    onChange: notify,
+  });
 
   function artifactMetadata(artifact) {
     const relative = artifact.relativePath;
@@ -217,15 +222,22 @@ export function createPipeline({
     const session = freshSession(id, `Session ${sessions.size + 1}`);
     sessions.set(id, session);
     selectedSession ??= id;
+    platform.setSessions([...sessions.values()].map(item => ({ id: item.id, label: item.label })));
     return session;
   }
 
   function evictSession(id) {
     sessions.delete(id);
+    syncSessions();
     deferredWork.delete(id);
     for (const key of completedClassifications.keys()) {
       if (key.startsWith(`${id}:`)) completedClassifications.delete(key);
     }
+  }
+
+  function syncSessions() {
+    platform.setSessions([...sessions.values()].map(({ id, label, host, status, startedAt, endedAt }) =>
+      ({ id, label, host, status, startedAt, endedAt })));
   }
 
   if (restoredState?.projectId === projectId) {
@@ -237,6 +249,7 @@ export function createPipeline({
       if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(id)) continue;
       const session = ensureSession(id);
       session.graph = restoreGraph(entry.graph);
+      platform.observeLegacy(session.graph, { sessionId: session.id });
       // Activity is reconstructed through the metadata allowlist, never trusted verbatim.
       session.activity = (Array.isArray(entry.activity) ? entry.activity : [])
         .slice(-MAX_ACTIVITY).map(item => {
@@ -329,6 +342,7 @@ export function createPipeline({
   function recordPatch(session, patch) {
     if (!patch || !patch.operations?.length) return;
     session.graph = applyPatch(session.graph, patch);
+    platform.observeLegacy(session.graph, { sessionId: session.id, fresh: true });
     session.history.push({
       revision: session.graph.revision, at: new Date(clock()).toISOString(),
       graph: structuredClone(session.graph),
@@ -356,7 +370,7 @@ export function createPipeline({
     }
   }
 
-  function registerArtifacts(artifacts) {
+  function registerArtifacts(artifacts, event) {
     const changed = [];
     for (const artifact of artifacts) {
       const previous = knownArtifacts.get(artifact.id);
@@ -390,12 +404,14 @@ export function createPipeline({
         recordPatch(session, invalidateArtifacts(session.graph, changed));
       }
     }
+    platform.observeArtifacts(artifacts, event);
     return changed;
   }
 
   function addActivity(session, event) {
     const state = activityState(event);
     const row = { ...metadataEvent(event), label: activityLabel(event), state };
+    platform.recordActivity(row);
     const existing = event.toolCallId
       ? session.activity.findIndex(item => item.toolCallId === event.toolCallId &&
           item.agentId === event.agentId && item.kind?.startsWith('tool.'))
@@ -422,6 +438,7 @@ export function createPipeline({
           sequence: ++sequence, incomplete: true,
         });
         session.activity[index] = { ...event, label: activityLabel(event), state: 'unresolved' };
+        platform.recordActivity(event);
         changed = true;
       }
     }
@@ -429,31 +446,7 @@ export function createPipeline({
   }
 
   async function discoverPaths() {
-    // Bounded name discovery lets a shell-created file enter the next observation.
-    // Core still authorizes each resolved file before reading any content.
-    if (clock() - lastDiscoveryAt < 1000) return discoveredPaths;
-    lastDiscoveryAt = clock();
-    const found = [];
-    const dirs = [{ dir: root, depth: 0 }];
-    let visited = 0;
-    while (dirs.length && found.length < 64 && visited++ < 100) {
-      const { dir, depth } = dirs.shift();
-      let entries;
-      try { entries = await readdir(dir, { withFileTypes: true }); } catch { continue; }
-      entries.sort((a, b) => a.name.localeCompare(b.name));
-      for (const entry of entries) {
-        if (entry.isSymbolicLink() || entry.name.startsWith('.')) continue;
-        if (entry.isDirectory() && depth < 5 && !SKIP_DIR.has(entry.name)) {
-          dirs.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
-        } else if (entry.isFile() && SOURCE_EXT.test(entry.name) &&
-            !/(?:package-lock|pnpm-lock|yarn\.lock)/.test(entry.name)) {
-          found.push(path.join(dir, entry.name));
-          if (found.length >= 64) break;
-        }
-      }
-    }
-    discoveredPaths = found;
-    return found;
+    return platform.discover({ limit: 64 });
   }
 
   function canonicalNamedPaths(paths, raw) {
@@ -555,7 +548,15 @@ export function createPipeline({
     if (closed || paused || !deferredWork.size) return;
     const work = [...deferredWork];
     deferredWork.clear();
-    const artifacts = await evidence.reconcile();
+    const needed = new Set(work.flatMap(([, entry]) => [...entry.artifacts]));
+    for (const [sessionId] of work) {
+      for (const edge of sessions.get(sessionId)?.graph.edges ?? []) {
+        if (edge.sourceRefs.some(ref => needed.has(ref.artifactId))) {
+          edge.sourceRefs.forEach(ref => needed.add(ref.artifactId));
+        }
+      }
+    }
+    const artifacts = await evidence.reconcile({ refs: [...needed].map(artifactId => ({ artifactId })) });
     registerArtifacts(artifacts);
     for (const [sessionId, entry] of work) {
       const session = sessions.get(sessionId);
@@ -602,7 +603,7 @@ export function createPipeline({
   const sourceIdentity = job => job.candidates.some(candidate => candidate.sourceRef?.type === 'message')
     ? null : sourceVersions(job.candidates).map(ref => ref.artifactId).sort().join(',');
   const classificationKey = job => `${job.event.sessionId}:${opaque(JSON.stringify([
-    policy.version,
+    policy.version, job.lineageId,
     { kind: job.event.kind, toolCategory: job.event.toolCategory,
       outcome: job.event.outcome, incomplete: job.event.incomplete !== false },
     job.candidates.map(candidate => candidate.digest),
@@ -650,7 +651,7 @@ export function createPipeline({
     const session = sessions.get(event.sessionId);
     if (!session) { skip('session_evicted'); return; }
     if (paused) { deferClassification(event, candidates); skip('paused_deferred'); return; }
-    const job = { event, candidates, sourceEventId, session, enqueuedAt: clock(),
+    const job = { event, candidates, sourceEventId, session, lineageId, enqueuedAt: clock(),
       needsRefresh: activeClassifications.size >= MAX_CLASSIFICATIONS };
     const covered = coverageReason(job);
     if (covered) { skipJob(job, covered); return; }
@@ -783,6 +784,7 @@ export function createPipeline({
         diagnostics: result?.diagnostics ?? {} });
       await serialized(async () => {
         if (closed || !sessions.has(event.sessionId)) { skip(closed ? 'pipeline_closed' : 'session_evicted'); return; }
+        if (job.lineageId !== lineageId) { skip('source_changed_during_classification'); return; }
         if (paused) { deferClassification(event, candidates); skip('paused_deferred'); notify(); return; }
         if (clock() >= deadlineAt) { classifier = 'timeout'; dropped++; skip('deadline_before_apply'); notify(); return; }
         if (result.status === 'timeout') classifier = 'timeout';
@@ -796,7 +798,7 @@ export function createPipeline({
             bundle?.policyVersion === policy.version && Array.isArray(bundle.candidates)) {
           // Reobserve the worktree before accepting remote answers; a tool could
           // have edited these files while either Jev request was in flight.
-          registerArtifacts(await evidence.reconcile());
+          registerArtifacts(await evidence.reconcile({ refs: sourceVersions(candidates) }));
           if (closed || sessions.get(event.sessionId) !== session) { skip(closed ? 'pipeline_closed' : 'session_evicted'); return; }
           if (paused) { deferClassification(event, candidates); skip('paused_deferred'); notify(); return; }
           const artifactRefs = sourceVersions(candidates);
@@ -825,6 +827,10 @@ export function createPipeline({
             const patch = compileDecision(before, { event, decision: result, policy,
               onDiagnostic: entry => admission.push(entry) });
             recordPatch(session, patch);
+            // The legacy canvas cap is not a semantic admission cap. Compile
+            // this bounded decision independently so the model can retain it.
+            const independent = compileDecision(emptyGraph(), { event, decision: result, policy });
+            if (independent) platform.observeLegacy(applyPatch(emptyGraph(), independent), { sessionId: session.id, fresh: true });
             remember();
             const after = session.graph;
             const counts = { revisionBefore: before.revision, revisionAfter: after.revision };
@@ -923,6 +929,11 @@ export function createPipeline({
           if (dedup.size > MAX_DEDUP) dedup.delete(dedup.keys().next().value);
         }
         const session = ensureSession(event.sessionId);
+        session.host = host;
+        session.startedAt ??= event.at;
+        session.status = event.kind === 'session.ended' ? 'ended' : 'active';
+        if (event.kind === 'session.ended') session.endedAt = event.at;
+        syncSessions();
         if (followSession) selectedSession = session.id;
         observeMessage(event, prepared.publicText);
         addActivity(session, event);
@@ -935,20 +946,22 @@ export function createPipeline({
           const named = Array.isArray(prepared.paths) ? canonicalNamedPaths(prepared.paths, raw) : [];
           const discover = event.kind === 'session.started' ||
             ['tool.succeeded', 'tool.failed'].includes(event.kind);
-          const paths = [...new Set([...named, ...(discover ? await discoverPaths() : [])])];
+          const sessionPaths = event.kind === 'session.started'
+            ? [...knownArtifacts.values()].filter(item => item.status === 'present').slice(0, 64).map(item => item.path) : [];
+          const paths = [...new Set([...named, ...sessionPaths, ...(discover ? await discoverPaths() : [])])];
           // EvidenceStore bounds each capture to 32 paths. Process the bounded
           // discovery list in chunks rather than silently losing its tail.
           for (let index = 0; index < paths.length; index += 32) {
             artifacts.push(...await evidence.capture(paths.slice(index, index + 32)));
           }
-          const changed = registerArtifacts(artifacts);
+          const changed = registerArtifacts(artifacts, metadataEvent(event));
           trace(event, 'capture', { status: 'observed', reason: 'artifacts_observed',
             artifacts: artifacts.map(artifact => ({ ...artifactMetadata(artifact),
               reason: changed.some(item => item.id === artifact.id) ? 'artifact_changed' : 'artifact_unchanged' })) });
           // A tool completion also reconciles prior support, including deletions
           // omitted from the tool's returned file list.
           if (event.kind.startsWith('tool.') && event.kind !== 'tool.requested') {
-            registerArtifacts(await evidence.reconcile());
+            registerArtifacts(await evidence.reconcile({ limit: 32 }));
           }
           namedSet = new Set(named.map(file => path.resolve(root, file)));
           // Global observation history is not a session's classification
@@ -998,10 +1011,14 @@ export function createPipeline({
     reconciliationTask = serialized(async () => {
       if (closed) return;
       const expired = expirePending();
-      const artifacts = await evidence.capture(await discoverPaths());
-      const known = await evidence.reconcile();
+      const paths = await discoverPaths();
+      const artifacts = [];
+      for (let index = 0; index < paths.length; index += 32) {
+        artifacts.push(...await evidence.capture(paths.slice(index, index + 32)));
+      }
+      const known = await evidence.reconcile({ limit: 32 });
       const changed = registerArtifacts([...artifacts, ...known]);
-      if (!changed.length) { if (expired) notify(); return; }
+      if (!changed.length) { notify(); return; }
       const session = selectedSession ? sessions.get(selectedSession) : null;
       if (session) {
         const event = observationEvent(session.id);
@@ -1037,6 +1054,22 @@ export function createPipeline({
     return getState();
   }
 
+  function observeLineage(lineage) {
+    return serialized(() => {
+      if (closed || lineage.id === lineageId) return;
+      platform.observeLineage(lineage);
+      lineageId = lineage.id;
+      completedClassifications.clear();
+      for (const job of activeClassifications) job.controller.abort();
+      for (const job of classificationQueue.splice(0)) {
+        pending--;
+        skipJob(job, 'source_changed_during_classification');
+      }
+      registerArtifacts(evidence.setLineage(lineage.id));
+      notify();
+    });
+  }
+
   function selectSession(id) {
     if (!sessions.has(id)) return false;
     selectedSession = id;
@@ -1046,11 +1079,14 @@ export function createPipeline({
 
   async function whenIdle() {
     await serial;
+    await platform.whenIdle();
+    await serial;
     while (tasks.size || classificationQueue.length) {
       pumpClassifications();
       await Promise.allSettled([...tasks]);
       await serial;
     }
+    await platform.whenIdle();
     await serial;
   }
 
@@ -1064,8 +1100,14 @@ export function createPipeline({
     }
     for (const job of activeClassifications) job.controller.abort();
     decisionService?.close?.();
+    await platform.close();
     await whenIdle();
   }
 
-  return { ingest, getState, reconcile, setPaused, selectSession, whenIdle, close };
+  return {
+    ingest, getState, reconcile, observeLineage, setPaused, selectSession, whenIdle, close,
+    getModelState: options => platform.snapshot(options),
+    createCheckpoint: options => platform.checkpoint(options),
+    model: platform.model,
+  };
 }

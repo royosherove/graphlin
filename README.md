@@ -7,7 +7,7 @@ Live architecture diagrams while **Claude Code or Codex** explores and builds yo
 ## Get started
 
 **You need:** macOS or Linux, Node.js 22.14+, and Claude Code or Codex CLI.
-Source classification also needs a TypeSafe API key; metadata mode needs no key.
+Local parsing needs no key. Optional AI classification uses a TypeSafe API key.
 
 ### 1. Start the viewer
 
@@ -17,13 +17,14 @@ In your project's terminal:
 npx --yes graphlin@latest
 ```
 
-Graphlin asks which host to install, offers **source or metadata** mode for this
+Graphlin asks which host to install, offers **local, source, or metadata** mode for this
 project, and accepts your key at a **masked prompt** if needed. It stores the key
 privately and builds stable plugins outside the npm cache. The browser opens
 automatically. Keep this terminal running; **Ctrl+C** stops the viewer.
 
 Source mode permits locally filtered source excerpts, user prompts, and public
 agent messages to be sent to TypeSafe for classification.
+Local mode parses JavaScript, TypeScript, TSX, and Python on your machine.
 
 ### 2. Start your agent
 
@@ -54,6 +55,14 @@ if you selected a custom data directory.
 For setup alone, append `init` to the command. Append `uninstall` to remove
 Graphlin's host plugins across projects while keeping your saved key and history.
 
+Choose **Code**, nested **Blocks**, **C4**, **Changes**, or **Activity timeline**.
+Search with `/`, expand a source scope, or set a task baseline. Architecture
+documents are optional; uncertain boundaries stay marked as unknown.
+
+Build another view with the [visualizer SDK](docs/extension-authoring.md).
+Install it with `npx graphlin extensions add package-name@version`, then approve
+its project access in the viewer.
+
 ## Just looking?
 
 Try the offline demo—no key or agent required:
@@ -64,7 +73,7 @@ npx --yes graphlin@latest demo
 
 ## More
 
-[User guide](docs/usage.md) · [Design](docs/graphlin-design.md) ·
+[User guide](docs/usage.md) · [Views](docs/visualizer-views.md) · [Design](docs/graphlin-design.md) ·
 [Contributing](CONTRIBUTING.md) · [Releasing](docs/releasing.md) · [MIT license](LICENSE)
 
 Graphlin visualizes observable actions and code evidence. It does not capture

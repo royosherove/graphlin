@@ -15,6 +15,51 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+.view-context { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 5px 12px; border-bottom: 1px solid var(--line); font-size: 11px; }
+.view-context label { display: inline-flex; gap: 5px; align-items: center; }
+.view-context select, .view-context button { max-width: 210px; font-size: 11px; min-height: 28px; padding: 3px 7px; color: var(--ink); background: var(--white); border: 1px solid var(--line); border-radius: 5px; }
+#scope-breadcrumbs { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
+.view-status, .view-coverage { padding: 4px 12px; font-size: 11px; color: var(--muted); }
+.extension-access { padding: 12px; border-bottom: 1px solid var(--line); background: var(--paper); font-size: 12px; }
+.extension-access p { max-width: 78ch; margin-bottom: 8px; }
+#extension-fields { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
+#extension-profiles { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0; }
+#analysis-controls { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.diagram-group .group-frame { fill: var(--paper); fill-opacity: .7; stroke: var(--node-ink); stroke-width: 1.5; }
+.diagram-group[data-change="unknown"] .group-frame, .diagram-group[data-change="discovered"] .group-frame { stroke-dasharray: 5 4; }
+.diagram-group[data-change="modified"] .group-frame { stroke: var(--amber); }
+.diagram-group[data-change="added"] .group-frame { stroke: var(--teal); }
+.diagram-group:focus-visible { outline: none; }
+.diagram-group:focus-visible .group-frame, .diagram-group[aria-pressed="true"] .group-frame { stroke: var(--diagram-focus); stroke-width: 3; }
+.diagram-group[data-change="stale"] .group-frame { stroke-dasharray: 7 4; opacity: .65; }
+.group-heading { fill: var(--ink); font: 600 14px var(--body); }
+.group-summary { fill: var(--muted); font: 11px var(--body); }
+.group-toggle { cursor: pointer; }
+.group-toggle rect { fill: var(--white); stroke: var(--line); }
+.group-toggle text { fill: var(--ink); font: 16px var(--body); }
+.group-toggle:focus-visible { outline: none; }
+.group-toggle:focus-visible rect { stroke: var(--diagram-focus); stroke-width: 3; }
+.diagram-node[data-change="added"] .node-shape { stroke: var(--teal); stroke-width: 3; }
+.diagram-node[data-change="discovered"] .node-shape { stroke-dasharray: 3 3; }
+.diagram-node[data-change="modified"] .node-shape { stroke: var(--amber); stroke-width: 3; }
+.diagram-node[data-change="removed"] { opacity: .6; }
+.custom-view { position: absolute; inset: 0; overflow: auto; background: var(--canvas); }
+.custom-view iframe { width: 100%; height: 100%; border: 0; background: var(--canvas); }
+.timeline-note { padding: 14px 18px; font-size: 12px; color: var(--muted); }
+.timeline-events { padding: 0 18px 20px; margin: 0; list-style: none; }
+.timeline-event { display: grid; grid-template-columns: 85px minmax(95px, .7fr) minmax(180px, 2fr) 90px; gap: 6px 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line); font-size: 12px; }
+.timeline-event button { text-align: left; padding: 4px 8px; min-height: 30px; }
+.timeline-lane { overflow-wrap: anywhere; }
+.timeline-attribution { grid-column: 3; color: var(--muted); font-size: 11px; }
+.timeline-outcome { color: var(--muted); }
+.timeline-event[data-outcome="failed"] .timeline-outcome { color: var(--red); }
+.timeline-event[data-outcome="succeeded"] .timeline-outcome { color: var(--teal); }
+@media (max-width: 650px) {
+  .timeline-event { grid-template-columns: 75px 1fr; }
+  .timeline-event button, .timeline-attribution { grid-column: 2; }
+  .view-context { gap: 6px; }
+  #scope-breadcrumbs { flex-basis: 100%; }
+}
 body { margin: 0; color: var(--ink); background: var(--paper); font: 14px/1.5 var(--body); }
 button, input, select { font: inherit; }
 button, a, input, select { -webkit-tap-highlight-color: transparent; }
@@ -164,6 +209,10 @@ h1 { font-size: clamp(27px, 2.3vw, 36px); letter-spacing: -1px; font-weight: 650
 .drawing [data-kind="event"], .sidebar-theme [data-kind="event"] { --node-fill: var(--role-event); }
 .drawing [data-kind="configuration"], .sidebar-theme [data-kind="configuration"] { --node-fill: var(--role-configuration); }
 .drawing [data-kind="package"], .sidebar-theme [data-kind="package"] { --node-fill: var(--role-package); }
+.drawing [data-kind="method"] { --node-fill: var(--role-function); }
+.drawing [data-kind="enum"] { --node-fill: var(--role-class); }
+.drawing [data-kind="type_alias"] { --node-fill: var(--role-interface); }
+.drawing [data-kind="namespace"], .drawing [data-kind="directory"], .drawing [data-kind="project"] { --node-fill: var(--role-package); }
 .drawing button:hover:not(:disabled) { background: var(--soft); border-color: var(--diagram-focus); }
 .drawing :is(button, input, select, summary):focus-visible { outline-color: var(--diagram-focus); }
 .drawing-toolbar { display: flex; flex-wrap: wrap; align-items: center; padding: 6px 12px; gap: 6px 18px; background: var(--canvas); border-bottom: 1px solid var(--line); flex-shrink: 0; }

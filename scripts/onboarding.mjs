@@ -313,13 +313,19 @@ export async function initOnboarding(options, dependencies = {}) {
   write(`Project: ${JSON.stringify(paths.projectRoot)}\n`);
   if (upgrading) write('Updating every recorded Graphlin host to keep the installed version consistent.\n');
   let allowSource = options.allowSource ?? (resuming ? saved.policy?.allowSource : undefined);
+  let localSource = options.localSource === true ||
+    (resuming && options.allowSource === undefined && saved.policy?.localSource === true);
   if (allowSource === undefined) {
-    write('Source mode sends locally filtered source excerpts, user prompts, and public agent messages to TypeSafe. Metadata mode sends none of these and needs no key.\n');
-    allowSource = await choose('For this project, choose source or metadata: ', ['source', 'metadata'], prompt) === 'source';
+    write('Source mode sends locally filtered source excerpts and public messages to the decision provider (Jev by default). Local mode parses code on this machine without sending it. Metadata mode reads no source content. Local and metadata need no key.\n');
+    const mode = await choose('For this project, choose source, local, or metadata: ', ['source', 'local', 'metadata'], prompt);
+    allowSource = mode === 'source';
+    localSource = mode === 'local';
   }
   const policy = { ...defaults, ...saved.policy, allowSource,
     persistEvidence: options.persistEvidence ?? saved.policy?.persistEvidence ?? false,
     displayEvidence: options.displayEvidence ?? saved.policy?.displayEvidence ?? true };
+  if (localSource && !allowSource) policy.localSource = true;
+  else delete policy.localSource;
   // Explicit setup plus source consent authorizes saving the supplied key so
   // later launches do not depend on this terminal's environment.
   let apiKey = allowSource && env.TYPESAFE_API_KEY ? env.TYPESAFE_API_KEY : undefined;
@@ -399,7 +405,8 @@ export async function uninstallOnboarding(options, dependencies = {}) {
     await record();
     write(`Graphlin removed from ${host}.\n`);
   }
-  await saveSettings(paths, { policy: { ...defaults, ...saved.policy, allowSource: false, persistEvidence: false } });
+  await saveSettings(paths, { policy: { ...defaults, ...saved.policy, allowSource: false,
+    ...(saved.policy?.localSource ? { localSource: false } : {}), persistEvidence: false } });
   write('Source and evidence-persistence consent reset for this project. A running viewer keeps its current policy until stopped; use graphlin stop.\n');
   return { removed, ...(cancelledPending.length ? { cancelledPending } : {}), retainedData: true };
 }

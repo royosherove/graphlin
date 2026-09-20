@@ -19,6 +19,7 @@ export function createPolicy(options = {}) {
       .filter(p => !DEFAULT_EXCLUDES.includes(p)).slice(0, 64) : []
   )])].sort();
   const fields = {
+    readSource: options.readSource === true || options.transmitSource === true,
     transmitSource: options.transmitSource === true,
     displayEvidence: options.displayEvidence !== false,
     persistEvidence: options.persistEvidence === true,

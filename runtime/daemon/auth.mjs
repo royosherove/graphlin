@@ -10,12 +10,16 @@ export function createAuth({ origin, instanceId, now = Date.now }) {
     for (const [key, expires] of map) if (expires <= now()) map.delete(key);
     while (map.size >= 16) map.delete(map.keys().next().value);
   }
+  function validTransport(req) {
+    const hosts = req.rawHeaders.filter((value, index) => index % 2 === 0 && value.toLowerCase() === 'host');
+    return hosts.length === 1 && req.headers.host === new URL(origin).host &&
+      ['127.0.0.1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+  }
   return {
     cookieName,
+    validTransport,
     validRequest(req, { mutation = false } = {}) {
-      const hosts = req.rawHeaders.filter((value, index) => index % 2 === 0 && value.toLowerCase() === 'host');
-      if (hosts.length !== 1 || req.headers.host !== new URL(origin).host) return false;
-      if (!['127.0.0.1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) return false;
+      if (!validTransport(req)) return false;
       if (req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) return false;
       if (mutation) return req.headers.origin === origin;
       return req.headers.origin === undefined || req.headers.origin === origin;

@@ -5,7 +5,8 @@ process.umask(0o077);
 let server;
 try {
   const options = parseArguments(process.argv.slice(2), { worker: true });
-  const policy = { transmitSource: options.allowSource, persistEvidence: options.persistEvidence,
+  const policy = { readSource: options.localSource || options.allowSource,
+    transmitSource: options.allowSource, persistEvidence: options.persistEvidence,
     displayEvidence: options.displayEvidence };
   let decisionService;
   if (options.mode === 'demo') {

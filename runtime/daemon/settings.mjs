@@ -7,8 +7,11 @@ const LIMIT = 16 * 1024;
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const validKey = value => typeof value === 'string' && value.length > 0 &&
   value.length <= 4096 && !/[\s\u0000-\u001f\u007f]/u.test(value);
-const validPolicy = value => record(value) && Object.keys(value).length === 3 &&
-  ['allowSource', 'persistEvidence', 'displayEvidence'].every(key => typeof value[key] === 'boolean');
+const validPolicy = value => record(value) &&
+  Object.keys(value).every(key => ['allowSource', 'localSource', 'persistEvidence', 'displayEvidence'].includes(key)) &&
+  ['allowSource', 'persistEvidence', 'displayEvidence'].every(key => typeof value[key] === 'boolean') &&
+  (value.localSource === undefined || typeof value.localSource === 'boolean') &&
+  !(value.localSource && value.allowSource);
 const validHosts = value => Array.isArray(value) && value.length <= 2 &&
   new Set(value).size === value.length && value.every(host => ['claude', 'codex'].includes(host));
 const validInstallation = value => record(value) &&
@@ -89,14 +92,19 @@ export function savedPolicy(policy) {
     allowSource: policy.transmitSource,
     persistEvidence: policy.persistEvidence,
     displayEvidence: policy.displayEvidence,
+    ...(policy.readSource && !policy.transmitSource ? { localSource: true } : {}),
   } : {};
 }
 
 // An omitted field means reuse consent, while false is an explicit opt-out.
 export function resolvePolicy(options, { current, saved } = {}) {
   const fallback = current ? savedPolicy(current) : saved ?? {};
+  const allowSource = options.allowSource ?? fallback.allowSource ?? false;
+  const localSource = !allowSource && (options.localSource ??
+    (options.allowSource === false ? false : fallback.localSource) ?? false);
   return {
-    allowSource: options.allowSource ?? fallback.allowSource ?? false,
+    allowSource,
+    ...(localSource ? { localSource: true } : {}),
     persistEvidence: options.persistEvidence ?? fallback.persistEvidence ?? false,
     displayEvidence: options.displayEvidence ?? fallback.displayEvidence ?? true,
   };

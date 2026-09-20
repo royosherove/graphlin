@@ -30,9 +30,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           package-manager-cache: false
-      # Graphlin has no external dependencies or lockfile.
+      # Install the pinned WASM parser without running dependency lifecycle scripts.
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run validate
       - run: npm test
-        timeout-minutes: 3
+        timeout-minutes: 5
       - run: npm run build
       - run: npm run pack:check

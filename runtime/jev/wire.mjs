@@ -1,9 +1,24 @@
-export class JevFault extends Error {
+import { DecisionFault } from '../decisions/faults.mjs';
+import { withAbort as withDecisionAbort } from '../decisions/faults.mjs';
+
+export class JevFault extends DecisionFault {
   constructor(code, status = 'invalid') {
-    super(code);
+    super(code, status);
     this.name = 'JevFault';
     this.code = code;
     this.status = status;
+  }
+}
+
+export function abortFault(signal) {
+  return signal.reason instanceof DecisionFault ? signal.reason : new JevFault('cancelled', 'abstained');
+}
+
+export async function withAbort(operation, signal) {
+  try { return await withDecisionAbort(operation, signal); }
+  catch (error) {
+    if (signal.aborted) throw abortFault(signal);
+    throw error;
   }
 }
 
@@ -89,29 +104,6 @@ export function validateResponse(value, request) {
       output_tokens: value.usage.output_tokens,
     },
   };
-}
-
-export function abortFault(signal) {
-  return signal.reason instanceof JevFault
-    ? signal.reason : new JevFault('cancelled', 'abstained');
-}
-
-// Also bounds test transports that ignore AbortSignal.
-export async function withAbort(operation, signal) {
-  if (signal.aborted) throw abortFault(signal);
-  let onAbort;
-  const aborted = new Promise((_, reject) => {
-    onAbort = () => reject(abortFault(signal));
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-  try {
-    return await Promise.race([Promise.resolve().then(() => {
-      if (signal.aborted) throw abortFault(signal);
-      return operation();
-    }), aborted]);
-  } finally {
-    signal.removeEventListener('abort', onAbort);
-  }
 }
 
 export async function readResponse(response, maximumBytes, signal) {

@@ -4,10 +4,13 @@ Graphlin turns observable coding-agent work into live architecture diagrams.
 Contributions to host adapters, classification examples, accessibility, and
 diagram usability are welcome.
 
-Use Node.js 22.14 or newer on macOS or Linux. The runtime has no external npm
-dependencies.
+Use Node.js 22.14 or newer on macOS or Linux. Install the pinned WASM parser,
+`@vscode/tree-sitter-wasm@0.3.1`, from the committed `package-lock.json` without
+running lifecycle scripts. Published npm packages and generated plugins bundle
+the full parser dependency for offline use.
 
 ```sh
+npm ci --ignore-scripts --no-audit --no-fund
 npm test
 npm run build
 npm run check:packages

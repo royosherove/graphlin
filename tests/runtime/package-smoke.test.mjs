@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { buildPackages } from '../../scripts/build-packages.mjs';
 import { smokeStablePackage } from '../../.github/scripts/smoke-stable-packages.mjs';
 
-test('package smoke rejects silent hooks that deliver no session or no source evidence and closes the server', async t => {
+test('package smoke requires the matching successful read hook and closes failed smoke servers', async t => {
   const base = await mkdtemp(path.join(await realpath(tmpdir()), 'graphlin broken package smoke '));
   t.after(() => rm(base, { recursive: true, force: true }));
   const outputDir = path.join(base, 'packages');
@@ -20,7 +20,19 @@ test('package smoke rejects silent hooks that deliver no session or no source ev
       import { collect, readHook } from '../runtime/collector/index.mjs';
       const payload = await readHook();
       if (payload?.hook_event_name === 'SessionStart') await collect(payload, { host: 'claude' });
-    `, /packaged read hook must produce the first source-backed shape/],
+    `, /packaged read hook must deliver matching tool\.succeeded through IPC/],
+    ['request only', `
+      import { collect, readHook } from '../runtime/collector/index.mjs';
+      const payload = await readHook();
+      if (payload?.hook_event_name === 'PostToolUse') payload.hook_event_name = 'PreToolUse';
+      await collect(payload, { host: 'claude' });
+    `, /packaged read hook must deliver matching tool\.succeeded through IPC/],
+    ['unrelated success', `
+      import { collect, readHook } from '../runtime/collector/index.mjs';
+      const payload = await readHook();
+      if (payload?.hook_event_name === 'PostToolUse') payload.tool_use_id = 'another-synthetic-read';
+      await collect(payload, { host: 'claude' });
+    `, /packaged read hook must deliver matching tool\.succeeded through IPC/],
   ]) {
     await t.test(name, async () => {
       const collector = path.join(pluginRoot, 'scripts/collector.mjs');

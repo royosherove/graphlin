@@ -37,6 +37,7 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run release:check
         env:
           NPM_PUBLISH_ENABLED: ${{ vars.NPM_PUBLISH_ENABLED }}
@@ -70,6 +71,7 @@ jobs:
           package-manager-cache: false
       # Keep the publishing CLI reproducible.
       - run: npm install --global npm@11.17.0 --ignore-scripts --no-audit --no-fund
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run release:check
         env:
           NPM_PUBLISH_ENABLED: ${{ vars.NPM_PUBLISH_ENABLED }}

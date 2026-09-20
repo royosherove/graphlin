@@ -36,8 +36,9 @@ export async function smokeStablePackage({ pluginRoot, host, projectRoot, dataDi
     import(pathToFileURL(path.join(pluginRoot, 'runtime/core/privacy.mjs'))),
   ]);
   const filename = path.join(projectRoot, RELATIVE_FILE);
-  await mkdir(path.dirname(filename), { recursive: true });
-  await writeFile(filename, SOURCE);
+  // Startup discovery is allowed to inspect authorized source. Keep the project
+  // empty until session receipt so this smoke specifically tests the read hook.
+  await mkdir(projectRoot, { recursive: true });
   const service = demoDecisionService();
   let server;
   try {
@@ -68,7 +69,7 @@ export async function smokeStablePackage({ pluginRoot, host, projectRoot, dataDi
     const initial = await get('/api/state');
     assert.deepEqual(initial.sessions, []);
     assert.deepEqual(initial.graph.nodes, []);
-    assert.equal(service.stats().calls, 0, 'The deep fixture must not be classified by a background scan.');
+    assert.equal(service.stats().calls, 0, 'An empty project must not trigger source classification.');
 
     await runHook(pluginRoot, host, projectRoot, dataDir, { hook_event_name: 'SessionStart' });
     await server.pipeline.whenIdle();
@@ -79,15 +80,24 @@ export async function smokeStablePackage({ pluginRoot, host, projectRoot, dataDi
     assert.deepEqual(started.graph.nodes, [], 'A session receipt is not source evidence.');
     assert.equal(service.stats().calls, 0);
 
-    await runHook(pluginRoot, host, projectRoot, dataDir, {
+    await mkdir(path.dirname(filename), { recursive: true });
+    await writeFile(filename, SOURCE);
+    const readPayload = {
       hook_event_name: 'PostToolUse', tool_use_id: 'read-synthetic-note',
       tool_name: host === 'claude' ? 'Read' : 'read_file',
       tool_input: host === 'claude' ? { file_path: filename } : { path: filename },
       tool_response: { success: true },
-    });
+    };
+    await runHook(pluginRoot, host, projectRoot, dataDir, readPayload);
     await server.pipeline.whenIdle();
     const state = await get('/api/state');
     assert.equal(state.sessionId, started.sessionId);
+    const expectedRead = normalizeHostEvent({ session_id: 'packaged-smoke', ...readPayload },
+      { host, projectId: state.projectId }).event;
+    assert.ok(state.hookEvents.some(event => event.kind === 'tool.succeeded' &&
+      event.outcome === 'succeeded' && event.toolCategory === 'read' &&
+      event.sessionId === state.sessionId && event.toolCallId === expectedRead.toolCallId),
+    `${host} packaged read hook must deliver matching tool.succeeded through IPC.`);
     assert.equal(state.graph.nodes.length, 1, `${host} packaged read hook must produce the first source-backed shape.`);
     const [node] = state.graph.nodes;
     assert.equal(node.label, 'saveNote');

@@ -21,10 +21,13 @@ published version is a successful no-op. Tags do not trigger publication.
 
 ## Verify a candidate locally
 
-Use Node.js 22.14.0 or later on macOS or Linux. There are no external package
-dependencies and no dependency installation is needed.
+Use Node.js 22.14.0 or later on macOS or Linux. Install the exact
+`@vscode/tree-sitter-wasm@0.3.1` dependency from the committed lockfile without
+lifecycle scripts. The npm package and generated plugins bundle the full
+dependency, including offline WASM grammars; release builds must not prune it.
 
 ```sh
+npm ci --ignore-scripts --no-audit --no-fund
 npm run validate
 npm test
 npm run build
@@ -35,8 +38,11 @@ npm pack --dry-run
 `npm run check:packages` combines validation, plugin builds, and tarball checks;
 run `npm test` separately for the full test suite.
 
-CI runs validation, the full tests, plugin builds, and npm tarball checks on
+CI installs the locked dependency without lifecycle scripts, then runs
+validation, the full tests, plugin builds, and npm tarball checks on
 Node.js 22, 24, and 26 on Linux and macOS: all six combinations are required.
+The release guard and publish job also install from the lockfile before
+validation or building. Dependency installation receives no npm token.
 Release jobs use Node 24 and npm 11.17.0. Update the matrix as Node support changes.
 
 `ci.yml` handles pull requests, pushes to branches other than `main`, and its
@@ -56,6 +62,8 @@ without lifecycle scripts, and executes the installed `graphlin --help`.
 It then imports the installed `preparePackages(dataDir, version)` to create
 stable plugins under `dataDir/plugins/graphlin/<version>`. After deleting the
 temporary npm installation, extracted source, tarball, and npm cache, a fresh
+process verifies the SDK exports and parses JavaScript, TypeScript, TSX, and
+Python from each stable bundle's own dependency directory. A fresh
 process starts each stable Claude and Codex bundle with an offline fixture
 service. Real packaged `collect.sh` hooks deliver `SessionStart` and
 `PostToolUse` through IPC. Authenticated HTTP must show the first accepted
@@ -65,14 +73,22 @@ This invokes no real host CLI, reads no personal configuration or API keys,
 and uses only local HTTP and IPC. It requires the system `tar` command,
 which is available on the supported CI runners.
 
-The `files` array in `package.json` is an exact filename allowlist shared by npm
-and the plugin builder. Every filename starts with `./` to anchor it at the
+The `files` array in `package.json` is an exact first-party filename allowlist
+shared by npm and the plugin builder. Every filename starts with `./` to anchor it at the
 package root: an unanchored `README.md` can also include nested private READMEs.
 The allowlist includes the runtime, required scripts, schemas,
-manifests, Graphlin skill, adapter guidance, root README, and MIT license.
+manifests, Graphlin skill, adapter guidance, SDK declarations, selected user
+and extension/provider/model/view guides, root README, and MIT license.
 It excludes local state, credentials, environment files, operational helpers,
-research, evaluation scripts, tests, CI configuration, and development docs.
+research, evaluation scripts, tests, CI configuration, and development-only docs.
 New runtime files must be deliberately added to the allowlist.
+
+`bundledDependencies` adds the full pinned parser. The validator maintains an
+explicit list of all 24 files in that dependency; generated plugins copy them
+under their own `node_modules`, without searching an inspected project or
+pruning the installed package. Tarball verification compares every file's exact
+bytes, validates WASM binaries, and scans embedded ASCII markers without
+decoding binary data as UTF-8.
 
 The tarball check also rejects credential formats and identifying machine
 paths. This is a bounded automated check, not a guarantee that arbitrary

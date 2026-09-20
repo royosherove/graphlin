@@ -58,6 +58,7 @@ async function harness(initial = snapshot({ graph: searchGraph() })) {
   globalThis.fetch = async url => {
     calls.push(url);
     if (url === '/api/about') return new Response('{}', { status: 404 });
+    if (url === '/api/model/v1/snapshot') return new Response('{}', { status: 404 });
     if (url === '/api/diagnostics') return new Response(JSON.stringify({ records: [] }));
     assert.ok(['/api/state', '/api/export', '/api/connection-info'].includes(url));
     return new Response(JSON.stringify(url === '/api/connection-info' ? connectionInfo() : current));
@@ -167,7 +168,7 @@ test('typing filters, arranges and fits, and Escape restores without animation o
     h.assertLayout();
     h.assertNoEffects();
     assert.equal(h.key('Escape'), false);
-    assert.deepEqual(h.calls, ['/api/state', '/api/connection-info', '/api/about'], 'search makes no server mutations or requests');
+    assert.deepEqual(h.calls, ['/api/state', '/api/model/v1/snapshot', '/api/connection-info', '/api/about'], 'search makes no server mutations or requests');
   } finally { h.close(); }
 });
 

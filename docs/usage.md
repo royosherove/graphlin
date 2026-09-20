@@ -22,8 +22,9 @@ npx --yes graphlin@latest
 
 The first run detects host CLIs. If only one is available it selects that host;
 otherwise choose **claude**, **codex**, or **both**. Choose **source** to permit locally filtered source excerpts, user
-prompts, and public agent messages to reach TypeSafe, or **metadata** to work
-without source transmission or an API key. Source mode offers a masked key
+prompts, and public agent messages to reach TypeSafe. Choose **local** to parse
+supported source entirely on your machine, or **metadata** to inventory paths
+without opening source files. Local and metadata modes need no API key. Source mode offers a masked key
 prompt when no key is available. Keys never belong in command arguments or chat.
 
 Graphlin registers its local marketplaces and installs through the native host
@@ -43,6 +44,27 @@ starting a viewer, append `init`. A checkout can use
 `node scripts/graphlin.mjs init`. Explicit `start` opens the viewer without
 installing host plugins; omitted policy flags reuse current or saved consent.
 `--no-source` explicitly opts out. A new project without consent is metadata only.
+`--local-source` enables local parsing without remote classification.
+
+## Explore the project
+
+The viewer inventories the project before an agent connects. With source
+permission it progressively parses JavaScript, TypeScript, TSX, and Python.
+Other languages retain file-level scopes and show their unsupported coverage.
+The drawing limit does not limit the project model.
+
+Choose Code, Blocks, C4, Changes, or Activity timeline. Blocks shows actual
+containment; C4 requires supported architectural interpretations and keeps
+ambiguous responsibilities unknown. Use **Set baseline now** to compare a
+task's changes; discovery of existing code is not automatically creation.
+Search with `/`, clear with Escape, and turn off **Follow agent** to explore
+without camera movement.
+
+[View controls and limitations](visualizer-views.md) ·
+[Install or author a visualizer](extension-authoring.md) ·
+[Local read API](model-api.md) · [Replace the decision provider](decision-service.md)
+
+## Consent and keys
 
 Consent belongs to the canonical project. The key and installed host list are
 shared within the data directory. The key is kept in a private user settings

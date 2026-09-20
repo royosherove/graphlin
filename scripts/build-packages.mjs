@@ -7,6 +7,7 @@ import { publicPackageFiles, validatePackage } from './validate-packages.mjs';
 
 const SOURCE = fileURLToPath(new URL('../', import.meta.url));
 const SOURCE_DIRECTORIES = ['.claude-plugin', '.codex-plugin', 'skills', 'scripts', 'runtime', 'schemas', 'adapters'];
+const PROTECTED_DIRECTORIES = [...SOURCE_DIRECTORIES, 'docs', 'node_modules'];
 
 async function assertDestination(destination, { directory = false } = {}) {
   const absolute = path.resolve(destination), root = path.parse(absolute).root;
@@ -57,7 +58,7 @@ async function copy(source, destination) {
 export async function buildPackages({ outputDir = path.join(SOURCE, 'dist'), sourceDir = SOURCE } = {}) {
   const source = path.resolve(sourceDir), output = path.resolve(outputDir);
   if (output === source || source.startsWith(`${output}${path.sep}`)) throw new Error('unsafe_output_directory');
-  if (SOURCE_DIRECTORIES.some(file => output === path.join(source, file) || output.startsWith(`${path.join(source, file)}${path.sep}`))) {
+  if (PROTECTED_DIRECTORIES.some(file => output === path.join(source, file) || output.startsWith(`${path.join(source, file)}${path.sep}`))) {
     throw new Error('unsafe_output_directory');
   }
   // Preflight every output before replacing even the first generated profile.
@@ -92,6 +93,9 @@ export async function buildPackages({ outputDir = path.join(SOURCE, 'dist'), sou
     await mkdir(temporary);
     try {
       const profileFiles = files.filter(file => profile === 'claude' || file !== '.claude-plugin/plugin.json');
+      // publicPackageFiles includes every reviewed file of the full pinned
+      // parser under Graphlin's own node_modules. Never resolve a hoisted or
+      // inspected-project dependency, and never copy an arbitrary dependency tree.
       for (const file of profileFiles) await copy(path.join(source, file), path.join(temporary, file));
       const metadata = JSON.parse(await readFile(path.join(temporary, 'package.json'), 'utf8'));
       metadata.files = metadata.files.filter(file => profileFiles.includes(file.slice(2)));
@@ -114,7 +118,7 @@ export async function buildPackages({ outputDir = path.join(SOURCE, 'dist'), sou
         await chmod(path.join(temporary, 'scripts', file), 0o755);
       }
       await writeFile(path.join(temporary, 'PACKAGE-NOTES.md'),
-        `# Graphlin ${profile} package\n\nNode.js 22.14+; macOS/Linux. Self-contained source bundle; no dependency install.\n` +
+        `# Graphlin ${profile} package\n\nNode.js 22.14+; macOS/Linux. Self-contained runtime and parser bundle; no dependency install.\n` +
         'Run scripts/graphlin.mjs --help for local controls. This package does not install itself.\n' +
         'Hook activation/trust has not been certified. Kiro is inactive and experimental.\n' +
         'See adapters/README.md and skills/graphlin/SKILL.md for privacy and coverage.\n');

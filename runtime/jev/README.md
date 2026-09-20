@@ -1,5 +1,12 @@
 # Jev decision service
 
+This directory now supplies the Jev adapter and compatibility exports for the
+[provider-independent decision service](../../docs/decision-service.md).
+New daemon integrations use `runtime/decisions/index.mjs` with an explicit
+provider. Existing imports and the A/B wire contract below remain supported.
+The shared service also exposes neutral broker `evaluate`/`decide` methods,
+bounded caching, and independent subscriber cancellation.
+
 Dependency-free ES modules for Node.js 22+. The service classifies supplied candidates
 with fixed Choice/Noul questions; it never generates entities, source excerpts,
 relations, or graph patches. Core owns discovery, bundle materialization, relation

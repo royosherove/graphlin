@@ -1,11 +1,14 @@
 import { layoutGraph, LAYOUT_ALGORITHMS } from './layout.js';
 import { sketchOutline, sketchDetails, sketchConnection } from './sketch.js';
 import { createLiveSidebar } from './sidebar.js';
+import { createViewPlatform } from './platform.js';
+import { layoutScene, sceneGraph, representedSelection } from './scene.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const LIMITS = Object.freeze({ nodes: 500, edges: 1500, activity: 200, hookEvents: 200, history: 100, refs: 32, sessions: 100 });
-const ROLES = ['client', 'service', 'datastore', 'queue', 'external', 'module', 'function', 'class', 'interface', 'event', 'configuration', 'package'];
+const ROLES = ['client', 'service', 'datastore', 'queue', 'external', 'module', 'function', 'class', 'interface', 'event', 'configuration', 'package',
+  'method', 'namespace', 'enum', 'type_alias', 'variable', 'file', 'directory', 'project', 'unknown', 'group'];
 export const SHAPE_NAMES = Object.freeze({
   rounded_rect: 'Rounded rectangle', rect: 'Rectangle', cylinder: 'Cylinder', cloud: 'Cloud',
   diamond: 'Diamond', group: 'Group', browser: 'Browser', component: 'Component',
@@ -29,12 +32,15 @@ const ROLE_SHAPES = {
   client: 'browser', service: 'component', datastore: 'cylinder', queue: 'queue', external: 'cloud',
   module: 'rect', function: 'hexagon', class: 'class_box', interface: 'interface_box',
   event: 'document', configuration: 'parallelogram', package: 'folder',
+  method: 'hexagon', namespace: 'folder', enum: 'class_box', type_alias: 'interface_box',
+  variable: 'rect', file: 'document', directory: 'folder', project: 'folder', unknown: 'rect', group: 'group',
 };
 const PROBABILITIES = ['supportProbability', 'roleProbability', 'roleConfidence', 'missingContextProbability'];
 const NODE_WIDTH = 190;
 const NODE_HEIGHT = 104;
 const EDGE_LANE_GAP = 36;
-const EDGE_RELATION_ORDER = ['calls', 'writes', 'depends_on', 'reads', 'publishes', 'consumes'];
+const EDGE_RELATION_ORDER = ['calls', 'writes', 'depends_on', 'reads', 'publishes', 'consumes',
+  'imports', 'references', 'member_of', 'hosted_by', 'contains', 'unknown'];
 const LAYOUT_NAMES = {
   hierarchy: 'Hierarchy top-down', dependency: 'Dependency left-right', grouped: 'Group by type',
   circular: 'Circular', grid: 'Grid', original: 'Original', force: 'Force-directed',
@@ -420,6 +426,15 @@ export function claimSummary(claim) {
   if (claim.validity === 'stale' || claim.classification === 'stale') {
     return { tone: 'stale', label: 'Evidence stale', explanation: 'The backing evidence is no longer current. This interpretation needs reconciliation with the current artifact version.' };
   }
+  if (claim.basis === 'parsed' && refs.length && !refs.some(ref => ref.sourceClass === 'public_intent')) {
+    return { tone: 'observed', label: 'Parsed source', explanation: 'A local source parser identified this structure. Source structure does not establish execution or runtime connectivity.' };
+  }
+  if (claim.basis === 'metadata') {
+    return { tone: 'proposed', label: 'Filesystem scope', explanation: 'An observed filesystem scope. Its responsibility and runtime role are unknown.' };
+  }
+  if (claim.basis === 'decision' && claim.classification === 'accepted' && refs.length) {
+    return { tone: 'observed', label: 'Supported interpretation', explanation: 'The model records a supported interpretation of the referenced evidence. This does not establish runtime hosting or execution.' };
+  }
   if (claim.evidenceState === 'proposed' || (refs.length && refs.every(ref => ref.sourceClass === 'public_intent'))) {
     return { tone: 'proposed', label: 'Proposed', explanation: 'This is a proposal or stated intent. It does not establish that a component exists or that a change completed.' };
   }
@@ -519,8 +534,8 @@ export function graphBounds(graph, routes = graphEdgeRoutes(graph)) {
   if (!graph.nodes.length) return { x: 0, y: 0, width: 920, height: 510 };
   let minX = Math.min(...graph.nodes.map(node => node.x));
   let minY = Math.min(...graph.nodes.map(node => node.y));
-  let maxX = Math.max(...graph.nodes.map(node => node.x + NODE_WIDTH));
-  let maxY = Math.max(...graph.nodes.map(node => node.y + NODE_HEIGHT));
+  let maxX = Math.max(...graph.nodes.map(node => node.x + (node.width || NODE_WIDTH)));
+  let maxY = Math.max(...graph.nodes.map(node => node.y + (node.height || NODE_HEIGHT)));
   for (const edge of graph.edges) {
     const route = routes.get(edge.id);
     if (!route) continue;
@@ -604,16 +619,16 @@ function curveRoute(points, normal) {
   };
 }
 
-function nodePort(center, direction, normal, offset, shapeName) {
+function nodePort(center, direction, normal, offset, shapeName, width = NODE_WIDTH, height = NODE_HEIGHT) {
   const reach = Math.min(
-    direction.x === 0 ? Infinity : NODE_WIDTH / 2 / Math.abs(direction.x),
-    direction.y === 0 ? Infinity : NODE_HEIGHT / 2 / Math.abs(direction.y),
+    direction.x === 0 ? Infinity : width / 2 / Math.abs(direction.x),
+    direction.y === 0 ? Infinity : height / 2 / Math.abs(direction.y),
   );
   const x = direction.x * reach + normal.x * offset;
   const y = direction.y * reach + normal.y * offset;
   const scale = Math.min(
-    x === 0 ? Infinity : NODE_WIDTH / 2 / Math.abs(x),
-    y === 0 ? Infinity : NODE_HEIGHT / 2 / Math.abs(y),
+    x === 0 ? Infinity : width / 2 / Math.abs(x),
+    y === 0 ? Infinity : height / 2 / Math.abs(y),
   );
   const polygons = {
     diamond: [[95, -12], [204, 52], [95, 116], [-14, 52]],
@@ -663,15 +678,15 @@ export function routeEdge(source, target, lane = 0) {
       boundary({ x: x - 80, y: source.y + (side > 0 ? 0 : NODE_HEIGHT) }),
     ], { x: 0, y: side });
   }
-  const a = { x: source.x + NODE_WIDTH / 2, y: source.y + NODE_HEIGHT / 2 };
-  const b = { x: target.x + NODE_WIDTH / 2, y: target.y + NODE_HEIGHT / 2 };
+  const a = { x: source.x + (source.width || NODE_WIDTH) / 2, y: source.y + (source.height || NODE_HEIGHT) / 2 };
+  const b = { x: target.x + (target.width || NODE_WIDTH) / 2, y: target.y + (target.height || NODE_HEIGHT) / 2 };
   const distance = Math.hypot(b.x - a.x, b.y - a.y);
   const direction = distance ? { x: (b.x - a.x) / distance, y: (b.y - a.y) / distance } : { x: 1, y: 0 };
   const canonicalDirection = source.id <= target.id ? 1 : -1;
   const normal = { x: -direction.y * canonicalDirection, y: direction.x * canonicalDirection };
   const portOffset = Math.max(-36, Math.min(36, slot * 6));
-  const start = nodePort(a, direction, normal, portOffset, source.shape);
-  const end = nodePort(b, { x: -direction.x, y: -direction.y }, normal, portOffset, target.shape);
+  const start = nodePort(a, direction, normal, portOffset, source.shape, source.width, source.height);
+  const end = nodePort(b, { x: -direction.x, y: -direction.y }, normal, portOffset, target.shape, target.width, target.height);
   const arc = slot * EDGE_LANE_GAP * 4 / 3;
   const control = fraction => ({
     x: start.x + (end.x - start.x) * fraction + normal.x * arc,
@@ -1565,6 +1580,7 @@ export function startViewer() {
     views: new Map(), viewKey: null, view: null, displayGraph: null, searchQuery: '',
     nodeTypes: null, nodeTypeButtons: new Map(),
     effects: new Map(), liveReady: false, motionReady: false, movement: null, closed: false, projectName: '',
+    model: null, scene: null, projectedGraph: null, platformActive: false, custom: false, follow: true, viewName: 'Code',
   };
   const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)');
   const sketches = createSketchCache();
@@ -1597,6 +1613,72 @@ export function startViewer() {
   let pointer = null;
   let canvasSize = '';
   let projectController = null;
+  const platform = createViewPlatform({
+    document, request,
+    onFollow(value) { state.follow = value; if (!value) { clearMotion(); state.followFit = false; } },
+    onSelect({ entityId, relationId, activityId }) {
+      if (entityId) {
+        platform.selected(entityId);
+        select('node', state.scene ? representedSelection(entityId, state.scene, state.model) || entityId : entityId);
+        revealInspector();
+      } else if (relationId) {
+        const edge = state.scene?.edges.find(edge => edge.relationIds?.includes(relationId));
+        if (edge) select('edge', edge.id);
+      } else if (activityId) {
+        const event = state.model?.activity.find(event => event.id === activityId);
+        if (event) {
+          $('inspector-body').replaceChildren(html('h3', readable(event.kind || 'Activity')),
+            html('p', `Outcome: ${event.outcome || 'unresolved'}. Attribution: ${event.attribution || 'unknown'}.`),
+            html('p', 'This observation has no linked source entity.'));
+          revealInspector();
+        }
+      }
+    },
+    onView(result) {
+      if (state.closed) return;
+      if (result.clear) {
+        state.scene = null; state.projectedGraph = null; state.custom = false;
+        state.displayGraph = null; state.selection = null; state.inspectorSignature = '';
+        clearMotion();
+        for (const layer of ['group-layer', 'node-layer', 'edge-layer', 'edge-label-layer']) $(layer)?.replaceChildren();
+        state.nodeElements.clear(); state.edgeElements.clear();
+        $('architecture').hidden = true; $('architecture').setAttribute('aria-hidden', 'true');
+        $('custom-view').hidden = true; $('empty-canvas').hidden = true;
+        $('inspector-body').replaceChildren(html('p', 'Select an item in the active view to inspect its evidence.'));
+        updateControls();
+        return;
+      }
+      const previous = state.projectedGraph, previousModel = state.model;
+      const switched = !state.platformActive || state.viewName !== result.name || previousModel?.projectId !== result.model.projectId;
+      state.platformActive = true; state.model = result.model; state.scene = result.scene || null;
+      state.custom = result.kind === 'custom'; state.customCount = result.itemCount; state.viewName = result.name;
+      state.projectedGraph = result.scene ? sceneGraph(result.scene, result.model) : null;
+      $('architecture').hidden = state.custom; $('custom-view').hidden = !state.custom;
+      $('architecture').setAttribute('aria-hidden', String(state.custom));
+      if (switched) resetMotionBaseline();
+      const selectionId = state.scene && representedSelection(result.selection, state.scene, state.model);
+      if (selectionId) state.selection = { type: 'node', id: selectionId };
+      const live = result.streamed && !switched && state.follow;
+      const arrivals = liveNodeChanges(previous, state.projectedGraph, live);
+      const focusNodeId = live && state.scene && result.focusEntityId
+        ? representedSelection(result.focusEntityId, state.scene, state.model) : arrivals.added.at(-1);
+      const before = state.displayGraph;
+      render({ forceFit: result.force || switched, focusNodeId });
+      if (!state.custom && state.scene && !state.scene.groups.length) animateChanges(arrivals, before, focusNodeId);
+      const coverage = result.scene?.coverage;
+      $('view-coverage').hidden = false;
+      const counts = state.model.coverage?.counts || state.model.coverage || {};
+      const progress = ['inventoried', 'inspected', 'deferred', 'unsupported', 'unavailable']
+        .filter(key => Number.isSafeInteger(counts[key])).map(key => `${counts[key]} ${key}`).join(' · ');
+      $('view-coverage').textContent = [coverage?.label || 'Observable activity; outcomes may be unresolved',
+        coverage?.truncated ? `${coverage.shown} shown of ${coverage.total}; open a scope for more` : '',
+        state.model.coverage?.client?.truncated
+          ? `Partial scope: ${Object.entries(state.model.coverage.client.totals)
+            .filter(([kind, total]) => total > state.model.coverage.client.retained[kind])
+            .map(([kind, total]) => `${state.model.coverage.client.retained[kind]} of ${total} ${kind}`).join(', ')}. Open a source scope for more.` : '',
+        progress].filter(Boolean).join(' · ');
+    },
+  });
 
   function announce(message) {
     clearTimeout(announcementTimer);
@@ -1640,14 +1722,15 @@ export function startViewer() {
     if ($('orientation-prompt').textContent !== ORIENTATION_PROMPT) $('orientation-prompt').textContent = ORIENTATION_PROMPT;
     $('orientation').hidden = Boolean(state.searchQuery || state.nodeTypes !== null || state.replayFrame || state.snapshot?.mode === 'demo' || state.snapshot?.mode === 'replay');
   }
-  function currentGraph() { return state.replayFrame?.graph || state.snapshot?.graph; }
+  function currentGraph() { return state.platformActive ? state.projectedGraph || { revision: state.model?.revision || 0, nodes: [], edges: [] }
+    : state.replayFrame?.graph || state.snapshot?.graph; }
   function applyTheme() {
     const theme = token(state.view?.theme, THEMES, 'sketchbook');
     if ($('drawing').dataset.theme !== theme) $('drawing').dataset.theme = theme;
     $('theme').value = theme;
   }
   function presentation() {
-    const key = presentationKey(state.snapshot, state.replayFrame);
+    const key = presentationKey(state.snapshot, state.replayFrame) + (state.platformActive ? `:${platform.active}:${JSON.stringify(platform.selection)}` : '');
     if (state.viewKey !== key) {
       finishPan();
       clearMotion();
@@ -1774,6 +1857,8 @@ export function startViewer() {
     $('theme').disabled = !state.snapshot;
     $('arrange').disabled = !nodes;
     $('auto-arrange').disabled = !state.snapshot;
+    if (state.custom) for (const id of ['fit', 'zoom-in', 'zoom-out', 'arrange', 'layout', 'auto-arrange']) $(id).disabled = true;
+    if (state.platformActive) { $('replay').disabled = true; $('history').disabled = true; }
   }
   function resetView() {
     resetMotionBaseline();
@@ -1790,12 +1875,12 @@ export function startViewer() {
     const snapshot = normalizeSnapshot(raw);
     if (!streamed) resetMotionBaseline();
     const switched = state.snapshot && (snapshot.sessionId !== state.snapshot.sessionId || snapshot.projectId !== state.snapshot.projectId);
-    const eligible = streamed && state.motionReady && !switched && !state.replayFrame &&
+    const eligible = !state.platformActive && state.follow && streamed && state.motionReady && !switched && !state.replayFrame &&
       snapshot.mode !== 'replay' && state.snapshot?.mode !== 'replay' && motionAllowed();
     const changes = liveNodeChanges(state.snapshot?.graph, snapshot.graph, eligible);
     // A live baseline is independent of animation preferences. Reconnects and
     // initial/session snapshots establish it without focusing an old arrival.
-    const live = streamed && state.liveReady && !switched && !state.replayFrame &&
+    const live = !state.platformActive && state.follow && streamed && state.liveReady && !switched && !state.replayFrame &&
       snapshot.mode !== 'replay' && state.snapshot?.mode !== 'replay';
     const visible = new Set(filterDiagram(snapshot.graph, state.searchQuery, state.nodeTypes).nodes.map(node => node.id));
     const focusNodeId = liveNodeChanges(state.snapshot?.graph, snapshot.graph, live).added.filter(id => visible.has(id)).at(-1);
@@ -1848,7 +1933,7 @@ export function startViewer() {
       $('session').replaceChildren(...options);
       $('session').dataset.signature = signature;
     }
-    $('session').value = snapshot.sessionId || '';
+    $('session').value = state.platformActive ? platform.selection.session || snapshot.sessionId || '' : snapshot.sessionId || '';
   }
   function shape(node) {
     const details = detailSketches.paths(node.shape, node.id);
@@ -1928,6 +2013,10 @@ export function startViewer() {
   }
   function select(type, id) {
     state.selection = { type, id };
+    if (type === 'node' && state.platformActive) {
+      const node = currentGraph()?.nodes.find(node => node.id === id);
+      if (node?.entityId) platform.selected(node.entityId);
+    }
     updateSelection();
     renderInspector();
     renderActivity();
@@ -2006,8 +2095,8 @@ export function startViewer() {
     const width = state.viewport.width * scale;
     const height = state.viewport.height * scale;
     state.viewport = {
-      x: node.x + NODE_WIDTH / 2 - width / 2,
-      y: node.y + NODE_HEIGHT / 2 - height / 2,
+      x: node.x + (node.width || NODE_WIDTH) / 2 - width / 2,
+      y: node.y + (node.height || NODE_HEIGHT) / 2 - height / 2,
       width, height,
     };
     state.zoom = zoom;
@@ -2062,10 +2151,18 @@ export function startViewer() {
     if (!canonical) return;
     const view = presentation();
     applyTheme();
-    renderNodeTypeFilters(canonical);
+    if (state.platformActive && !state.scene) {
+      $('canvas-title').textContent = state.viewName;
+      $('graph-count').textContent = state.custom && Number.isSafeInteger(state.customCount) ? `${state.customCount} items` : '';
+      $('revision').textContent = `Revision ${state.model.revision}`;
+      $('empty-canvas').hidden = true;
+      return;
+    }
+    renderNodeTypeFilters(state.platformActive ? { nodes: state.model.entities } : canonical);
     // Lay out only visible nodes so hidden components leave no empty slots.
     // Evidence, exports and live arrival detection retain the canonical graph.
-    const graph = projectPresentation(filterDiagram(canonical, state.searchQuery, state.nodeTypes), view, { arrange });
+    const graph = state.scene?.groups.length ? sceneGraph(layoutScene(state.scene), state.model)
+      : projectPresentation(state.scene ? canonical : filterDiagram(canonical, state.searchQuery, state.nodeTypes), view, { arrange });
     state.displayGraph = graph;
     const routes = graphEdgeRoutes(graph);
     const bounds = graphBounds(graph, routes);
@@ -2074,7 +2171,7 @@ export function startViewer() {
     // diagram changes retain fit-all; metadata-only updates keep the camera.
     const newest = graph.nodes.find(node => node.id === focusNodeId);
     if (newest && state.viewport && !forceFit) focusNode(newest, bounds);
-    else if (forceFit || !state.viewport || signature !== state.lastGraphSignature) fitCamera(bounds);
+    else if (forceFit || !state.viewport || (state.follow && signature !== state.lastGraphSignature)) fitCamera(bounds);
     state.lastGraphSignature = signature;
     $('layout').value = view.algorithm;
     $('auto-arrange').checked = view.auto;
@@ -2129,6 +2226,35 @@ export function startViewer() {
     }
     for (const node of graph.nodes) {
       let group = state.nodeElements.get(node.id);
+      if (group && Boolean(group.isSceneGroup) !== Boolean(node.isGroup)) { group.remove(); state.nodeElements.delete(node.id); group = null; }
+      if (node.isGroup) {
+        if (!group) {
+          group = interactiveGroup('node', node.id);
+          group.isSceneGroup = true;
+          group.setAttribute('class', 'diagram-group');
+          state.nodeElements.set(node.id, group);
+          $('group-layer').append(group);
+        }
+        group.setAttribute('transform', `translate(${node.x} ${node.y})`);
+        group.setAttribute('aria-label', `${node.label}. ${node.memberCount} members, ${node.activityCount} with activity. ${node.collapsed ? 'Collapsed' : 'Expanded'}. Inspect evidence.`);
+        group.dataset.change = node.style || 'default';
+        const toggle = svgElement('g', { class: 'group-toggle', role: 'button', tabindex: 0,
+          'aria-label': `${node.collapsed ? 'Expand' : 'Collapse'} ${node.label}`,
+          'aria-expanded': String(!node.collapsed), transform: `translate(${node.width - 33} 10)` });
+        toggle.append(svgElement('rect', { width: 24, height: 24, rx: 4 }),
+          svgElement('text', { x: 12, y: 18, 'text-anchor': 'middle' }, node.collapsed ? '+' : '−'));
+        const toggleGroup = event => { event.stopPropagation(); platform.toggle(node.entityId, node.collapsed); };
+        toggle.addEventListener('click', toggleGroup);
+        toggle.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleGroup(event); }
+        });
+        const restoreToggleFocus = group.contains(document.activeElement) && document.activeElement !== group;
+        group.replaceChildren(svgElement('rect', { class: 'group-frame', width: node.width, height: node.height, rx: 5 }),
+          svgElement('text', { class: 'group-heading', x: 14, y: 27 }, clip(node.label, Math.max(15, Math.floor((node.width - 70) / 8)))),
+          svgElement('text', { class: 'group-summary', x: 14, y: 47 }, `${node.memberCount} members · ${node.activityCount} with activity`), toggle);
+        if (restoreToggleFocus) toggle.focus({ preventScroll: true });
+        continue;
+      }
       if (!group) {
         group = interactiveGroup('node', node.id);
         const center = svgElement('g', { transform: `translate(${NODE_WIDTH / 2} ${NODE_HEIGHT / 2})` });
@@ -2151,6 +2277,7 @@ export function startViewer() {
       group.setAttribute('transform', `translate(${node.x} ${node.y})`);
       group.dataset.shape = node.shape;
       group.dataset.kind = node.kind;
+      group.dataset.change = node.style || 'default';
       group.setAttribute('aria-label', `${node.label}. ${upperFirst(node.kind)}. ${summary.label}. Activity ${node.activityState}. Inspect evidence.`);
       const nodeSignature = JSON.stringify([node.label, node.shape, node.kind, node.activityState, summary]);
       if (group.renderSignature === nodeSignature) continue;
@@ -2182,7 +2309,7 @@ export function startViewer() {
     }
     updateSelection();
     $('revision').textContent = `Revision ${graph.revision}`;
-    $('canvas-title').textContent = state.replayFrame ? 'Architecture replay' : 'Live architecture';
+    $('canvas-title').textContent = state.platformActive ? state.viewName : state.replayFrame ? 'Architecture replay' : 'Live architecture';
     $('diagram-title').textContent = `${state.replayFrame ? 'Historical' : 'Live'} architecture, revision ${graph.revision}`;
     $('diagram-desc').textContent = `${graph.nodes.length} components and ${graph.edges.length} relationships. Code interpretation does not establish runtime connectivity. Use Tab and Enter to inspect a component or relationship. With the diagram focused, use plus and minus to zoom, arrow keys to pan, and 0 to fit.`;
     $('graph-count').textContent = `${graph.nodes.length} components · ${graph.edges.length} relationships`;
@@ -2286,7 +2413,11 @@ export function startViewer() {
     const body = $('inspector-body');
     const graph = currentGraph();
     const selected = state.selection;
-    const claim = selected && graph ? (selected.type === 'node' ? graph.nodes : graph.edges).find(item => item.id === selected.id) : null;
+    let claim = selected && graph ? (selected.type === 'node' ? graph.nodes : graph.edges).find(item => item.id === selected.id) : null;
+    if (!claim && state.platformActive && selected?.type === 'node') {
+      const entity = state.model.entities.find(entity => entity.id === selected.id);
+      if (entity) claim = sceneGraph({ groups: [], edges: [], nodes: [{ id: entity.id, entityId: entity.id, label: entity.label, kind: entity.kind }] }, state.model).nodes[0];
+    }
     const linkedIds = new Set(claim?.sourceRefs.map(ref => ref.eventId) || []);
     const related = state.snapshot?.activity.filter(event => linkedIds.has(event.id)).slice(-5).reverse() || [];
     const override = selected?.type === 'node' ? state.view?.shapes.get(selected.id) : undefined;
@@ -2315,7 +2446,7 @@ export function startViewer() {
     fact(facts, 'Classification', upperFirst(claim.classification));
     fact(facts, 'Validity', upperFirst(claim.validity));
     fact(facts, 'Evidence state', claim.evidenceState === 'verified' ? 'Verification reported; scope unavailable' : upperFirst(claim.evidenceState));
-    fact(facts, 'Basis', claim.sourceRefs.length && claim.sourceRefs.every(ref => ref.basis === 'jev_interpretation') ? 'Jev code interpretation' : 'Provenance incomplete');
+    fact(facts, 'Basis', claim.basis ? upperFirst(claim.basis) : claim.sourceRefs.length && claim.sourceRefs.every(ref => ref.basis === 'jev_interpretation') ? 'Jev code interpretation' : 'Provenance incomplete');
     fact(facts, 'Runtime', 'Not established by this snapshot');
     if (selected.type === 'node') fact(facts, 'Activity', upperFirst(claim.activityState));
     else {
@@ -2323,6 +2454,14 @@ export function startViewer() {
       fact(facts, 'To', graph.nodes.find(node => node.id === claim.target)?.label || 'Unknown component');
     }
     body.replaceChildren(type, html('h3', claim.label), badges, html('p', summary.explanation), facts);
+    if (state.platformActive && selected.type === 'node') {
+      fact(facts, 'Change', readable(claim.style || 'No comparison'));
+      if (claim.memberCount) fact(facts, 'Members', String(claim.memberCount));
+      const openScope = html('button', 'Open source scope');
+      openScope.setAttribute('type', 'button');
+      openScope.addEventListener('click', () => platform.scope(claim.entityId || claim.id));
+      body.append(openScope);
+    } else if (claim.relationIds?.length) fact(facts, 'Supporting relations', claim.relationIds.join(', '));
     if (selected.type === 'node') {
       const label = html('label', 'Shape · visual only', 'shape-picker');
       label.setAttribute('for', 'display-shape');
@@ -2356,36 +2495,38 @@ export function startViewer() {
         announce(`Display shape changed. ${claim.label} remains classified as ${claim.kind}.`);
       });
     }
-    const confidence = normalizeConfidence(claim.confidence);
-    body.append(html('h4', 'Classifier confidence'));
-    const confidenceList = html('ul', undefined, 'confidence-list');
-    const confidenceLabels = {
-      supportProbability: 'Evidence support probability',
-      roleProbability: 'Selected role probability',
-      roleConfidence: 'Role distribution confidence',
-      missingContextProbability: 'Missing-context probability',
-      reportedConfidence: 'Reported classifier confidence',
-    };
-    for (const key of Object.keys(confidenceLabels)) {
-      if (!probability(confidence[key])) continue;
-      const item = html('li');
-      item.append(html('span', confidenceLabels[key]), html('strong', `${(confidence[key] * 100).toFixed(1)}%`));
-      confidenceList.append(item);
-    }
-    if (confidenceList.childElementCount) body.append(confidenceList);
-    else body.append(html('p', 'Confidence was not supplied for this claim.', 'fine-print'));
-    body.append(html('p', 'These values describe the classifier’s interpretation. They are not measured accuracy or the probability that a runtime connection succeeds.', 'fine-print'));
-    if (record(confidence.roleProbabilities)) {
-      const details = html('details');
-      details.append(html('summary', 'Role probabilities'));
-      const list = html('ul', undefined, 'confidence-list');
-      for (const [role, value] of Object.entries(confidence.roleProbabilities)) {
-        const row = html('li');
-        row.append(html('span', upperFirst(role)), html('strong', `${(value * 100).toFixed(1)}%`));
-        list.append(row);
+    if (!['parsed', 'metadata', 'lexical'].includes(claim.basis)) {
+      const confidence = normalizeConfidence(claim.confidence);
+      body.append(html('h4', 'Classifier confidence'));
+      const confidenceList = html('ul', undefined, 'confidence-list');
+      const confidenceLabels = {
+        supportProbability: 'Evidence support probability',
+        roleProbability: 'Selected role probability',
+        roleConfidence: 'Role distribution confidence',
+        missingContextProbability: 'Missing-context probability',
+        reportedConfidence: 'Reported classifier confidence',
+      };
+      for (const key of Object.keys(confidenceLabels)) {
+        if (!probability(confidence[key])) continue;
+        const item = html('li');
+        item.append(html('span', confidenceLabels[key]), html('strong', `${(confidence[key] * 100).toFixed(1)}%`));
+        confidenceList.append(item);
       }
-      details.append(list);
-      body.append(details);
+      if (confidenceList.childElementCount) body.append(confidenceList);
+      else body.append(html('p', 'Confidence was not supplied for this claim.', 'fine-print'));
+      body.append(html('p', 'These values describe the classifier’s interpretation. They are not measured accuracy or the probability that a runtime connection succeeds.', 'fine-print'));
+      if (record(confidence.roleProbabilities)) {
+        const details = html('details');
+        details.append(html('summary', 'Role probabilities'));
+        const list = html('ul', undefined, 'confidence-list');
+        for (const [role, value] of Object.entries(confidence.roleProbabilities)) {
+          const row = html('li');
+          row.append(html('span', upperFirst(role)), html('strong', `${(value * 100).toFixed(1)}%`));
+          list.append(row);
+        }
+        details.append(list);
+        body.append(details);
+      }
     }
     body.append(html('h4', `Source references (${claim.sourceRefs.length})`));
     if (!claim.sourceRefs.length) body.append(html('p', 'No source references were supplied. This claim’s provenance cannot be inspected.', 'fine-print'));
@@ -2393,8 +2534,8 @@ export function startViewer() {
     for (const ref of claim.sourceRefs) {
       const item = html('li', undefined, 'source-reference');
       item.append(
-        html('strong', ref.sourceClass === 'public_intent' ? 'Public intent' : ref.sourceClass === 'source' ? 'Source artifact' : 'Unknown source class'),
-        html('span', ref.basis === 'jev_interpretation' ? 'Basis: Jev interpretation' : 'Basis not supplied'),
+        html('strong', ref.sourceClass === 'public_intent' ? 'Public intent' : ref.sourceClass === 'source' || (claim.basis === 'parsed' && ref.artifactId) ? 'Source artifact' : 'Unknown source class'),
+        html('span', claim.basis ? `Basis: ${upperFirst(claim.basis)}` : ref.basis === 'jev_interpretation' ? 'Basis: Jev interpretation' : 'Basis not supplied'),
         html('span', `${ref.sourceClass === 'public_intent' ? 'Message' : 'Artifact'}: ${ref.sourceRef?.messageId || ref.artifactId || 'not supplied'}`),
         html('span', `Version: ${ref.hash || 'not supplied'} · ${ref.sourceClass === 'public_intent' ? 'content version' : 'generation'} ${ref.sourceRef?.contentVersion ?? ref.generation}`),
       );
@@ -2427,6 +2568,16 @@ export function startViewer() {
     }
   }
   function renderHistory() {
+    if (state.platformActive) {
+      const replay = Boolean(platform.selection.checkpoint);
+      $('live').setAttribute('aria-pressed', String(!replay));
+      $('replay').setAttribute('aria-pressed', String(replay));
+      $('history-position').textContent = `Rev. ${state.model.revision}`;
+      $('replay-note').textContent = replay ? 'Recorded checkpoint. Choose Live to return to current observations.'
+        : 'Use Position to inspect a retained model checkpoint.';
+      $('activity-note').textContent = 'This panel shows live capture. The timeline follows the selected model position.';
+      return;
+    }
     const replay = Boolean(state.replayFrame);
     const frameIndex = replay ? state.frames.findIndex(frame => frame.revision === state.replayFrame.revision) : state.frames.length - 1;
     $('live').setAttribute('aria-pressed', String(!replay));
@@ -2572,6 +2723,7 @@ export function startViewer() {
         connection('reconnecting');
         error('The live connection was lost. Displaying the last received snapshot while the viewer reconnects.');
       });
+      void platform.start();
       void dashboardInfo.refresh();
       // Optional authenticated metadata must not hold up the event stream or
       // turn an older server's missing endpoint into a connection failure.
@@ -2681,6 +2833,7 @@ export function startViewer() {
   $('history-toggle').addEventListener('click', onToggleHistory);
   $('activity-toggle').addEventListener('click', onToggleActivity);
   const applyFilters = () => {
+    if (state.platformActive) { platform.filter(state.searchQuery, state.nodeTypes); return; }
     // Filtering is not a source change: cancel existing decoration/movement
     // and render directly, without changing the snapshot arrival baseline.
     finishPan();
@@ -2691,6 +2844,7 @@ export function startViewer() {
   const onSearchInput = () => {
     if (state.closed || state.searchQuery === $('diagram-search').value) return;
     state.searchQuery = $('diagram-search').value;
+    if (state.platformActive) { platform.filter(state.searchQuery, state.nodeTypes); return; }
     applyFilters();
   };
   const onNodeTypeClick = event => {
@@ -2702,7 +2856,7 @@ export function startViewer() {
     if (!kind || !state.nodeTypeButtons.has(kind)) return;
     // null means all, including future kinds. Explicit selections retain their
     // choices when a kind disappears and returns; new kinds stay unselected.
-    if (state.nodeTypes === null) state.nodeTypes = new Set(currentGraph().nodes.map(node => node.kind));
+    if (state.nodeTypes === null) state.nodeTypes = new Set((state.platformActive ? state.model.entities : currentGraph().nodes).map(node => node.kind));
     if (state.nodeTypes.has(kind)) state.nodeTypes.delete(kind);
     else state.nodeTypes.add(kind);
     applyFilters();
@@ -2742,9 +2896,10 @@ export function startViewer() {
   $('node-types-none')?.addEventListener('click', onNoNodeTypes);
   window.addEventListener('keydown', onSearchKeyDown);
   $('pause').addEventListener('click', () => control(state.snapshot?.paused ? 'resume' : 'pause'));
-  $('session').addEventListener('change', () => control('session', $('session').value));
+  $('session').addEventListener('change', () => state.platformActive ? platform.session($('session').value) : control('session', $('session').value));
   $('export').addEventListener('click', exportJSON);
   $('live').addEventListener('click', () => {
+    if (state.platformActive) { platform.live(); return; }
     resetMotionBaseline();
     state.replayFrame = null;
     if (state.snapshot) render();
@@ -2850,7 +3005,7 @@ export function startViewer() {
   $('architecture').addEventListener('pointerup', finishPan);
   $('architecture').addEventListener('pointercancel', finishPan);
   $('architecture').addEventListener('lostpointercapture', finishPan);
-  const onPageHide = () => { connectionDialog.close(); diagnosticsDialog.close(); resetMotionBaseline(); state.stream?.close(); state.stream = null; };
+  const onPageHide = () => { connectionDialog.close(); diagnosticsDialog.close(); platform.suspend(); resetMotionBaseline(); state.stream?.close(); state.stream = null; };
   const onPageShow = event => { if (!state.closed && event.persisted) connect(); };
   const onOnline = () => { if (!state.closed && state.connection !== 'connected') connect(); };
   const onVisibility = () => resetMotionBaseline();
@@ -2879,6 +3034,7 @@ export function startViewer() {
     ready: connect(),
     close() {
       state.closed = true;
+      platform.close();
       projectController?.abort();
       projectController = null;
       dashboardInfo.close();

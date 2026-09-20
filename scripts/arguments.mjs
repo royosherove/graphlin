@@ -21,8 +21,12 @@ export function parseArguments(args, { worker = false } = {}) {
       const value = args.shift();
       if (!/^\d{1,5}$/.test(value ?? '') || Number(value) > 65535) throw new Error('invalid_port');
       values.port = Number(value);
+    } else if (argument === '--local-source') {
+      if (seen.has('--allow-source') || seen.has('--no-source')) throw new Error('conflicting_arguments');
+      values.allowSource = false;
+      values.localSource = true;
     } else if (argument === '--allow-source' || argument === '--no-source' && !worker) {
-      if (seen.has(argument === '--allow-source' ? '--no-source' : '--allow-source')) throw new Error('conflicting_arguments');
+      if (seen.has('--local-source') || seen.has(argument === '--allow-source' ? '--no-source' : '--allow-source')) throw new Error('conflicting_arguments');
       values.allowSource = argument === '--allow-source';
     }
     else if (argument === '--persist-evidence') values.persistEvidence = true;

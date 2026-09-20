@@ -1,16 +1,24 @@
 import http from 'node:http';
 import net from 'node:net';
+import path from 'node:path';
 import { readFile, chmod, rm } from 'node:fs/promises';
 import { createPipeline } from '../pipeline.mjs';
 import { createPolicy, materializeBundle, buildRelationProposals } from '../core/index.mjs';
-import { createDecisionService } from '../jev/index.mjs';
+import { createDecisionService } from '../decisions/index.mjs';
+import { createJevProvider } from '../jev/provider.mjs';
+import { createAnalysisBroker } from '../decisions/broker.mjs';
 import { projectPaths, canonicalProjectRoot, MAX_IPC_BYTES, MAX_STATE_BYTES, PROTOCOL, runtimeError } from './paths.mjs';
 import { acquireLock } from './lock.mjs';
 import { createAuth } from './auth.mjs';
 import { createPersistence } from './persistence.mjs';
+import { createModelPersistence } from './model-persistence.mjs';
+import { createModelAPI } from './model-api.mjs';
+import { createExtensionAPI } from './extension-api.mjs';
+import { createExtensionRegistry } from '../extensions/index.mjs';
 import { exportSnapshot } from './export.mjs';
 import { createDiagnostics } from './diagnostics.mjs';
 import { createDashboardInfoProvider } from './dashboard-info.mjs';
+import { createLineageReader } from './lineage.mjs';
 
 const WEB = new URL('../web/', import.meta.url);
 const assets = new Map([
@@ -21,8 +29,17 @@ const assets = new Map([
   ['/sketch.js', ['sketch.js', 'text/javascript; charset=utf-8']],
   ['/style.css', ['style.css', 'text/css; charset=utf-8']],
 ]);
+for (const filename of ['platform.js', 'model-client.js', 'scene.js', 'extension-frame.js']) {
+  assets.set(`/${filename}`, [filename, 'text/javascript; charset=utf-8']);
+}
+for (const filename of [
+  'visualizers/index.mjs', 'visualizers/structure.mjs', 'visualizers/code.mjs',
+  'visualizers/blocks.mjs', 'visualizers/c4.mjs', 'visualizers/changes.mjs', 'visualizers/timeline.mjs',
+  'model/changes.mjs', 'extensions/scene.mjs', 'extensions/contracts.mjs',
+  'extensions/sdk.mjs', 'extensions/profiles.mjs',
+]) assets.set(`/${filename}`, [`../${filename}`, 'text/javascript; charset=utf-8']);
 const HOSTS = new Set(['claude', 'codex', 'kiro']);
-const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
+const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
 
 function headers(res) {
   res.setHeader('Cache-Control', 'no-store');
@@ -53,25 +70,27 @@ async function bodyJSON(req) {
 }
 
 export async function startServer({ projectRoot, dataDir, policy: policyOptions,
-  decisionService, apiKey: configuredKey, mode = 'live', port = 0, dashboardInfoDependencies } = {}) {
+  decisionService, decisionProvider, apiKey: configuredKey, mode = 'live', port = 0, dashboardInfoDependencies } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw runtimeError('invalid_port');
   if (!['live', 'demo'].includes(mode)) throw runtimeError('invalid_mode');
   const paths = await projectPaths(projectRoot, dataDir, { create: true });
+  const readLineage = createLineageReader({ projectRoot: paths.projectRoot, projectId: paths.projectId });
   const dashboardInfo = createDashboardInfoProvider({
     projectRoot: paths.projectRoot, dataDir: paths.dataDir, mode,
   }, dashboardInfoDependencies);
   const lock = await acquireLock(paths);
   let finished;
   const whenClosed = new Promise(resolve => { finished = resolve; });
-  let web, ipc, pipeline, auth, diagnostics, interval, ping, closing, reconciling = false;
+  let web, ipc, pipeline, auth, diagnostics, modelAPI, extensionAPI, modelFlush, interval, ping, closing, reconciling = false;
   let drops = 0, intake = 0;
   const receivedHooks = { claude: 0, codex: 0, kiro: 0 };
   const clients = new Set(), connections = new Set(), ipcConnections = new Set();
   const persistence = createPersistence(paths.state);
+  const modelPersistence = createModelPersistence(path.join(paths.directory, 'model-state.json'), { projectId: paths.projectId });
   const policy = createPolicy(policyOptions ?? {});
-  const apiKey = !decisionService && policy.transmitSource && mode === 'live'
+  const apiKey = !decisionService && !decisionProvider && policy.transmitSource && mode === 'live'
     ? configuredKey ?? process.env.TYPESAFE_API_KEY : undefined;
-  const missingKey = !decisionService && policy.transmitSource && mode === 'live' && !apiKey;
+  const missingKey = !decisionService && !decisionProvider && policy.transmitSource && mode === 'live' && !apiKey;
   function snapshot(persistent = false) {
     const state = pipeline.getState({ persistent });
     return { ...state, status: { ...state.status,
@@ -88,13 +107,25 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
   function notify() {
     if (!pipeline || closing) return;
     persistence.schedule(snapshot(true));
+    if (!modelFlush) {
+      // Coalesce model serialization outside the hook intake path.
+      modelFlush = setTimeout(() => {
+        modelFlush = null;
+        if (!closing) modelPersistence.schedule(pipeline.getModelState({ persistent: true }));
+      }, 100);
+      modelFlush.unref?.();
+    }
+    modelAPI?.notify();
     const state = snapshot();
     for (const res of clients) stream(res, state);
   }
   async function reconcile() {
     if (reconciling || closing || !pipeline) return;
     reconciling = true;
-    try { await pipeline.reconcile(); }
+    try {
+      await pipeline.observeLineage(await readLineage());
+      await pipeline.reconcile();
+    }
     catch { drops++; }
     finally { reconciling = false; }
   }
@@ -102,6 +133,8 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
     if (closing) return closing;
     closing = (async () => {
       clearInterval(interval); clearInterval(ping);
+      clearTimeout(modelFlush);
+      modelAPI?.close();
       auth?.clear();
       for (const res of clients) res.end();
       for (const socket of [...connections, ...ipcConnections]) socket.destroy();
@@ -109,8 +142,11 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
         new Promise(resolve => server.close(() => resolve()))));
       try {
         await pipeline?.close();
-        if (pipeline) persistence.schedule(snapshot(true));
-        await persistence.close();
+        if (pipeline) {
+          persistence.schedule(snapshot(true));
+          modelPersistence.schedule(pipeline.getModelState({ persistent: true }));
+        }
+        await Promise.all([persistence.close(), modelPersistence.close()]);
       } finally {
         try { await diagnostics?.close(); }
         finally {
@@ -127,19 +163,40 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
     // Reading the key is conditional on explicit source-transmission permission.
     // Test/demo services are injected; this module never logs request bodies.
     const service = decisionService ?? createDecisionService({
-      apiKey,
+      provider: decisionProvider ?? createJevProvider({ apiKey }),
       materializeBundle, buildRelationProposals,
       limits: { eventDeadlineMs: 5000 },
     });
     pipeline = createPipeline({ projectRoot: paths.projectRoot, policy, decisionService: service,
       classificationDeadlineMs: 5000,
-      mode, restoredState: await persistence.load(), onChange: notify, onDiagnostic: diagnostics.record });
+      mode, restoredState: await persistence.load(), restoredModel: await modelPersistence.load(),
+      onChange: notify, onDiagnostic: diagnostics.record });
+    modelAPI = createModelAPI({ projectId: paths.projectId, getSnapshot: pipeline.getModelState,
+      createCheckpoint: options => {
+        const marker = pipeline.createCheckpoint(options);
+        notify();
+        return marker;
+      } });
+    const registry = await createExtensionRegistry({ dataDir: paths.dataDir, projectId: paths.projectId });
+    const analyze = typeof service.evaluate === 'function'
+      ? createAnalysisBroker({ service, model: pipeline.model, policy, projectId: paths.projectId, registry })
+      : async () => ({ status: 'unavailable' });
+    extensionAPI = createExtensionAPI({ registry, projectId: paths.projectId, getSnapshot: pipeline.getModelState,
+      runAnalysis: async input => { const result = await analyze(input); notify(); return result; } });
     web = http.createServer({ maxHeaderSize: 8192, requestTimeout: 2000, headersTimeout: 2000 }, (req, res) => {
       headers(res);
       void (async () => {
+        if (req.url?.startsWith('/api/model/v1/')) {
+          if (!auth?.validTransport(req)) return json(res, 403, { error: 'forbidden_origin' });
+          await modelAPI.handle(req, res, {
+            viewerAuthorized: auth.validRequest(req, { mutation: req.method !== 'GET' }) && auth.authorized(req),
+          });
+          return;
+        }
         if (!auth || !auth.validRequest(req, { mutation: req.method !== 'GET' })) {
           return json(res, 403, { error: 'forbidden_origin' });
         }
+        if (await extensionAPI.handle(req, res, { viewerAuthorized: auth.authorized(req) })) return;
         if (typeof req.url !== 'string' || req.url.length > 1024 || req.url.includes('?')) {
           return json(res, 400, { error: 'invalid_route' });
         }
@@ -218,10 +275,11 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
     function describe() {
       return { ok: true, protocol: PROTOCOL, instanceId: lock.owner.instanceId,
         projectId: paths.projectId, pid: process.pid, port: actualPort, mode,
-        policy: { transmitSource: policy.transmitSource, displayEvidence: policy.displayEvidence,
+        policy: { readSource: policy.readSource, transmitSource: policy.transmitSource, displayEvidence: policy.displayEvidence,
           persistEvidence: policy.persistEvidence, version: policy.version },
         status: snapshot().status, ...persistence.stats(), captureDropped: drops,
         observations: { hooks: { ...receivedHooks }, shapes: pipeline.getState().graph.nodes.length },
+        model: pipeline.model.stats(), modelPersistence: modelPersistence.stats(),
         logPath: diagnostics.stats().logPath, diagnostics: diagnostics.stats() };
     }
     // Only the exclusive owner may remove a stale socket from a prior process.

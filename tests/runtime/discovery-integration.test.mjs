@@ -61,8 +61,10 @@ async function fixture(t, policy = { transmitSource: true }) {
       body: JSON.stringify({ action: 'session', sessionId: added[0].id }),
     });
     assert.equal(response.status, 200);
-    assert.deepEqual((await get('/api/state')).graph.nodes, [],
-      'the initial scan and SessionStart cannot reach the deep fixture');
+    const initial = (await get('/api/state')).graph.nodes;
+    assert.equal(initial.length, policy.transmitSource ? 1 : 0,
+      'authorized source-first discovery is independent of tool stdout');
+    assert.ok(initial.every(node => node.sourceRefs.length && node.evidenceState === 'observed'));
     return added[0].id;
   }
   // startServer has already reconciled before returning. Explicitly wait for
@@ -124,7 +126,8 @@ test('real discovery hooks populate fresh sessions through IPC, offline two-stag
     assert.ok(records.some(record => record.stage === 'apply' && record.patch?.nodesAdded === 1));
     assert.ok(records.some(record => record.stage === 'capture' &&
       record.artifacts.some(artifact => artifact.path === relativeFile &&
-        artifact.reason === (index ? 'artifact_unchanged' : 'artifact_changed'))));
+        artifact.reason === 'artifact_unchanged')),
+    'source-first inventory already observed this version before the hook');
     assert.doesNotMatch(JSON.stringify(diagnostics), forbiddenLogText);
     assert.equal(JSON.stringify(diagnostics).includes(app.token), false);
     assert.equal(JSON.stringify(diagnostics).includes(app.cookie.split('=')[1]), false);
@@ -140,28 +143,36 @@ test('real discovery hooks populate fresh sessions through IPC, offline two-stag
   assert.equal(persisted.includes(relativeFile), false, 'source names remain private in persisted diagnostics');
 });
 
-test('the same hook stack withholds discovery for private policy and failed stdout', async t => {
+test('private policy withholds source and failed stdout adds nothing to authorized inventory', async t => {
   for (const transmitSource of [false, true]) {
     await t.test(transmitSource ? 'failed listing' : 'metadata-only policy', async t => {
       const app = await fixture(t, { transmitSource });
       const session_id = 'withheld-discovery', sessionId = await app.session(session_id);
+      const baseline = await app.get('/api/state');
+      const callsBefore = app.service.stats().calls;
       await app.hook({
         hook_event_name: 'PostToolUse', session_id, tool_use_id: 'withheld-listing', tool_name: 'Bash',
         tool_input: { command, description: 'COMMAND_DESCRIPTION_SENTINEL' },
         tool_response: { stdout, stderr: '', exit_code: transmitSource ? 1 : 0 },
       });
       const snapshot = await app.get('/api/state');
-      assert.deepEqual(snapshot.graph.nodes, []);
-      assert.equal(app.service.stats().calls, 0);
+      assert.deepEqual(snapshot.graph.nodes, baseline.graph.nodes);
+      assert.equal(app.service.stats().calls, callsBefore);
+      if (!transmitSource) {
+        assert.deepEqual(snapshot.graph.nodes, []);
+        assert.equal(callsBefore, 0);
+      }
       assert.ok(snapshot.activity.some(event =>
         event.kind === (transmitSource ? 'tool.failed' : 'tool.succeeded')));
       const diagnostics = await app.get('/api/diagnostics');
-      const records = diagnostics.records.filter(record => record.sessionId === sessionId);
+      const records = diagnostics.records.filter(record => record.sessionId === sessionId &&
+        record.eventKind === (transmitSource ? 'tool.failed' : 'tool.succeeded'));
       assert.ok(records.some(record => record.stage === 'capture'));
       assert.equal(records.some(record => record.stage === 'classification'), false);
       assert.doesNotMatch(JSON.stringify(diagnostics), forbiddenLogText);
-      assert.equal(JSON.stringify(diagnostics).includes(relativeFile), false);
-      assert.doesNotMatch(JSON.stringify(snapshot), /discoverDeepCache|returnedContentPhantom|STDOUT_TEXT_SENTINEL/);
+      assert.equal(JSON.stringify(records).includes(relativeFile), false,
+        'failed stdout contributes no discovered paths; authorized inventory is independent');
+      assert.doesNotMatch(JSON.stringify(snapshot), /returnedContentPhantom|STDOUT_TEXT_SENTINEL/);
     });
   }
 });

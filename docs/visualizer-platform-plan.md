@@ -1,6 +1,6 @@
 # Graphlin visualizer platform: implementation and orchestration plan
 
-Status: reviewed implementation plan; ready for M0. Implementation has not started.
+Status: M0–M5 implemented; integration review and release verification in progress.
 
 Date: 20 September 2026. Baseline: Graphlin 0.1.3, commit `2b398df`.
 
@@ -27,8 +27,16 @@ workers receive disjoint file ownership and acceptance IDs from this plan.
 
 The central design changes are a source-first model with visible coverage,
 separate visible-scene budgets, stable identities across sessions and views,
-core-owned Jev decisions, and explicitly granted extension access. The plan has
-40 acceptance scenarios; no production code changes are part of this document.
+core-owned decisions, and explicitly granted extension access. The plan has
+40 acceptance scenarios. The implementation contracts are documented in
+[decision-service.md](decision-service.md), [model-api.md](model-api.md),
+[extension-authoring.md](extension-authoring.md), and
+[visualizer-views.md](visualizer-views.md).
+
+The approved scope includes every milestone. The decision service is provider
+independent: Jev supplies the initial adapter. Providers return validated typed
+answers; the core owns source consent, filtering, budgets, caching, evidence
+freshness, and interpretation admission. Extensions never receive provider keys.
 
 ## 1. Outcome and scope
 

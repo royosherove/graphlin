@@ -36,6 +36,7 @@ async function harness({ initial = empty(), info = async () => connectionInfo(),
   globalThis.fetch = async (url, options) => {
     requests.push({ url, ...options });
     if (url === '/api/about') return new Response('{}', { status: 404 });
+    if (url === '/api/model/v1/snapshot') return new Response('{}', { status: 404 });
     if (url === '/api/auth') return new Response('{"ok":true}');
     if (url === '/api/connection-info') return new Response(JSON.stringify(await info(options)));
     if (url === '/api/diagnostics') return new Response('{"schemaVersion":1,"records":[]}');
@@ -126,7 +127,7 @@ test('startup authenticates before loading the friendly project name and preserv
   }) });
   try {
     await h.ready();
-    assert.deepEqual(h.requests.map(item => item.url), ['/api/auth', '/api/state', '/api/connection-info', '/api/about']);
+    assert.deepEqual(h.requests.map(item => item.url), ['/api/auth', '/api/state', '/api/model/v1/snapshot', '/api/connection-info', '/api/about']);
     const request = h.requests.at(-1);
     assert.equal(request.method, 'GET');
     assert.equal(request.credentials, 'same-origin');

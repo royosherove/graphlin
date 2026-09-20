@@ -33,9 +33,10 @@ function validateRuntime() {
 }
 
 function validateExisting(current, options) {
-  const { allowSource, persistEvidence, displayEvidence } = resolvePolicy(options, { current: current.policy });
+  const { allowSource, localSource, persistEvidence, displayEvidence } = resolvePolicy(options, { current: current.policy });
   const { mode = 'live', port = 0 } = options;
   if (current.mode !== mode || current.policy.transmitSource !== Boolean(allowSource) ||
+      current.policy.readSource !== Boolean(allowSource || localSource) ||
       current.policy.persistEvidence !== Boolean(persistEvidence) ||
       current.policy.displayEvidence !== Boolean(displayEvidence)) throw runtimeError('policy_restart_required');
   if (port && port !== current.port) throw runtimeError('port_restart_required');
@@ -90,11 +91,11 @@ async function stopInstance(paths, instanceId) {
  * instance closes or the caller aborts. Abort never stops a replacement owner.
  */
 export async function runForeground({ projectRoot, dataDir = defaultDataDir(), signal,
-  allowSource, persistEvidence, displayEvidence, mode = 'live', port = 0 } = {}, onReady = () => {}) {
+  allowSource, localSource, persistEvidence, displayEvidence, mode = 'live', port = 0 } = {}, onReady = () => {}) {
   validateRuntime();
   if (signal?.aborted) return;
   const paths = await projectPaths(projectRoot, dataDir);
-  const options = { allowSource, persistEvidence, displayEvidence, mode, port };
+  const options = { allowSource, localSource, persistEvidence, displayEvidence, mode, port };
   let server, launch, interrupted;
   const interruption = new Promise(resolve => { interrupted = resolve; });
   const interrupt = () => interrupted();
@@ -110,7 +111,8 @@ export async function runForeground({ projectRoot, dataDir = defaultDataDir(), s
       const demo = mode === 'demo' ? await import('./demo.mjs') : null;
       try {
         server = await startServer({ projectRoot: paths.projectRoot, dataDir: paths.dataDir, mode, port,
-          policy: { transmitSource: policy.allowSource, persistEvidence: policy.persistEvidence,
+          policy: { readSource: Boolean(policy.localSource || policy.allowSource),
+            transmitSource: policy.allowSource, persistEvidence: policy.persistEvidence,
             displayEvidence: policy.displayEvidence },
           apiKey: policy.allowSource ? process.env.TYPESAFE_API_KEY ?? settings.apiKey : undefined,
           decisionService: demo?.demoDecisionService() });
@@ -155,11 +157,11 @@ export async function runForeground({ projectRoot, dataDir = defaultDataDir(), s
 // Detached operation is reserved for an explicit CLI --background request or
 // MCP. The normal interactive CLI uses runForeground instead.
 export async function startDaemon({ projectRoot, dataDir = defaultDataDir(), background = true,
-  allowSource, persistEvidence, displayEvidence, mode = 'live', port = 0 } = {}) {
+  allowSource, localSource, persistEvidence, displayEvidence, mode = 'live', port = 0 } = {}) {
   validateRuntime();
   if (background !== true) throw runtimeError('background_required');
   const paths = await projectPaths(projectRoot, dataDir);
-  const options = { allowSource, persistEvidence, displayEvidence, mode, port };
+  const options = { allowSource, localSource, persistEvidence, displayEvidence, mode, port };
   const existing = await daemonStatus({ projectRoot: paths.projectRoot, dataDir: paths.dataDir });
   if (existing.running) return { ...await existingLaunch(paths, existing, options), foreground: false };
   const settings = mode === 'demo' ? {} : await readSettings(paths);
@@ -167,6 +169,7 @@ export async function startDaemon({ projectRoot, dataDir = defaultDataDir(), bac
   await projectPaths(projectRoot, dataDir, { create: true });
   const args = [worker, '--project', paths.projectRoot, '--data-dir', paths.dataDir, '--mode', mode, '--port', String(port)];
   if (policy.allowSource) args.push('--allow-source');
+  else if (policy.localSource) args.push('--local-source');
   if (policy.persistEvidence) args.push('--persist-evidence');
   if (!policy.displayEvidence) args.push('--no-display-evidence');
   const env = { ...process.env };

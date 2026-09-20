@@ -4,11 +4,12 @@ import { parseArguments } from './arguments.mjs';
 import { initOnboarding, uninstallOnboarding, needsOnboarding, openViewer, agentInstructions } from './onboarding.mjs';
 import { readSettings } from '../runtime/daemon/settings.mjs';
 import { projectPaths } from '../runtime/daemon/paths.mjs';
+import { runExtensions } from './extensions.mjs';
 
 const HELP = `Graphlin — local architecture and activity viewer (Node.js 22.14+, macOS/Linux).
   graphlin                           Guided setup if needed, then foreground start
-  init [--host claude|codex|both] [--allow-source|--no-source] [--replace-key]
-  start --project PATH [--allow-source|--no-source] [--persist-evidence] [--no-display-evidence] [--background] [--no-open]
+  init [--host claude|codex|both] [--allow-source|--local-source|--no-source] [--replace-key]
+  start --project PATH [--allow-source|--local-source|--no-source] [--persist-evidence] [--no-display-evidence] [--background] [--no-open]
   open --project PATH                Open/reopen the viewer; start detached if needed
   uninstall [--host claude|codex|both]
   stop --project PATH
@@ -17,10 +18,16 @@ const HELP = `Graphlin — local architecture and activity viewer (Node.js 22.14
   demo [--data-dir PATH] [--background]
   export --project PATH
   logs --project PATH [--file PATH]
+  extensions list                    List installed visualizers and approvals
+  extensions add PACKAGE@VERSION     Install without running package scripts
+  extensions dev ./DIRECTORY         Install a local development snapshot
+  extensions update PACKAGE@VERSION  Replace an installed visualizer
+  extensions remove ID
+  extensions doctor
 All commands accept --project PATH and --data-dir PATH (or GRAPHLIN_DATA_DIR).
 init installs for your user account using the host CLIs; it saves project consent
 and offers a masked key prompt only in a terminal. Non-interactive init requires
---host and --allow-source or --no-source; source also needs a saved/environment key.
+--host and one source mode; remote source also needs a saved/environment key.
 init --replace-key replaces a saved key at the masked prompt; it requires a terminal.
 uninstall removes only Graphlin host plugins for all projects, retaining keys,
 history, packages and marketplace registrations; it resets current project consent.
@@ -31,6 +38,10 @@ Omitted policy flags reuse current/saved consent. Without consent: metadata only
 --no-source explicitly opts out; --allow-source permits sanitized source/public
 intent to TypeSafe using TYPESAFE_API_KEY or the privately saved key. Approved evidence
 is displayed by default; excerpts are persisted only with --persist-evidence.
+--local-source parses supported source on this machine, without remote decisions.
+Metadata mode inventories paths without opening source files. Visualizers require
+project approval in the viewer before receiving data; custom renderers run in a
+sandboxed frame. Install or mount does not run decision profiles.
 Credentials, environment files, excluded paths, binary and oversized files are
 filtered locally. Replay history is bounded to 7 days; an expired stopped-daemon
 snapshot is deleted on the next startup. Current snapshots are private and bounded.
@@ -47,6 +58,15 @@ artifact identity, including files since deleted.
 try {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args[0] === 'help') process.stdout.write(HELP);
+  else if (args[0] === 'extensions') {
+    const globalArgs = [], extensionArgs = [];
+    for (let index = 1; index < args.length; index++) {
+      if (['--project', '--data-dir'].includes(args[index])) globalArgs.push(args[index], args[++index]);
+      else extensionArgs.push(args[index]);
+    }
+    const { projectRoot, dataDir } = parseArguments(['status', ...globalArgs]);
+    await runExtensions(extensionArgs, { projectRoot, dataDir });
+  }
   else {
     const options = parseArguments(args);
     const print = result => process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

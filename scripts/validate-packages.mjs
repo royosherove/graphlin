@@ -4,6 +4,51 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
+const PARSER_NAME = '@vscode/tree-sitter-wasm';
+const PARSER_VERSION = '0.3.1';
+// The complete published 0.3.1 package, not a pruned grammar subset. Keep this
+// explicit: arbitrary new files under node_modules must never enter a release.
+const PARSER_FILES = [
+  'LICENSE', 'README.md', 'SECURITY.md', 'cgmanifest.json', 'package.json',
+  'wasm/tree-sitter.js', 'wasm/tree-sitter.wasm', 'wasm/web-tree-sitter.d.ts',
+  ...['bash', 'c-sharp', 'cpp', 'css', 'go', 'ini', 'java', 'javascript', 'php',
+    'powershell', 'python', 'regex', 'ruby', 'rust', 'tsx', 'typescript']
+    .map(language => `wasm/tree-sitter-${language}.wasm`),
+];
+const SDK_EXPORTS = {
+  './extensions/sdk': {
+    types: './runtime/extensions/sdk.d.ts',
+    import: './runtime/extensions/sdk.mjs',
+    default: './runtime/extensions/sdk.mjs',
+  },
+  './extensions/scene': './runtime/extensions/scene.mjs',
+};
+
+async function assertRegularFile(root, file) {
+  let current = root;
+  for (const component of file.split('/')) {
+    current = path.join(current, component);
+    assert.equal((await lstat(current)).isSymbolicLink(), false, 'package_symlink_rejected');
+  }
+  assert.ok((await lstat(current)).isFile(), 'package_file_must_be_regular');
+}
+
+export async function bundledPackageFiles(root, metadata) {
+  metadata ??= JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+  assert.deepEqual(metadata.bundledDependencies, [PARSER_NAME], 'parser_bundle_required');
+  assert.equal(metadata.dependencies?.[PARSER_NAME], PARSER_VERSION, 'parser_dependency_must_be_pinned');
+  const base = `node_modules/${PARSER_NAME}`;
+  await assertRegularFile(root, `${base}/package.json`);
+  const parser = JSON.parse(await readFile(path.join(root, base, 'package.json'), 'utf8'));
+  assert.equal(parser.name, PARSER_NAME, 'unexpected_parser_package');
+  assert.equal(parser.version, PARSER_VERSION, 'unexpected_parser_version');
+  assert.equal(parser.license, 'MIT', 'unexpected_parser_license');
+  assert.deepEqual(Object.keys(parser.dependencies ?? {}), [], 'unexpected_parser_dependencies');
+  const files = PARSER_FILES.map(file => `${base}/${file}`);
+  for (const file of files) await assertRegularFile(root, file);
+  return files;
+}
+
 // Dependency-free checks for this package's deliberately small manifest profile.
 // This is not a replacement for a host's schema validation or activation/trust.
 export async function publicPackageFiles(root) {
@@ -22,21 +67,22 @@ export async function publicPackageFiles(root) {
     assert.ok(typeof file === 'string' && file.length > 0 && !file.includes('\\') &&
       !path.posix.isAbsolute(file) && !/[*?[\]{}!\u0000-\u001f]/.test(file) &&
       file.split('/').every(part => part && part !== '.' && part !== '..'), 'invalid_package_file');
-    assert.ok(/^(?:package\.json|LICENSE|README\.md|plugin\.json|mcp\.json|\.mcp\.json|\.claude-plugin\/plugin\.json|\.codex-plugin\/plugin\.json|adapters\/(?:README\.md|(?:claude|codex|kiro)\/(?:hooks|profile)\.json)|skills\/graphlin\/SKILL\.md|runtime\/(?:[a-z0-9-]+\/)*[a-z0-9-]+\.(?:mjs|js|css|html)|schemas\/[a-z0-9-]+\.schema\.json|scripts\/(?:arguments|build-packages|collector|control|daemon|graphlin|onboarding|validate-packages)\.mjs|scripts\/collect\.sh)$/.test(file),
+    assert.ok(/^(?:package\.json|LICENSE|README\.md|plugin\.json|mcp\.json|\.mcp\.json|\.claude-plugin\/plugin\.json|\.codex-plugin\/plugin\.json|adapters\/(?:README\.md|(?:claude|codex|kiro)\/(?:hooks|profile)\.json)|skills\/graphlin\/SKILL\.md|runtime\/(?:[a-z0-9-]+\/)*[a-z0-9-]+\.(?:mjs|js|css|html|d\.ts)|docs\/(?:decision-service|extension-authoring|model-api|visualizer-views|usage)\.md|schemas\/[a-z0-9-]+\.schema\.json|scripts\/(?:arguments|build-packages|collector|control|daemon|extensions|graphlin|onboarding|validate-packages)\.mjs|scripts\/collect\.sh)$/.test(file),
     'unexpected_public_package_file');
-    let current = root;
-    for (const component of file.split('/')) {
-      current = path.join(current, component);
-      assert.equal((await lstat(current)).isSymbolicLink(), false, 'package_symlink_rejected');
-    }
-    assert.ok((await lstat(current)).isFile(), 'package_file_must_be_regular');
+    await assertRegularFile(root, file);
   }
-  return files;
+  return [...files, ...await bundledPackageFiles(root, metadata)];
 }
 
 export async function validatePackage(root) {
   const json = async name => JSON.parse(await readFile(path.join(root, name), 'utf8'));
   const metadata = await json('package.json');
+  await bundledPackageFiles(root, metadata);
+  assert.deepEqual(metadata.exports, SDK_EXPORTS, 'invalid_sdk_exports');
+  for (const file of ['runtime/extensions/sdk.mjs', 'runtime/extensions/sdk.d.ts', 'runtime/extensions/scene.mjs']) {
+    assert.ok(metadata.files.includes(`./${file}`), 'sdk_export_must_be_packaged');
+    await assertRegularFile(root, file);
+  }
   const manifest = await json('plugin.json'), portable = await json('mcp.json');
   assert.equal(manifest.$schema, 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json');
   assert.equal(manifest.name, 'graphlin');

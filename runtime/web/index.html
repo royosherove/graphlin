@@ -44,6 +44,10 @@
 
       <section class="workspace" aria-label="Session workspace">
         <div class="workspace-toolbar">
+          <label class="session-picker" for="visualizer">
+            <span>View</span>
+            <select id="visualizer" aria-label="Visualizer"><option value="graphlin.code">Code</option></select>
+          </label>
           <label class="session-picker" for="session">
             <span>Session</span>
             <select id="session" disabled><option value="">Waiting for a session</option></select>
@@ -120,6 +124,33 @@
                 <div id="node-type-filters" role="group" aria-label="Visible component types"></div>
               </div>
             </div>
+            <div class="view-context" id="view-context" hidden>
+              <nav id="scope-breadcrumbs" aria-label="Source scope"></nav>
+              <label id="c4-level-label" hidden>Level <select id="c4-level">
+                <option value="context">Context</option><option value="applications" selected>Applications / datastores</option>
+                <option value="components">Components</option><option value="code">Code</option>
+              </select></label>
+              <label id="baseline-label" hidden>Baseline <select id="task-baseline"><option value="">Choose checkpoint</option></select></label>
+              <button id="baseline-create" type="button" hidden>Set baseline now</button>
+              <label>Position <select id="model-position"><option value="">Live</option></select></label>
+              <label class="follow-control"><input id="follow-agent" type="checkbox" checked> Follow agent</label>
+              <button id="view-retry" type="button" hidden>Retry view</button>
+              <div id="analysis-controls" hidden>
+                <label>Analysis <select id="analysis-profile" aria-describedby="analysis-note"></select></label>
+                <button id="analysis-run" type="button" aria-describedby="analysis-note">Run analysis</button>
+                <button id="analysis-access" type="button">Manage access</button>
+              </div>
+            </div>
+            <p class="view-status" id="view-status" role="status" hidden></p>
+            <section class="extension-access" id="extension-access" aria-label="Visualizer data access" hidden>
+              <p id="extension-access-description"></p>
+              <div id="extension-fields"></div>
+              <label><input type="checkbox" id="extension-history"> Allow retained history</label>
+              <div id="extension-profiles"></div>
+              <p id="analysis-note" hidden>Running an approved profile can send locally filtered source evidence to the configured classification service. This project must already allow source transmission. Approving a visualizer does not enable source transmission. Analysis runs only when you choose Run analysis, using the selected entity or up to 256 entities in the current scope.</p>
+              <button id="extension-approve" type="button">Allow selected data</button>
+              <button id="extension-deny" type="button">Deny access</button>
+            </section>
             <div class="diagram-stage" id="diagram-stage">
               <svg id="architecture" viewBox="0 0 920 510" role="group" tabindex="0" aria-labelledby="diagram-title diagram-desc">
                 <title id="diagram-title">Architecture diagram</title>
@@ -129,11 +160,13 @@
                   <marker id="arrow-proposed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 Z" class="arrow-proposed"></path></marker>
                   <marker id="arrow-stale" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 Z" class="arrow-stale"></path></marker>
                 </defs>
+                <g id="group-layer"></g>
                 <g id="edge-layer"></g>
                 <g id="edge-label-layer"></g>
                 <g id="node-layer"></g>
                 <g id="effects-layer" aria-hidden="true" pointer-events="none"></g>
               </svg>
+              <section id="custom-view" class="custom-view" aria-label="Custom visualizer" hidden></section>
               <div class="empty-canvas" id="empty-canvas">
                 <div class="empty-map" aria-hidden="true"><i></i><span></span><i></i></div>
                 <h3 id="empty-title">Your architecture starts here.</h3>
@@ -154,6 +187,7 @@
               </div>
               <span id="graph-count">No components yet</span>
             </div>
+            <p class="view-coverage" id="view-coverage" role="status" hidden></p>
             <p class="diagram-note" id="diagram-note">Code classification does not establish runtime connectivity.</p>
           </section>
 

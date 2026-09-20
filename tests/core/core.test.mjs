@@ -4,6 +4,8 @@ import { mkdtemp, writeFile, mkdir, rm, symlink, chmod, realpath } from 'node:fs
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import {
   createPolicy, normalizeHostEvent, metadataEvent, EvidenceStore, buildCandidates, materializeBundle,
   buildRelationProposals, emptyGraph, compileDecision, invalidateArtifacts, applyPatch, projectGraph,
@@ -54,12 +56,15 @@ async function project(t) {
 test('policy is immutable, default private, bounded, and idempotent', () => {
   const defaults = createPolicy();
   assert.equal(defaults.transmitSource, false);
+  assert.equal(defaults.readSource, false);
   assert.equal(defaults.persistEvidence, false);
   assert.ok(Object.isFrozen(defaults.excludePaths));
   const configured = createPolicy({ transmitSource: true, excludePaths: Array.from({ length: 100 }, (_, i) => `custom-${i}/**`) });
   assert.deepEqual(createPolicy(configured), configured);
   assert.notEqual(configured.version, defaults.version);
   assert.notEqual(createPolicy({ ...configured, persistEvidence: true }).version, configured.version);
+  assert.equal(createPolicy({ readSource: true }).transmitSource, false);
+  assert.equal(configured.readSource, true);
 });
 
 test('normalization emits only fixed metadata, ISO time, scoped IDs, and aligned categories', () => {
@@ -121,17 +126,38 @@ test('excluded files, secret source and binary bytes never become candidates', a
   assert.deepEqual(buildCandidates({ event: event(), artifacts: captures, policy }), []);
 });
 
-test('metadata-only store advances generations and hashes exact bytes, including BOM', async t => {
+test('strict metadata observes stat generations without opening, hashing, or exposing file content', async t => {
+  const { root } = await project(t), file = path.join(root, 'notes.js');
+  await writeFile(file, source);
+  const open = t.mock.method(fs.promises, 'open', () => { throw new Error('UNEXPECTED_CONTENT_OPEN'); });
+  syncBuiltinESMExports();
+  t.after(() => { open.mock.restore(); syncBuiltinESMExports(); });
+  const store = new EvidenceStore({ projectRoot: root });
+  const [first] = await store.capture(['notes.js']);
+  assert.equal(first.status, 'present');
+  assert.equal(first.text, null);
+  assert.equal(first.hash, null);
+  assert.equal(store.isCurrent([{ artifactId: first.id, hash: digest(source), generation: first.generation }]), false);
+  const [unchanged] = await store.reconcile();
+  assert.equal(unchanged.generation, first.generation);
+  await writeFile(file, source + '\n// changed metadata');
+  const [changed] = await store.reconcile();
+  assert.ok(changed.generation > first.generation);
+  assert.equal(changed.hash, null);
+  assert.equal(changed.text, null);
+  assert.equal(open.mock.callCount(), 0);
+});
+
+test('local source consent hashes exact bytes and preserves BOM without permitting classification', async t => {
   const { root } = await project(t), file = path.join(root, 'notes.js');
   const bytes = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(source)]);
   await writeFile(file, bytes);
-  const store = new EvidenceStore({ projectRoot: root });
+  const localPolicy = createPolicy({ readSource: true });
+  const store = new EvidenceStore({ projectRoot: root, policy: localPolicy });
   const [first] = await store.capture(['notes.js']);
-  assert.equal(first.text, null);
+  assert.equal(first.text, bytes.toString('utf8'), 'local source spans preserve the BOM as well as exact bytes');
   assert.equal(first.hash, digest(bytes));
-  const sourceStore = new EvidenceStore({ projectRoot: root, policy });
-  const [withSource] = await sourceStore.capture([file]);
-  assert.equal(withSource.text, bytes.toString('utf8'), 'source spans preserve the BOM as well as exact bytes');
+  assert.deepEqual(buildCandidates({ event: event(), artifacts: [first], policy: localPolicy }), []);
   const ref = { artifactId: first.id, hash: first.hash, generation: first.generation };
   assert.equal(store.isCurrent([ref]), true);
   const [unchanged] = await store.reconcile();
