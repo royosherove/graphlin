@@ -1,11 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { cp, mkdir, writeFile, readFile, symlink, lstat, readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { buildPackages } from '../../scripts/build-packages.mjs';
 import { publicPackageFiles, validatePackage } from '../../scripts/validate-packages.mjs';
 import { assertPublicContents, verifyNpmPack } from '../../.github/scripts/verify-pack.mjs';
 import { workspace } from './helpers.mjs';
+
+const exec = promisify(execFile);
 
 test('package preflight rejects linked output files and destination ancestors without writes', async t => {
   for (const destination of ['kiro/README.md', 'kiro/profile.json', 'kiro', 'portable',
@@ -89,6 +93,53 @@ test('npm and plugin bundles contain only allowlisted public files and install a
   const result = await verifyNpmPack(sourceDir);
   assert.equal(result.name, 'graphlin');
   assert.equal(result.installedCli, true);
+  assert.equal(result.publishDryRun, true);
+  assert.deepEqual(result.normalizedBin, { graphlin: 'scripts/graphlin.mjs' });
+});
+
+test('real npm publish and pack normalization retain the bin and anchored files', async t => {
+  const { base } = await workspace(t);
+  const env = { PATH: process.env.PATH, HOME: path.join(base, 'home'),
+    npm_config_userconfig: path.join(base, 'user.npmrc'),
+    npm_config_globalconfig: path.join(base, 'global.npmrc'),
+    npm_config_cache: path.join(base, 'cache'), npm_config_offline: 'true',
+    npm_config_update_notifier: 'false' };
+  const expectedBin = { graphlin: 'scripts/graphlin.mjs' };
+  for (const binTarget of ['./scripts/graphlin.mjs', 'scripts/graphlin.mjs']) {
+    const directory = path.join(base, binTarget.startsWith('./') ? 'former' : 'canonical');
+    await mkdir(path.join(directory, 'scripts'), { recursive: true });
+    await writeFile(path.join(directory, 'scripts/graphlin.mjs'),
+      '#!/usr/bin/env node\nconsole.log("synthetic graphlin CLI");\n', { mode: 0o755 });
+    const manifest = path.join(directory, 'package.json');
+    const files = ['./scripts/graphlin.mjs'];
+    await writeFile(manifest, JSON.stringify({
+      name: 'graphlin', version: '0.0.0', bin: { graphlin: binTarget }, files,
+      // A lifecycle script would fail the test if accidentally enabled.
+      scripts: { prepublishOnly: 'exit 1', prepack: 'exit 1', postpublish: 'exit 1' },
+    }));
+    const run = args => exec('npm', args, { cwd: directory, env, timeout: 15_000 });
+    const before = await readFile(manifest, 'utf8');
+    const published = await run(['publish', '--dry-run', '--ignore-scripts', '--offline', '--json']);
+    assert.equal(await readFile(manifest, 'utf8'), before, 'dry-run must not rewrite the source manifest');
+    if (binTarget === expectedBin.graphlin) {
+      assert.doesNotMatch(published.stderr, /auto-corrected|errors corrected|invalid and removed/i);
+    }
+    const packed = JSON.parse((await run(['pack', '--ignore-scripts', '--offline', '--json'])).stdout)[0];
+    const tarball = path.join(directory, packed.filename);
+    const report = JSON.parse((await run([
+      'publish', tarball, '--dry-run', '--ignore-scripts', '--offline', '--json',
+    ])).stdout);
+    const fromTarball = report.graphlin ?? report;
+    assert.deepEqual(fromTarball.files.map(file => file.path).sort(), ['package.json', 'scripts/graphlin.mjs']);
+    // Inspect npm's own persisted normalization, not a reimplementation.
+    await run(['pkg', 'fix']);
+    const normalized = JSON.parse(await readFile(manifest, 'utf8'));
+    assert.deepEqual(normalized.bin, expectedBin);
+    assert.deepEqual(normalized.files, files);
+    const launched = await run(['exec', '--offline', '--ignore-scripts', '--yes', '--package', tarball,
+      '--', 'graphlin']);
+    assert.equal(launched.stdout.trim(), 'synthetic graphlin CLI');
+  }
 });
 
 test('package source links are rejected before output is created', async t => {

@@ -30,14 +30,11 @@ export async function verifyNpmPack(root = SOURCE) {
     const work = path.join(base, 'work');
     await mkdir(work);
     // Isolated configuration/cache: verification never needs login or network.
-    const inherited = Object.fromEntries(Object.entries(process.env)
-      .filter(([key]) => !/^npm_config_/i.test(key)));
-    const env = { ...inherited, npm_config_userconfig: path.join(base, 'user.npmrc'),
+    const env = { PATH: process.env.PATH, HOME: path.join(base, 'home'),
+      npm_config_userconfig: path.join(base, 'user.npmrc'),
       npm_config_globalconfig: path.join(base, 'global.npmrc'), npm_config_cache: path.join(base, 'cache'),
-      npm_config_update_notifier: 'false', GRAPHLIN_DATA_DIR: path.join(base, 'state') };
-    delete env.NODE_AUTH_TOKEN;
-    delete env.NPM_TOKEN;
-    delete env.TYPESAFE_API_KEY;
+      npm_config_update_notifier: 'false', npm_config_offline: 'true',
+      GRAPHLIN_DATA_DIR: path.join(base, 'state') };
     const runNpm = args => exec('npm', args, { cwd: work, env, timeout: 60_000, maxBuffer: 2 * 1024 * 1024 });
     const { stdout } = await runNpm(['pack', path.resolve(root), '--json', '--ignore-scripts', '--pack-destination', base]);
     const packed = JSON.parse(stdout);
@@ -48,6 +45,21 @@ export async function verifyNpmPack(root = SOURCE) {
       'npm tarball contents must exactly match the public file allowlist.');
     const tarball = path.join(base, packed[0].filename);
     assert.equal(`sha512-${createHash('sha512').update(await readFile(tarball)).digest('base64')}`, packed[0].integrity);
+    // Publish prepares directory manifests differently from pack/install.
+    // Exercise both paths with the actual npm CLI, without credentials,
+    // network access, lifecycle scripts, or a registry write.
+    for (const candidate of [path.resolve(root), tarball]) {
+      const dryRun = await runNpm(['publish', candidate, '--dry-run', '--ignore-scripts', '--offline', '--json']);
+      assert.doesNotMatch(dryRun.stderr, /auto-corrected|errors corrected|invalid and removed/i,
+        'npm publish must preserve the reviewed manifest without corrections.');
+      const report = JSON.parse(dryRun.stdout);
+      // npm 11 keys publish JSON by package name; older supported CLIs
+      // return the contents object directly.
+      const contents = report[metadata.name] ?? report;
+      assert.equal(contents.name, metadata.name);
+      assert.equal(contents.version, metadata.version);
+      assert.deepEqual(contents.files.map(file => file.path).sort(), expectedFiles);
+    }
     const listing = await exec('tar', ['-tzf', tarball], { timeout: 15_000 });
     assert.deepEqual(listing.stdout.trim().split('\n').sort(), expectedFiles.map(file => `package/${file}`).sort());
     const unpacked = path.join(base, 'unpacked');
@@ -60,6 +72,12 @@ export async function verifyNpmPack(root = SOURCE) {
       assertPublicContents(contents);
       assert.equal(contents, await readFile(path.join(root, file), 'utf8'), 'Packed source must match the reviewed source.');
     }
+    // npm publish uses the same fix operation before preparing a directory
+    // manifest. Run it only on the disposable extraction and inspect its bin.
+    await runNpm(['pkg', 'fix', '--prefix', packageRoot]);
+    const normalized = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+    assert.deepEqual(normalized.bin, metadata.bin, 'npm normalization must preserve the CLI registry manifest.');
+    assert.deepEqual(normalized.files, metadata.files, 'npm normalization must preserve the anchored allowlist.');
     const prefix = path.join(base, 'installed');
     await runNpm(['install', '--prefix', prefix, '--offline', '--ignore-scripts', '--no-audit',
       '--no-fund', '--package-lock=false', tarball]);
@@ -100,6 +118,7 @@ export async function verifyNpmPack(root = SOURCE) {
       { host: 'codex', sourceEvidence: true, hooks: 2 },
     ]);
     return { name: metadata.name, version: metadata.version, files: expectedFiles.length,
+      publishDryRun: true, normalizedBin: normalized.bin,
       installedCli: true, temporaryInstallRemoved: true, stablePlugins };
   } finally {
     await rm(base, { recursive: true, force: true });

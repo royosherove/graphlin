@@ -8,7 +8,7 @@
     "node": ">=22.14.0"
   },
   "bin": {
-    "graphlin": "./scripts/graphlin.mjs"
+    "graphlin": "scripts/graphlin.mjs"
   },
   "scripts": {
     "start": "node scripts/graphlin.mjs start",

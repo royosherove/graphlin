@@ -44,7 +44,9 @@ export async function validatePackage(root) {
   assert.equal(metadata.name, manifest.name);
   assert.equal(metadata.version, manifest.version);
   assert.equal(metadata.license, 'MIT');
-  assert.deepEqual(metadata.bin, { graphlin: './scripts/graphlin.mjs' });
+  // npm's publish normalization removes "./" from bin targets. This is
+  // separate from the files allowlist, whose root anchors must be preserved.
+  assert.deepEqual(metadata.bin, { graphlin: 'scripts/graphlin.mjs' });
   assert.equal(metadata.repository?.url, 'git+https://github.com/royosherove/graphlin.git');
   assert.deepEqual(metadata.publishConfig, { access: 'public', registry: 'https://registry.npmjs.org/' });
   assert.match(await readFile(path.join(root, 'LICENSE'), 'utf8'), /MIT License/);
