@@ -56,7 +56,13 @@ async function harness(initial = snapshot(), size = { width: 920, height: 510 })
   const keys = ['document', 'window', 'fetch', 'EventSource', 'setTimeout', 'clearTimeout'];
   const originals = new Map(keys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const canvas = $('architecture');
-  canvas.getBoundingClientRect = () => ({ ...dimensions });
+  let wheelOptions;
+  const addCanvasListener = canvas.addEventListener.bind(canvas);
+  canvas.addEventListener = (type, callback, options) => {
+    if (type === 'wheel') wheelOptions = options;
+    addCanvasListener(type, callback, options);
+  };
+  canvas.getBoundingClientRect = () => ({ left: 120, top: 80, ...dimensions });
   $('diagram-stage').getBoundingClientRect = () => ({ ...dimensions });
   canvas.closest = () => null;
   const pointers = new Set();
@@ -111,7 +117,7 @@ async function harness(initial = snapshot(), size = { width: 920, height: 510 })
     throw error;
   }
   return {
-    $, media, frames, observers, pointers,
+    $, media, frames, observers, pointers, listeners, wheelOptions,
     get current() { return current; },
     get dimensions() { return dimensions; },
     viewport() {
@@ -143,6 +149,7 @@ async function harness(initial = snapshot(), size = { width: 920, height: 510 })
         assert.equal(timers.size, 0);
         assert.ok(observers.every(observer => observer.disconnected));
         assert.equal(listeners.has('resize'), false);
+        assert.equal(canvas.listeners.get('wheel')?.length, 0);
       } finally {
         for (const [key, descriptor] of originals) {
           if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -152,6 +159,142 @@ async function harness(initial = snapshot(), size = { width: 920, height: 510 })
     },
   };
 }
+
+async function wheel(h, properties = {}, target = h.$('architecture')) {
+  let prevented = false;
+  await target.fire('wheel', {
+    deltaY: -60, deltaX: 0, deltaMode: 0, clientX: 350, clientY: 200,
+    ...properties, preventDefault() { prevented = true; },
+  });
+  return prevented;
+}
+
+function near(actual, expected) {
+  assert.ok(Math.abs(actual - expected) <= 1e-8 * Math.max(1, Math.abs(expected)),
+    `${actual} should be close to ${expected}`);
+}
+
+test('diagram wheel zooms up/in and down/out around the cursor, including bubbling from a shape', async () => {
+  const h = await harness();
+  try {
+    const canvas = h.$('architecture');
+    assert.deepEqual(h.wheelOptions, { passive: false });
+    // The fixture only parses IDs; wire up the actual SVG ancestry for bubbling.
+    canvas.append(h.$('node-layer'));
+    const before = h.viewport();
+    const anchor = { x: .25, y: 120 / 510 };
+    const point = { x: before.x + before.width * anchor.x, y: before.y + before.height * anchor.y };
+    assert.equal(await wheel(h, {}, h.$('node-layer').children[0]), true);
+    const after = h.viewport();
+    assert.ok(after.width < before.width);
+    near(after.x + after.width * anchor.x, point.x);
+    near(after.y + after.height * anchor.y, point.y);
+    assert.equal(await wheel(h, { deltaY: 60 }), true);
+    for (const key of ['x', 'y', 'width', 'height']) near(h.viewport()[key], before[key]);
+    await wheel(h);
+    const manual = h.viewport();
+    h.send({ ...h.current, status: { ...h.current.status, pending: 4 } });
+    assert.deepEqual(h.viewport(), manual);
+    await h.$('fit').fire('click');
+    assert.deepEqual(h.viewport(), before);
+  } finally { h.close(); }
+});
+
+test('wheel normalizes line/page units, preserves fractional trackpad deltas and caps large events', async () => {
+  const h = await harness();
+  try {
+    const initial = h.viewport();
+    for (const [properties, pixels] of [
+      [{ deltaY: -.25 }, -.25],
+      [{ deltaY: -2, deltaMode: 1 }, -32],
+      [{ deltaY: -.1, deltaMode: 2 }, -51],
+      [{ deltaY: -10000 }, -100],
+      [{ deltaY: -.5, ctrlKey: true }, -.5],
+    ]) {
+      await h.$('fit').fire('click');
+      assert.equal(await wheel(h, properties), true);
+      near(h.viewport().width, initial.width * Math.exp(pixels * .002));
+    }
+  } finally { h.close(); }
+});
+
+test('wheel accounts for SVG letterboxing and keeps button/keyboard zoom centered and pan available', async () => {
+  const h = await harness();
+  try {
+    const canvas = h.$('architecture');
+    const before = h.viewport();
+    canvas.getBoundingClientRect = () => ({ left: 120, top: 80, width: 1000, height: 510 });
+    const anchor = { x: (350 - 120 - 40) / 920, y: 120 / 510 };
+    await wheel(h);
+    near(h.viewport().x + h.viewport().width * anchor.x, before.x + before.width * anchor.x);
+    near(h.viewport().y + h.viewport().height * anchor.y, before.y + before.height * anchor.y);
+    for (const [target, type, properties, factor] of [
+      [h.$('zoom-in'), 'click', {}, 1.25],
+      [canvas, 'keydown', { key: '-' }, .8],
+    ]) {
+      const old = h.viewport();
+      await target.fire(type, properties);
+      near(h.viewport().width, old.width / factor);
+      near(h.viewport().x + h.viewport().width / 2, old.x + old.width / 2);
+      near(h.viewport().y + h.viewport().height / 2, old.y + old.height / 2);
+    }
+    await canvas.fire('pointerdown', { button: 0, pointerId: 1, clientX: 350, clientY: 200 });
+    assert.equal(h.pointers.has(1), true);
+    const old = h.viewport();
+    await canvas.fire('pointermove', { pointerId: 1, clientX: 370, clientY: 220 });
+    assert.ok(h.viewport().x < old.x);
+    await wheel(h);
+    assert.equal(h.pointers.size, 0, 'wheel releases a pan whose camera would otherwise become stale');
+    const zoomed = h.viewport();
+    await canvas.fire('pointermove', { pointerId: 1, clientX: 390, clientY: 240 });
+    assert.deepEqual(h.viewport(), zoomed);
+  } finally { h.close(); }
+});
+
+test('wheel clamps zoom at both limits without moving the cursor anchor', async () => {
+  const h = await harness();
+  try {
+    for (const [deltaY, limit, button] of [[-10000, 4, 'zoom-in'], [10000, .000001, 'zoom-out']]) {
+      const before = h.viewport();
+      const point = { x: before.x + before.width * .25, y: before.y + before.height * 120 / 510 };
+      for (let i = 0; i < 100; i++) assert.equal(await wheel(h, { deltaY }), true);
+      near(h.dimensions.width / h.viewport().width, limit);
+      assert.equal(h.$(button).disabled, true);
+      near(h.viewport().x + h.viewport().width * .25, point.x);
+      near(h.viewport().y + h.viewport().height * 120 / 510, point.y);
+      const bounded = h.viewport();
+      await wheel(h, { deltaY });
+      assert.deepEqual(h.viewport(), bounded);
+    }
+  } finally { h.close(); }
+});
+
+test('wheel leaves off-diagram scrolling, horizontal gestures, empty diagrams and disposed viewers alone', async () => {
+  const h = await harness();
+  try {
+    const before = h.viewport();
+    for (const id of ['live-sidebar', 'connection-dialog', 'diagnostics-dialog', 'zoom-in', 'layout', 'diagram-stage']) {
+      assert.equal(await wheel(h, {}, h.$(id)), false, id);
+    }
+    assert.equal(await wheel(h, {}, h.$('architecture').ownerDocument.body), false);
+    assert.equal(h.listeners.has('wheel'), false);
+    assert.equal(h.$('architecture').ownerDocument.listeners.has('wheel'), false);
+    for (const properties of [
+      { deltaY: 0 }, { deltaY: NaN }, { deltaY: Infinity }, { deltaY: 1, deltaX: 20 },
+      { shiftKey: true }, { defaultPrevented: true },
+    ]) assert.equal(await wheel(h, properties), false);
+    assert.deepEqual(h.viewport(), before);
+  } finally { h.close(); }
+  const closed = h.viewport();
+  assert.equal(await wheel(h), false);
+  assert.deepEqual(h.viewport(), closed);
+  const empty = await harness(snapshot({ graph: chain(0) }));
+  try {
+    const before = empty.viewport();
+    assert.equal(await wheel(empty), false);
+    assert.deepEqual(empty.viewport(), before);
+  } finally { empty.close(); }
+});
 
 test('physical viewport fit preserves aspect ratio and shows very tall or wide maps below 50% scale', () => {
   for (const bounds of [

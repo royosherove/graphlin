@@ -45,11 +45,13 @@ for (const mode of ['live', 'demo']) {
       assert.ok(Object.hasOwn(info, 'instructions'));
       assert.ok(Object.hasOwn(info, 'notes'));
       const commands = info.instructions.flatMap(instruction => instruction.steps.map(step => step.command));
-      assert.ok(commands.length > 0, 'verified source packages offer usable connection steps');
+      assert.ok(commands.length > 0, 'npm onboarding offers usable connection steps');
       assert.ok(commands.every(command => typeof command === 'string' && command.length > 0));
-      assert.ok(commands.some(command => command.includes('claude --plugin-dir')));
-      assert.ok(commands.some(command => command.includes('codex plugin marketplace add')));
-      assert.ok(commands.some(command => command.includes(paths.projectRoot) && command.includes(paths.dataDir)));
+      assert.ok(commands.some(command => /(?:^| )claude$/.test(command)));
+      assert.ok(commands.some(command => /(?:^| )codex$/.test(command)));
+      assert.ok(commands.some(command => command.includes('npx --yes graphlin@latest')));
+      assert.equal(commands.some(command => command.includes(paths.dataDir)), mode === 'live');
+      assert.equal(commands.some(command => command.includes(paths.projectRoot)), mode === 'live');
       const serialized = JSON.stringify(info);
       assert.equal(serialized.includes(token), false);
       assert.equal(serialized.includes(cookie.split('=')[1]), false);

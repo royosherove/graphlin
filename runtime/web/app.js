@@ -876,6 +876,7 @@ export function startConnectionDialog({ load = () => request('/api/connection-in
     $('connection-project').hidden = true;
     $('connection-project').textContent = '';
     $('connection-demo').hidden = true;
+    $('connection-dialog-intro').textContent = 'Connect Claude Code or Codex with guided npm setup.';
     $('connection-copy-status').textContent = '';
   }
   function renderInfo(info, ticket) {
@@ -931,6 +932,10 @@ export function startConnectionDialog({ load = () => request('/api/connection-in
     $('connection-project').textContent = `Project: ${info.projectRoot}`;
     $('connection-project').hidden = !info.projectRoot;
     $('connection-demo').hidden = info.mode !== 'demo';
+    $('connection-demo').textContent = 'This is an offline demo. Start a live viewer in your own project to connect an agent.';
+    $('connection-dialog-intro').textContent = info.mode === 'demo'
+      ? 'Start Graphlin in your project, then start your agent in a second terminal in that same project.'
+      : 'Keep this viewer running. In a second terminal, set up if needed, then start a new agent session for the project below.';
     $('connection-notes').replaceChildren(...info.notes.map(note => html('li', note)));
     $('connection-notes').hidden = !info.notes.length;
   }
@@ -1864,7 +1869,7 @@ export function startViewer() {
     cancelMovement();
     fitCamera(graphBounds(graph));
   }
-  function zoom(factor) {
+  function zoom(factor, anchor = { x: .5, y: .5 }) {
     if (!state.viewport || !state.fitBounds) return;
     cancelMovement();
     finishPan();
@@ -1872,8 +1877,8 @@ export function startViewer() {
     const scale = state.zoom / next;
     const old = state.viewport;
     state.viewport = {
-      x: old.x + old.width * (1 - scale) / 2,
-      y: old.y + old.height * (1 - scale) / 2,
+      x: old.x + old.width * (1 - scale) * anchor.x,
+      y: old.y + old.height * (1 - scale) * anchor.y,
       width: old.width * scale, height: old.height * scale,
     };
     state.zoom = next;
@@ -2493,6 +2498,28 @@ export function startViewer() {
   });
   $('zoom-in').addEventListener('click', () => zoom(1.25));
   $('zoom-out').addEventListener('click', () => zoom(.8));
+  const onDiagramWheel = event => {
+    if (state.closed || !state.viewport || !currentGraph()?.nodes.length || event.defaultPrevented ||
+      event.shiftKey || !Number.isFinite(event.deltaY) || event.deltaY === 0 ||
+      Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+    const rect = $('architecture').getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0) ||
+      !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
+    // Wheel units are pixels, lines, or pages. Keep trackpad motion continuous,
+    // but cap each event so a coarse wheel or a page delta cannot jump too far.
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.height : 1;
+    const delta = Math.max(-100, Math.min(100, event.deltaY * unit));
+    const box = state.viewport;
+    const scale = Math.min(rect.width / box.width, rect.height / box.height);
+    const width = box.width * scale, height = box.height * scale;
+    const anchor = {
+      x: (event.clientX - rect.left - (rect.width - width) / 2) / width,
+      y: (event.clientY - rect.top - (rect.height - height) / 2) / height,
+    };
+    event.preventDefault();
+    zoom(Math.exp(-delta * .002), anchor);
+  };
+  $('architecture').addEventListener('wheel', onDiagramWheel, { passive: false });
   $('architecture').addEventListener('keydown', event => {
     if (event.target !== $('architecture')) return;
     if (event.key === '+' || event.key === '=') { event.preventDefault(); zoom(1.25); }
@@ -2571,6 +2598,7 @@ export function startViewer() {
       $('onboarding-action').removeEventListener('click', onOnboardingAction);
       $('orientation-copy').removeEventListener('click', onCopyOrientation);
       $('activity-toggle').removeEventListener('click', onToggleActivity);
+      $('architecture').removeEventListener('wheel', onDiagramWheel);
       connectionDialog.dispose();
       diagnosticsDialog.dispose();
       sidebar.destroy();

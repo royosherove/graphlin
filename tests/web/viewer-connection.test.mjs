@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { normalizeConnectionInfo, startConnectionDialog } from '../../runtime/web/app.js';
+import { createConnectionInfo } from '../../runtime/daemon/connection-info.mjs';
 import { createDocument } from './fake-dom.mjs';
 
 // Deliberately fictional fixture text: production commands come only from the
@@ -83,6 +84,7 @@ test('dialog has named controls, loads on demand, traps both Tab directions, clo
     await opening;
     assert.equal(loads, 1);
     assert.equal($('connection-loading').hidden, true);
+    assert.match($('connection-dialog-intro').textContent, /Keep this viewer running.*second terminal.*set up if needed/);
     assert.equal($('connection-instructions').getAttribute('aria-busy'), 'false');
     const commands = descendants($('connection-instructions'), 'pre');
     commands.at(-1).focus();
@@ -115,6 +117,8 @@ test('commands and descriptions remain literal text; Copy uses exact provided by
     assert.equal(body.querySelector('img'), null);
     assert.equal($('connection-notes').querySelector('script'), null);
     assert.equal($('connection-demo').hidden, false);
+    assert.match($('connection-demo').textContent, /offline demo.*own project/);
+    assert.match($('connection-dialog-intro').textContent, /Start Graphlin in your project.*second terminal/);
     const buttons = descendants(body, 'button');
     await buttons[0].fire('click');
     assert.deepEqual(copied, [supplied.instructions[0].steps[0].command]);
@@ -126,6 +130,34 @@ test('commands and descriptions remain literal text; Copy uses exact provided by
     assert.equal(h.document.activeElement, descendants(body, 'pre')[1]);
   } finally { h.close(); }
 });
+
+for (const mode of ['live', 'demo']) {
+  test(`${mode} dialog renders and copies the npm guide with the current data directory`, async () => {
+    const supplied = await createConnectionInfo({
+      projectRoot: '/fixture/Current project', dataDir: '/fixture/Custom data', mode,
+    });
+    const copied = [];
+    const h = await setup(async () => supplied, { writeText: async text => copied.push(text) });
+    try {
+      await h.$('how-to-connect').fire('click');
+      const body = h.$('connection-instructions');
+      const expected = supplied.instructions.flatMap(item => item.steps.map(step => step.command));
+      assert.deepEqual(descendants(body, 'code').map(item => item.textContent), expected);
+      for (const button of descendants(body, 'button')) await button.fire('click');
+      assert.deepEqual(copied, expected);
+      assert.match(body.textContent, /npx --yes graphlin@latest/);
+      assert.match(body.textContent, /\/plugin/);
+      assert.match(body.textContent, /\/hooks/);
+      assert.match(body.textContent, /masked prompt/);
+      assert.doesNotMatch(body.textContent, /--plugin-dir|build-packages|marketplace add|resume --last/);
+      assert.equal(expected[0].endsWith(' init'), mode === 'live');
+      assert.equal(h.$('connection-demo').hidden, mode === 'live');
+      assert.match(h.$('connection-notes').textContent, /Installation does not confirm hook activation/);
+      if (mode === 'live') assert.match(h.$('connection-notes').textContent, /stopping and restarting/);
+      else assert.doesNotMatch(body.textContent, /Current project/);
+    } finally { h.close(); }
+  });
+}
 
 test('load errors expose Retry; native cancellation restores focus; old responses cannot populate a reopened dialog', async () => {
   let reject = true, resolveOld;

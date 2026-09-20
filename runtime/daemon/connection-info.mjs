@@ -1,9 +1,8 @@
 import { constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const PLUGIN_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const PROFILES = new Set(['claude', 'codex', 'portable']);
 const MAX_PATH_BYTES = 4096;
 const MAX_COMMAND_BYTES = 8192;
@@ -68,18 +67,6 @@ async function packageMarker(root) {
   return PROFILES.has(profile) ? { status: 'present', profile } : { status: 'invalid' };
 }
 
-async function sourceCheckout(root, current) {
-  const [claude, codex, builder] = await Promise.all([
-    json(path.join(root, '.claude-plugin/plugin.json')),
-    json(path.join(root, '.codex-plugin/plugin.json')),
-    regularFile(path.join(root, 'scripts/build-packages.mjs')),
-  ]);
-  return builder && manifest(claude) && manifest(codex) &&
-    claude.version === current.version && codex.version === current.version &&
-    claude.hooks === './adapters/claude/hooks.json' &&
-    current.extensions?.['com.openai']?.hooks === './adapters/codex/hooks.json';
-}
-
 async function hostPackage(root, host, currentVersion) {
   const [isDirectory, marker, portable, native, mcp, hooks, ...files] = await Promise.all([
     directory(root), packageMarker(root), json(path.join(root, 'plugin.json')),
@@ -101,17 +88,6 @@ async function hostPackage(root, host, currentVersion) {
         portable.extensions?.['com.openai']?.hooks === './adapters/codex/hooks.json');
 }
 
-async function localMarketplace(root, codexRoot) {
-  const value = await json(path.join(root, '.agents/plugins/marketplace.json'));
-  if (!record(value) || value.name !== 'graphlin-local' || !Array.isArray(value.plugins)) return false;
-  const entries = value.plugins.filter(entry => entry?.name === 'graphlin');
-  if (entries.length !== 1) return false;
-  const entry = entries[0];
-  return entry.source?.source === 'local' && entry.source.path === './graphlin' &&
-    path.join(root, 'graphlin') === codexRoot &&
-    entry.policy?.installation === 'AVAILABLE' && entry.policy?.authentication === 'ON_INSTALL';
-}
-
 export async function inspectInstalledPackages({ dataDir, version: currentVersion }) {
   if (!version(currentVersion)) return { claude: false, codex: false };
   const root = path.join(absolute(dataDir), 'plugins', 'graphlin', currentVersion);
@@ -120,116 +96,55 @@ export async function inspectInstalledPackages({ dataDir, version: currentVersio
   return { claude, codex };
 }
 
-// Discovery reads only fixed package metadata and checks file availability.
-// It never scans the project, reads state/credentials, or executes commands.
-async function discover(pluginRoot, dataDir) {
-  const [marker, current, isDirectory] = await Promise.all([
-    packageMarker(pluginRoot), json(path.join(pluginRoot, 'plugin.json')), directory(pluginRoot),
-  ]);
-  if (!isDirectory || !manifest(current) || marker.status === 'invalid') return { available: false };
-  if (marker.status === 'missing') {
-    if (!await sourceCheckout(pluginRoot, current)) return { available: false };
-    // npm installations can be read-only. Generated host packages belong in
-    // the same user-owned data directory as the running service, not beside
-    // installed code. Versioned paths stay stable across projects and restarts.
-    const output = path.join(dataDir, 'plugins', 'graphlin', current.version);
-    const claudeRoot = path.join(output, 'claude/graphlin');
-    const codexRoot = path.join(output, 'codex/graphlin');
-    const [claudeReady, codexReady, marketplaceReady] = await Promise.all([
-      hostPackage(claudeRoot, 'claude', current.version),
-      hostPackage(codexRoot, 'codex', current.version),
-      localMarketplace(path.dirname(codexRoot), codexRoot),
-    ]);
-    return {
-      available: true,
-      ...(claudeReady && codexReady && marketplaceReady ? {} : { build: path.join(pluginRoot, 'scripts/build-packages.mjs') }),
-      output,
-      claude: claudeRoot,
-      marketplace: path.join(output, 'codex'),
-    };
-  }
-  const distribution = path.resolve(pluginRoot, '../..');
-  const claudeRoot = marker.profile === 'claude' ? pluginRoot : path.join(distribution, 'claude/graphlin');
-  const codexRoot = marker.profile === 'codex' ? pluginRoot : path.join(distribution, 'codex/graphlin');
-  const marketplaceRoot = path.dirname(codexRoot);
-  const [claude, codex, marketplace] = await Promise.all([
-    hostPackage(claudeRoot, 'claude', current.version),
-    hostPackage(codexRoot, 'codex', current.version),
-    localMarketplace(marketplaceRoot, codexRoot),
-  ]);
-  return {
-    available: true, claude: claude ? claudeRoot : null,
-    marketplace: codex && marketplace ? marketplaceRoot : null,
-  };
-}
-
-function format({ projectRoot, dataDir, mode }, found) {
+// Connection guidance uses only the current instance's trusted startup context.
+// npm onboarding owns package installation; the guide neither discovers local
+// package paths nor reads project settings, credentials, or host configuration.
+function format({ projectRoot, dataDir, mode }) {
   const result = { projectRoot, mode, instructions: [], notes: [] };
-  if (mode === 'demo') {
-    result.notes.push('This viewer is in demo mode and uses fixture classifications. Open a live Graphlin viewer for your own project before connecting your work.');
-  }
-  if (!found.available) {
-    result.notes.push('Connection setup is unavailable because this Graphlin source checkout or package could not be verified. Obtain a complete Graphlin distribution.');
-    return result;
-  }
-  const terminal = words => `cd ${quote(projectRoot)} && GRAPHLIN_DATA_DIR=${quote(dataDir)} ${words}`;
+  const demo = mode === 'demo';
+  // defaultDataDir() includes the daemon's environment override. Comparing to
+  // it would wrongly hide custom directories needed by a second terminal.
+  const customDataDir = !demo && dataDir !== path.resolve(homedir(), '.local/state/graphlin');
+  const terminal = words => `${demo ? '' : `cd ${quote(projectRoot)} && `}${customDataDir ? `GRAPHLIN_DATA_DIR=${quote(dataDir)} ` : ''}${words}`;
   const instruction = (id, title, description, steps) => ({ id, title, description, steps });
-  const fits = entries => entries.every(item => item.steps.every(step =>
-    Buffer.byteLength(step.command) <= MAX_COMMAND_BYTES));
-  function append(entries, host) {
-    if (fits(entries)) result.instructions.push(...entries);
-    else result.notes.push(`${host} commands are too long to display safely. Use shorter project, package, or data directory paths.`);
-  }
-
-  if (found.build) {
-    const build = [instruction('build-packages', 'Build current plugin packages',
-      'Run this prerequisite first. It rebuilds both host profiles in your Graphlin data directory; existing generated packages may be out of date.',
-      [{ label: 'Build packages in Terminal', command: terminal(`node ${quote(found.build)} --out ${quote(found.output)}`) }])];
-    if (!fits(build)) {
-      result.notes.push('The build command is too long to display safely. Use shorter project, package, or data directory paths.');
-      return result;
-    }
-    result.instructions.push(...build);
-  }
-  const prerequisite = found.build ? 'Complete the build step above first. ' : '';
-  if (found.claude) {
-    const launch = terminal(`claude --plugin-dir ${quote(found.claude)}`);
-    append([
-      instruction('claude-new', 'Claude: new session',
-        `${prerequisite}Start a new Claude session with this Graphlin plugin loaded.`,
-        [{ label: 'Start Claude in Terminal', command: launch }]),
-      instruction('claude-resume', 'Claude: resume',
-        `${prerequisite}Instead of starting a new session, continue the most recent conversation in this project.`,
-        [{ label: 'Resume Claude in Terminal', command: `${launch} --continue` }]),
-    ], 'Claude');
+  const entries = [
+    instruction('npm-setup', demo ? '1. Start a live viewer' : 'Set up only if needed',
+      demo
+        ? 'Open a terminal in your own project. Run guided setup, choose Claude Code or Codex and source or metadata mode, then keep that terminal running. The live viewer opens automatically.'
+        : 'This viewer is already running. If you completed guided setup for this project and your chosen host, skip this step. Otherwise, run setup alone in a second terminal; init does not start another server.',
+      [{ label: demo ? 'In your project terminal' : 'Set up this project in a second terminal',
+        command: terminal(`npx --yes graphlin@latest${demo ? '' : ' init'}`),
+        description: 'Choose your host and source or metadata mode. Source mode needs a TypeSafe API key; enter it at the masked prompt if asked. Metadata mode needs no key.' }]),
+    instruction('claude-new', demo ? '2. Start Claude Code (choose one agent)' : 'Start Claude Code (choose one agent)',
+      'After setup, open a second terminal in the same project and start a new agent session. Accept the project trust prompt.',
+      [{ label: 'Start Claude in the second terminal', command: terminal('claude') },
+        { label: 'Inside Claude: /plugin', command: '/plugin',
+          description: 'Confirm Graphlin is enabled.' }]),
+    instruction('codex-new', demo ? '2. Start Codex (choose one agent)' : 'Start Codex (choose one agent)',
+      'After setup, open a second terminal in the same project and start a new agent session. Accept the project trust prompt.',
+      [{ label: 'Start Codex in the second terminal', command: terminal('codex') },
+        { label: 'Inside Codex: /hooks', command: '/hooks',
+          description: 'Review and trust Graphlin hooks before starting your work.' }]),
+  ];
+  // Omit the whole guide rather than offering launch commands without setup or
+  // truncating a shell argument. The viewer applies the same command limit.
+  if (entries.every(item => item.steps.every(step => Buffer.byteLength(step.command) <= MAX_COMMAND_BYTES))) {
+    result.instructions.push(...entries);
   } else {
-    result.notes.push('Claude connection is unavailable: matching packaged files were not found. Rebuild or obtain the complete Graphlin distribution, including its Claude profile.');
+    result.notes.push('Connection commands are too long to display safely. Use shorter project or data directory paths.');
   }
-  if (found.marketplace) {
-    const hooks = () => ({
-      label: 'Inside Codex: /hooks', command: '/hooks',
-      description: 'Inside Codex, review and trust Graphlin hooks; then start your work',
-    });
-    const launch = terminal(`codex -C ${quote(projectRoot)}`);
-    append([
-      instruction('codex-setup', 'Codex: install the local plugin',
-        `${prerequisite}Run both setup commands before launching. They register this local marketplace and install its Graphlin package in Codex.`,
-        [
-          { label: 'Register marketplace in Terminal', command: terminal(`codex plugin marketplace add ${quote(found.marketplace)}`) },
-          { label: 'Install Graphlin in Terminal', command: terminal(`codex plugin add ${quote('graphlin@graphlin-local')}`) },
-        ]),
-      instruction('codex-new', 'Codex: new session',
-        'Complete Codex setup above, then start a new session and review the hooks inside Codex.',
-        [{ label: 'Start Codex in Terminal', command: launch }, hooks()]),
-      instruction('codex-resume', 'Codex: resume',
-        'Complete Codex setup above. Instead of starting a new session, resume the most recent conversation in this project.',
-        [{ label: 'Resume Codex in Terminal', command: `${launch} resume --last` }, hooks()]),
-    ], 'Codex');
+  if (demo) {
+    result.notes.push('This demo uses fixture classifications. Run the commands in your own project; its setup uses the normal data directory, not this demo’s custom directory.');
   } else {
-    result.notes.push('Codex connection is unavailable: matching packaged files and a valid local marketplace were not found. Rebuild or obtain the complete Graphlin distribution, including its Codex marketplace.');
+    result.notes.push('Next time: npx --yes graphlin@latest in this project, then claude or codex in a second terminal. Keep the viewer running.');
+    result.notes.push('Consent or key changes require stopping and restarting this project’s viewer with the same data directory. Until then, its current policy and classifier configuration stay in effect.');
   }
-  result.notes.push('Choose either a new session or resume. Keep the Graphlin viewer running while you work.');
-  result.notes.push('Package discovery does not confirm that host hooks are active. Follow the host prompts to load and trust the plugin.');
+  result.notes.push(customDataDir
+    ? 'Commands preserve this viewer’s custom data directory. Use the same GRAPHLIN_DATA_DIR for future viewer launches.'
+    : 'Default data: ~/.local/state/graphlin. Unset GRAPHLIN_DATA_DIR in both terminals to use it.' +
+      (demo ? ' For an intentional custom location, set the same GRAPHLIN_DATA_DIR in both terminals.' : ''));
+  result.notes.push('Plugins install across projects; source consent is per project. Source mode sends locally filtered source excerpts, user prompts, and public agent messages to TypeSafe.');
+  result.notes.push('Installation does not confirm hook activation. After setup and trust, ask: “Orient yourself in this project: read its main files and explain how the components connect.” Watch for hook delivery and diagram updates.');
   return result;
 }
 
@@ -239,11 +154,7 @@ function format({ projectRoot, dataDir, mode }, found) {
  * body/query. projectRoot and dataDir are already canonicalized by projectPaths.
  * No environment, graph, launch URL, or credential is copied into the result.
  */
-export async function createConnectionInfo({
-  projectRoot, dataDir, mode = 'live', pluginRoot = PLUGIN_ROOT,
-} = {}) {
+export async function createConnectionInfo({ projectRoot, dataDir, mode = 'live' } = {}) {
   if (!['live', 'demo'].includes(mode)) throw new TypeError('invalid_connection_info');
-  const context = { projectRoot: absolute(projectRoot), dataDir: absolute(dataDir), mode };
-  const root = absolute(pluginRoot);
-  return format(context, await discover(root, context.dataDir));
+  return format({ projectRoot: absolute(projectRoot), dataDir: absolute(dataDir), mode });
 }
