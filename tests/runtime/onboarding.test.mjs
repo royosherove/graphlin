@@ -490,6 +490,7 @@ Object.defineProperty(process.stderr, 'isTTY', {value: true});
     { env, input: 'metadata\n' });
   assert.equal(guided.code, 1, guided.stderr);
   assert.match(guided.stderr, /policy_restart_required/);
+  assert.match(guided.stderr, /Stop the current viewer with Ctrl\+C or graphlin stop, then run Graphlin again to apply the saved settings/);
   assert.equal(guided.stdout, '');
   assert.equal((await readSettings(setup)).policy.allowSource, false);
   const current = await daemonStatus(setup);

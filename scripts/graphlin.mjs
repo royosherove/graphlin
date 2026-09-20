@@ -104,6 +104,9 @@ try {
   const argumentErrors = new Set(['duplicate_argument', 'invalid_argument', 'invalid_port', 'conflicting_arguments',
     'unknown_argument', 'invalid_host', 'unknown_command']);
   const message = error?.onboarding ? error.message : argumentErrors.has(error?.message) ? error.message : publicError(error);
-  process.stderr.write(`Graphlin: ${message}. Run with --help for usage.\n`);
+  const nextStep = message === 'policy_restart_required'
+    ? 'Stop the current viewer with Ctrl+C or graphlin stop, then run Graphlin again to apply the saved settings.'
+    : 'Run with --help for usage.';
+  process.stderr.write(`Graphlin: ${message}. ${nextStep}\n`);
   process.exitCode = error?.code === 'cancelled' ? 130 : 1;
 }
