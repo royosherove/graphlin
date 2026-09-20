@@ -17,6 +17,16 @@ npm run check:packages
 npm run demo
 ```
 
+Run the large-inventory pagination stress test locally with:
+
+```sh
+npm run test:stress
+```
+
+It traverses all 20,000 entities alongside 40,000 relations and checks bounded
+responses, current reads, and validation work. CI runs `npm test` with the
+correctness, privacy, and integration tests; stress tests are separate.
+
 The demo and automated tests use synthetic fixtures and make no Jev API calls.
 Live evaluations are explicit commands documented in the README. Use generated
 examples for them; do not submit private project code or transcripts.

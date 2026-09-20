@@ -1125,12 +1125,18 @@ identities, and containment cycles remain covered. The complete entity walk
 uses 101 requests and 140,097 record encodings instead of about six million;
 the local measured walk fell from about 15 seconds to 9 seconds. Independent
 review compared cached and uncached behavior across 228 cases with no remaining
-differences, including newly added support fields. No test timeout or CI gate
-was relaxed.
+differences, including newly added support fields. On Linux CI, the complete
+101-request stress walk still exceeded the 30-second test budget. At the
+maintainer's request, that stress test now runs separately and locally with
+`npm run test:stress`, allowing 90 seconds. CI retains the 30-second default
+and all correctness, privacy, integration and package checks. The local stress
+test still enforces work-count, full-inventory, current-read and payload limits.
 
 Local release checks:
 
-- `npm test`: **1,053 passed**, no failures, skips, or cancellations.
+- `npm test`: **1,052 passed**, no failures, skips, or cancellations.
+- Separate local stress test: **1 passed**; all 20,000 entities were reached
+  across 101 requests with 140,097 record encodings.
 - `npm run check:packages`: validation, all three plugin builds, and exact
   **135-file** tarball verification passed. Offline installation exercises all
   four parser languages, public SDK imports, and matched successful Claude/Codex

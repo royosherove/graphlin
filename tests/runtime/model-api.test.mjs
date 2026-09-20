@@ -2,140 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { setImmediate as tick, setTimeout as delay } from 'node:timers/promises';
-import { createModelAPI } from '../../runtime/daemon/model-api.mjs';
 import { compareCheckpoint } from '../../runtime/model/changes.mjs';
+import { PREFIX, projectId, fields, entity, state, fixture, cursorQuery } from '../helpers/model-api-fixture.mjs';
 
-const PREFIX = '/api/model/v1/';
-const projectId = 'project-synthetic';
-const fields = ['entities', 'relations', 'interpretations', 'activity', 'coverage', 'sessions', 'checkpoints'];
-const entity = (id, parentId = null) => ({ id, parentId, label: id, kind: 'module', basis: 'parsed',
-  validity: 'current', sourceRefs: [{ artifactId: 'artifact-one', generation: 1, hash: 'a'.repeat(64) }] });
 const certificate = (changes = {}) => ({
   artifactId: 'artifact-one', scopeId: 'root', hash: 'a'.repeat(64), generation: 1,
   complete: true, extractor: 'tree-sitter', version: '@vscode/tree-sitter-wasm@0.3.1/javascript/pinned',
   identityVersion: 'identity-1', coveredRanges: [{ startLine: 1, endLine: 50 }], omissions: [], capability: 'parsed',
   ...changes,
 });
-function state() {
-  return { schemaVersion: 2, projectId, revision: 1, sequence: 2,
-    entities: [entity('root'), entity('alpha', 'root'), entity('child', 'alpha'), entity('beta', 'root')],
-    relations: [{ id: 'relation-one', source: 'alpha', target: 'child', kind: 'contains', basis: 'parsed', validity: 'current' }],
-    interpretations: [{ id: 'interpretation-one', namespace: 'example.layers', label: 'Application',
-      kind: 'responsibility', entityIds: ['alpha'], basis: 'decision', support: 'tentative', validity: 'current', version: '1' }],
-    activity: [{ id: 'event-one', sessionId: 'session-one', entityIds: ['alpha'], kind: 'tool.requested',
-      sequence: 1, knownAtSequence: 1, at: '2026-01-01T00:00:00.000Z', outcome: 'pending', attribution: 'observed' },
-    { id: 'event-two', sessionId: 'session-two', entityIds: ['beta'], kind: 'tool.succeeded',
-      sequence: 2, knownAtSequence: 2, at: '2026-01-01T00:00:01.000Z', outcome: 'succeeded', attribution: 'correlated' }],
-    coverage: { complete: false, inventoried: 12, inspected: 3, retained: 4, deferred: { entities: 7 },
-      oldestSequence: 1, relationships: { observed: 2, resolved: 1, unresolved: 1 }, scopes: [{ id: 'root' }] },
-    sessions: [{ id: 'session-one', host: 'codex', status: 'active' }, { id: 'session-two', host: 'claude', status: 'ended' }],
-    checkpoints: [] };
-}
-
-async function fixture(t, options = {}) {
-  let current = state(), api, origin;
-  const calls = [], checkpoints = new Map();
-  const getSnapshot = selection => {
-    calls.push({ ...selection });
-    if (options.read) return options.read(selection, current, api);
-    const selected = selection.checkpointId ? checkpoints.get(selection.checkpointId) : current;
-    if (!selected) throw Object.assign(new Error('synthetic private message'), { code: 'MODEL_CHECKPOINT_UNAVAILABLE' });
-    return structuredClone(selected);
-  };
-  api = createModelAPI({ projectId, getSnapshot, now: options.now,
-    getSessions: options.getSessions,
-    createCheckpoint: options.noCheckpoints ? undefined : input => {
-      if (options.createCheckpoint) return options.createCheckpoint(input);
-      const marker = { id: `checkpoint-${checkpoints.size + 1}`, projectId, revision: current.revision,
-        sequence: ++current.sequence, label: input.label ?? 'Checkpoint', at: '2026-01-01T00:00:03.000Z',
-        ...(input.sessionId ? { sessionId: input.sessionId } : {}) };
-      current.checkpoints.push(marker);
-      checkpoints.set(marker.id, structuredClone(current));
-      return marker;
-    } });
-  const server = http.createServer((req, res) => {
-    void (async () => {
-      if (req.headers.host !== new URL(origin).host || req.socket.remoteAddress !== '127.0.0.1') {
-        res.writeHead(403); res.end(); return;
-      }
-      if (!await api.handle(req, res, { viewerAuthorized: req.headers.cookie === 'viewer=synthetic' })) {
-        res.writeHead(404); res.end();
-      }
-    })().catch(error => { res.destroy(error); });
-  });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  origin = `http://127.0.0.1:${server.address().port}`;
-  t.after(async () => {
-    api.close(); server.closeAllConnections();
-    await new Promise(resolve => server.close(resolve));
-  });
-  async function request(route, { viewer = true, method = 'GET', body, headers = {} } = {}) {
-    const response = await fetch(origin + PREFIX + route, { method,
-      headers: { ...(viewer ? { Cookie: 'viewer=synthetic' } : {}),
-        ...(method === 'POST' ? { Origin: origin, 'Content-Type': 'application/json' } : {}), ...headers },
-      body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body) });
-    const raw = await response.text();
-    let data;
-    try { data = JSON.parse(raw); } catch { data = raw; }
-    return { status: response.status, headers: response.headers, data, raw };
-  }
-  const post = (route, body, headers) => request(route, { method: 'POST', body, headers });
-  async function grant(input = {}) {
-    const result = await post('grants', { projectId, fields, history: true, ttlSeconds: 60, ...input });
-    assert.equal(result.status, 201, result.raw);
-    return { ...result.data, headers: { Authorization: `Bearer ${result.data.token}` } };
-  }
-  async function stream(route = 'events', headers = {}, viewer = true) {
-    const events = [], pending = [];
-    let ended = false, finish, response;
-    const completion = new Promise(resolve => { finish = resolve; });
-    const onEnd = () => {
-      ended = true; finish();
-      for (const waiter of pending.splice(0)) waiter(null);
-    };
-    const req = http.get(origin + PREFIX + route,
-      { headers: { ...(viewer ? { Cookie: 'viewer=synthetic' } : {}), ...headers } });
-    const ready = new Promise((resolve, reject) => {
-      req.on('error', reject);
-      req.on('response', res => {
-        response = res;
-        let buffer = '';
-        res.setEncoding('utf8');
-        res.on('data', chunk => {
-          buffer += chunk;
-          let boundary;
-          while ((boundary = buffer.indexOf('\n\n')) >= 0) {
-            const frame = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
-            const type = /^event: (.+)$/m.exec(frame)?.[1];
-            const data = /^data: (.+)$/m.exec(frame)?.[1];
-            if (!type || !data) continue;
-            const event = { type, data: JSON.parse(data), id: /^id: (.+)$/m.exec(frame)?.[1], raw: frame };
-            if (pending.length) pending.shift()(event); else events.push(event);
-          }
-        });
-        res.on('end', onEnd); res.on('close', onEnd); res.on('error', onEnd);
-        resolve(res);
-      });
-    });
-    await ready;
-    const stop = () => { req.destroy(); response?.destroy(); };
-    t.after(stop);
-    const next = async () => {
-      if (events.length) return events.shift();
-      if (ended) return null;
-      let timer;
-      try {
-        return await Promise.race([new Promise(resolve => pending.push(resolve)),
-          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('stream event timeout')), 3000); })]);
-      } finally { clearTimeout(timer); }
-    };
-    return { next, stop, completion, get status() { return response.statusCode; }, get ended() { return ended; } };
-  }
-  return { api, origin, server, request, post, grant, stream, calls, checkpoints,
-    get state() { return current; }, set state(value) { current = value; } };
-}
-const cursorQuery = cursor => encodeURIComponent(cursor);
-
 test('standalone integration: route ownership, negotiated capabilities and outer Host guard', async t => {
   const f = await fixture(t);
   assert.equal(await f.api.handle({ url: '/api/state' }, {}), false);
@@ -208,48 +83,6 @@ test('chunked oversized JSON returns a bounded error instead of processing a par
     req.write('{"label":"'); req.end('a'.repeat(5000) + '"}');
   });
   assert.equal(status, 413);
-});
-
-test('20k inventory snapshots and every page stay bounded and all entities remain reachable', async t => {
-  const f = await fixture(t);
-  let recordEncodings = 0, pages = 1;
-  const stringify = JSON.stringify, started = performance.now();
-  // A recording mock would retain every full snapshot and encoded string.
-  t.after(() => { JSON.stringify = stringify; });
-  JSON.stringify = function (value, ...args) {
-    if (value && typeof value.id === 'string' &&
-        (Object.hasOwn(value, 'sourceRefs') || Object.hasOwn(value, 'source'))) recordEncodings++;
-    return Reflect.apply(stringify, this, [value, ...args]);
-  };
-  f.state.entities = Array.from({ length: 20_000 }, (_, i) => entity(`node-${String(i).padStart(5, '0')}`));
-  f.state.relations = Array.from({ length: 40_000 }, (_, i) => ({ id: `edge-${String(i).padStart(5, '0')}`,
-    source: 'node-00000', target: 'node-00001', kind: 'calls' }));
-  const snapshot = await f.request('snapshot');
-  assert.equal(snapshot.status, 200, snapshot.raw.slice(0, 100));
-  assert.equal(snapshot.data.partial, true);
-  assert.equal(snapshot.data.pages.entities.total, 20_000);
-  assert.equal(snapshot.data.pages.relations.total, 40_000);
-  assert.ok(snapshot.data.activity.length);
-  assert.ok(Buffer.byteLength(snapshot.raw) <= 512 * 1024);
-  assert.ok(['entities', 'relations', 'interpretations', 'activity', 'sessions', 'checkpoints']
-    .reduce((sum, field) => sum + snapshot.data[field].length, 0) <= 200);
-  const ids = new Set(snapshot.data.entities.map(value => value.id));
-  let cursor = snapshot.data.pages.entities.nextCursor;
-  while (cursor) {
-    const page = await f.request(`entities?cursor=${cursorQuery(cursor)}`);
-    pages++;
-    assert.equal(page.status, 200, page.raw.slice(0, 100));
-    assert.ok(page.data.items.length <= 200);
-    assert.ok(Buffer.byteLength(page.raw) <= 512 * 1024);
-    assert.equal(page.data.revision, snapshot.data.revision);
-    for (const value of page.data.items) { assert.equal(ids.has(value.id), false); ids.add(value.id); }
-    cursor = page.data.page.nextCursor;
-  }
-  assert.equal(ids.size, 20_000);
-  assert.equal(f.calls.length, pages, 'every page reads the current provider, even with unchanged revision');
-  assert.ok(recordEncodings < 3 * (20_000 + 40_000),
-    `unchanged records must not be reprojected/encoded on every page: ${recordEncodings} encodings`);
-  t.diagnostic(`20k entity walk: ${pages} requests, ${recordEncodings} record encodings, ${(performance.now() - started).toFixed(0)} ms`);
 });
 
 test('byte-limited interpretation pages trim with advancing cursors and visible coverage', async t => {

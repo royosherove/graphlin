@@ -14,6 +14,7 @@
     "start": "node scripts/graphlin.mjs start",
     "demo": "node scripts/graphlin.mjs demo",
     "test": "node --test --test-timeout=30000",
+    "test:stress": "node --test --test-timeout=90000 tests/stress/*.mjs",
     "build": "node scripts/build-packages.mjs",
     "doctor": "node scripts/graphlin.mjs doctor",
     "eval:jev": "node scripts/evaluate-jev.mjs",
