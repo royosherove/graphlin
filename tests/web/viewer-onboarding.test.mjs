@@ -196,7 +196,6 @@ test('activity can be hidden without stopping capture; troubleshooting opens the
   const h = await harness({ initial: empty({ hookEvents: [activity(1, { receipt: 1 })] }) });
   try {
     await h.ready();
-    await h.$('activity-toggle').fire('click');
     assert.equal(h.$('activity-content').hidden, true);
     assert.equal(h.$('activity-toggle').getAttribute('aria-expanded'), 'false');
     h.send(empty({ activity: [activity()], hookEvents: [activity(1, { receipt: 1 })] }));

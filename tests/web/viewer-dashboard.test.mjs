@@ -45,10 +45,15 @@ test('dashboard displays project metadata literally and copies the complete upda
   try {
     await h.view.refresh();
     assert.equal(h.$('project-path').textContent, supplied.projectRoot);
+    assert.equal(h.$('project-path').title, supplied.projectRoot);
     assert.equal(h.$('project-path').children.length, 0);
     assert.equal(h.$('project-branch').textContent, supplied.branch.name);
+    assert.equal(h.$('project-branch').title, supplied.branch.name);
     assert.equal(h.$('graphlin-version').textContent, '0.1.2');
     assert.equal(h.$('version-update-status').textContent, 'Graphlin 0.1.10 is available');
+    assert.equal(h.$('version-update-indicator').hidden, false);
+    assert.equal(h.$('version-update-indicator').textContent, '0.1.10 available');
+    assert.match(h.$('version-update-indicator').getAttribute('aria-label'), /View update instructions/);
     assert.equal(h.$('version-update-guide').hidden, false);
     await h.$('version-update-copy').fire('click');
     assert.deepEqual(copied, [supplied.update.command]);
@@ -66,17 +71,20 @@ test('branch changes refresh, detached/non-Git states are explicit, and failed c
     await h.view.refresh();
     assert.equal(h.$('project-branch').textContent, 'main');
     assert.equal(h.$('version-update-status').textContent, 'No newer release found');
+    assert.equal(h.$('version-update-indicator').hidden, true);
     assert.equal(h.$('version-update-guide').hidden, true);
     for (const [status, text] of [['detached', 'Detached HEAD'], ['not_git', 'Not a Git repository'], ['unavailable', 'Branch unavailable']]) {
       supplied = info({ branch: { status }, update: { status: 'unavailable' } });
       await h.view.refresh();
       assert.equal(h.$('project-branch').textContent, text);
       assert.equal(h.$('version-update-status').textContent, 'Update check unavailable');
+      assert.equal(h.$('version-update-indicator').hidden, true);
     }
     supplied = new Error('PRIVATE_ERROR');
     await h.view.refresh();
     assert.equal(h.$('graphlin-version').textContent, '0.1.2', 'known running version survives an update request failure');
     assert.equal(h.$('version-update-status').textContent, 'Update check unavailable');
+    assert.equal(h.$('version-update-indicator').hidden, true);
     assert.equal(h.$('version-update-command').textContent, '');
     supplied = info({ mode: 'demo' });
     await h.view.refresh();

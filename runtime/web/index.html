@@ -16,6 +16,15 @@
   <div class="page">
     <header class="masthead">
       <a class="brand" href="/" aria-label="Graphlin live viewer"><span class="brand-mark" aria-hidden="true"></span>graphlin</a>
+      <section class="project-details" aria-label="Project and Graphlin version">
+        <p id="project-label" class="project-label">Local project</p>
+        <dl>
+          <div><dt>Branch</dt><dd id="project-branch">Checking…</dd></div>
+          <div class="project-path"><dt>Path</dt><dd id="project-path">Checking…</dd></div>
+          <div><dt>Graphlin</dt><dd id="graphlin-version">Checking…</dd></div>
+        </dl>
+      </section>
+      <button class="update-indicator" id="version-update-indicator" type="button" aria-controls="version-update-guide" hidden>Update available</button>
       <div class="connection" id="connection" data-state="connecting">
         <span class="connection-dot" aria-hidden="true"></span>
         <span id="connection-label" role="status">Connecting to local service</span>
@@ -24,29 +33,7 @@
     </header>
 
     <main id="main">
-      <div class="intro">
-        <div>
-          <h1>Architecture, as it happens.</h1>
-          <p>Follow the work. Inspect the evidence behind each connection.</p>
-        </div>
-        <p id="project-label" class="project-label">Local project</p>
-      </div>
-
-      <section class="project-details" aria-label="Project and Graphlin version">
-        <dl>
-          <div><dt>Branch</dt><dd id="project-branch">Checking…</dd></div>
-          <div class="project-path"><dt>Path</dt><dd id="project-path">Checking…</dd></div>
-          <div><dt>Graphlin</dt><dd id="graphlin-version">Checking…</dd></div>
-        </dl>
-        <p id="version-update-status" role="status">Checking for updates…</p>
-        <details id="version-update-guide" hidden>
-          <summary>How to update</summary>
-          <p id="version-update-steps">Press Ctrl+C in the viewer terminal, then run this command. Start a new Claude Code or Codex session after setup finishes.</p>
-          <pre id="version-update-command" tabindex="0"></pre>
-          <button id="version-update-copy" type="button">Copy update command</button>
-          <span id="version-update-copy-status" role="status"></span>
-        </details>
-      </section>
+      <h1 class="screen-reader">Live architecture workspace</h1>
 
       <div id="demo-banner" class="notice demo-notice" role="status" hidden>
         <strong>Demo session</strong>
@@ -61,29 +48,56 @@
             <span>Session</span>
             <select id="session" disabled><option value="">Waiting for a session</option></select>
           </label>
+          <div class="panel-controls" role="group" aria-label="Workspace panels">
+            <button type="button" id="details-toggle" aria-expanded="false" aria-controls="live-sidebar">Details</button>
+            <button type="button" id="history-toggle" aria-expanded="false" aria-controls="history-panel">History</button>
+            <button type="button" id="activity-toggle" aria-expanded="false" aria-controls="activity-panel">Activity</button>
+          </div>
           <div class="session-actions">
             <button type="button" id="classification-log" aria-haspopup="dialog" aria-controls="diagnostics-dialog">Classification log</button>
-            <button type="button" id="how-to-connect" aria-haspopup="dialog" aria-controls="connection-dialog">How to connect</button>
+            <button type="button" id="how-to-connect" aria-haspopup="dialog" aria-controls="connection-dialog">Connect</button>
             <button type="button" id="pause" aria-describedby="capture-note" disabled>Pause classification</button>
             <button type="button" id="export" disabled>Export JSON</button>
           </div>
         </div>
 
-        <div class="status-strip" aria-label="Capture and classification status">
-          <div class="classification-status">
-            <span class="status-dot" id="classifier-dot" data-state="waiting" aria-hidden="true"></span>
-            <strong id="classifier-label">Waiting for local service</strong>
-            <span id="capture-note">Capture status will appear with the first snapshot.</span>
-          </div>
-          <div class="coverage-status"><span id="coverage-label">Coverage not reported</span><span id="queue-label">No snapshot yet</span></div>
-        </div>
-
-        <div class="workspace-body">
+        <div class="workspace-body" id="workspace-body" data-details-open="false">
           <section class="drawing" id="drawing" data-theme="sketchbook" aria-labelledby="canvas-title">
             <div class="drawing-toolbar">
               <div class="drawing-heading">
                 <h2 id="canvas-title">Live architecture</h2>
                 <span id="revision">Revision —</span>
+              </div>
+              <div class="layout-toolbar" role="group" aria-label="Diagram arrangement">
+                <label for="layout">Layout
+                  <select id="layout" aria-describedby="layout-note" disabled>
+                    <option value="hierarchy">Hierarchy top-down</option>
+                    <option value="dependency">Dependency left-right</option>
+                    <option value="grouped">Group by type</option>
+                    <option value="circular">Circular</option>
+                    <option value="grid">Grid</option>
+                    <option value="original">Original</option>
+                  </select>
+                </label>
+                <button type="button" id="arrange" disabled>Arrange</button>
+                <label class="auto-arrange" for="auto-arrange"><input id="auto-arrange" type="checkbox" checked disabled> Auto-arrange</label>
+                <div class="theme-picker">
+                  <label for="theme">Theme
+                    <select id="theme" aria-describedby="theme-note" disabled>
+                      <option value="sketchbook">Sketchbook</option>
+                      <option value="ocean">Ocean</option>
+                      <option value="forest">Forest</option>
+                      <option value="sunset">Sunset</option>
+                      <option value="berry">Berry</option>
+                      <option value="sepia">Sepia</option>
+                      <option value="blueprint">Blueprint dark</option>
+                      <option value="midnight">Midnight dark</option>
+                    </select>
+                  </label>
+                  <span class="theme-preview" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+                </div>
+                <span class="screen-reader" id="theme-note">Colors follow component types. Themes change appearance only.</span>
+                <span class="screen-reader" id="layout-note">Arranges when components or connections change.</span>
               </div>
               <div class="zoom-controls" role="group" aria-label="Diagram zoom">
                 <button type="button" id="zoom-out" aria-label="Zoom out" disabled>−</button>
@@ -92,43 +106,19 @@
                 <button type="button" id="fit" disabled>Fit</button>
               </div>
             </div>
-            <div class="layout-toolbar" role="group" aria-label="Diagram arrangement">
-              <label for="layout">Layout
-                <select id="layout" disabled>
-                  <option value="hierarchy">Hierarchy top-down</option>
-                  <option value="dependency">Dependency left-right</option>
-                  <option value="grouped">Group by type</option>
-                  <option value="circular">Circular</option>
-                  <option value="grid">Grid</option>
-                  <option value="original">Original</option>
-                </select>
-              </label>
-              <button type="button" id="arrange" disabled>Arrange</button>
-              <label class="auto-arrange" for="auto-arrange"><input id="auto-arrange" type="checkbox" checked disabled> Auto-arrange</label>
-              <div class="theme-picker">
-                <label for="theme">Theme
-                  <select id="theme" aria-describedby="theme-note" disabled>
-                    <option value="sketchbook">Sketchbook</option>
-                    <option value="ocean">Ocean</option>
-                    <option value="forest">Forest</option>
-                    <option value="sunset">Sunset</option>
-                    <option value="berry">Berry</option>
-                    <option value="sepia">Sepia</option>
-                    <option value="blueprint">Blueprint dark</option>
-                    <option value="midnight">Midnight dark</option>
-                  </select>
-                </label>
-                <span class="theme-preview" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <div class="filter-toolbar">
+              <div class="diagram-search-bar" role="search" aria-label="Diagram search">
+                <label class="screen-reader" for="diagram-search">Find components</label>
+                <input id="diagram-search" type="search" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Find components…" aria-controls="architecture" aria-describedby="diagram-search-hint" aria-keyshortcuts="/">
+                <button id="diagram-search-clear" type="button" hidden>Clear search</button>
+                <span class="screen-reader" id="diagram-search-hint">/ to search · Esc to clear</span>
+                <span id="diagram-search-status" role="status" aria-live="polite" aria-atomic="true"></span>
               </div>
-              <span class="screen-reader" id="theme-note">Colors follow component types. Themes change appearance only.</span>
-              <span id="layout-note">Arranges when components or connections change.</span>
-            </div>
-            <div class="diagram-search-bar" role="search" aria-label="Diagram search">
-              <label for="diagram-search">Find components</label>
-              <input id="diagram-search" type="search" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Search labels…" aria-controls="architecture" aria-describedby="diagram-search-hint" aria-keyshortcuts="/">
-              <button id="diagram-search-clear" type="button" hidden>Clear search</button>
-              <span id="diagram-search-hint">/ to search · Esc to clear</span>
-              <span id="diagram-search-status" role="status" aria-live="polite" aria-atomic="true"></span>
+              <div class="node-type-toolbar" role="group" aria-label="Component type filters">
+                <button type="button" id="node-types-all">All types</button>
+                <button type="button" id="node-types-none">Clear all</button>
+                <div id="node-type-filters" role="group" aria-label="Visible component types"></div>
+              </div>
             </div>
             <div class="diagram-stage" id="diagram-stage">
               <svg id="architecture" viewBox="0 0 920 510" role="group" tabindex="0" aria-labelledby="diagram-title diagram-desc">
@@ -164,15 +154,29 @@
               </div>
               <span id="graph-count">No components yet</span>
             </div>
-            <details class="shape-key">
-              <summary>Shape key</summary>
-              <div id="shape-key-items"></div>
-              <p>Shapes describe component types. Display overrides change appearance only.</p>
-            </details>
             <p class="diagram-note" id="diagram-note">Code classification does not establish runtime connectivity.</p>
           </section>
 
-          <aside class="live-sidebar" id="live-sidebar" aria-label="Live activity and evidence">
+          <aside class="live-sidebar" id="live-sidebar" aria-label="Live activity and evidence" hidden>
+            <div class="details-heading" id="details-heading"><h2>Details</h2><button type="button" id="details-close" aria-label="Close details">Close</button></div>
+            <div class="status-strip" aria-label="Capture and classification status">
+              <div class="classification-status">
+                <span class="status-dot" id="classifier-dot" data-state="waiting" aria-hidden="true"></span>
+                <strong id="classifier-label">Waiting for local service</strong>
+                <span id="capture-note">Capture status will appear with the first snapshot.</span>
+              </div>
+              <div class="coverage-status"><span id="coverage-label">Coverage not reported</span><span id="queue-label">No snapshot yet</span></div>
+            </div>
+            <section class="version-details" aria-label="Graphlin updates">
+              <p id="version-update-status" role="status">Checking for updates…</p>
+              <details id="version-update-guide" hidden>
+                <summary>How to update</summary>
+                <p id="version-update-steps">Press Ctrl+C in the viewer terminal, then run this command. Start a new Claude Code or Codex session after setup finishes.</p>
+                <pre id="version-update-command" tabindex="0"></pre>
+                <button id="version-update-copy" type="button">Copy update command</button>
+                <span id="version-update-copy-status" role="status"></span>
+              </details>
+            </section>
             <section class="onboarding" aria-labelledby="onboarding-title">
               <h2 id="onboarding-title">Getting your first shape</h2>
               <ol class="onboarding-progress" aria-label="Observed setup progress">
@@ -193,6 +197,11 @@
               <ol id="sidebar-hook-list" class="hook-receipts" aria-label="Received hooks across this project, newest first"></ol>
             </details>
             <section class="sidebar-history sidebar-theme" id="sidebar-history" data-theme="sketchbook" aria-labelledby="sidebar-change-heading">
+              <details class="shape-key">
+                <summary>Shape key</summary>
+                <div id="shape-key-items"></div>
+                <p>Shapes describe component types. Display overrides change appearance only.</p>
+              </details>
               <div class="sidebar-heading"><h2 id="sidebar-change-heading">Diagram changes</h2><span class="sidebar-count" id="sidebar-change-count">0</span></div>
               <p class="sidebar-note" id="sidebar-change-note">Newest changes first. Select a shape to inspect it, or a revision to replay.</p>
               <p class="sidebar-empty" id="sidebar-change-empty">Shape changes will stack here as this session discovers or changes the architecture.</p>
@@ -212,7 +221,7 @@
           </aside>
         </div>
 
-        <div class="playback">
+        <div class="playback" id="history-panel" role="region" aria-label="Architecture history" hidden>
           <div class="mode-buttons" role="group" aria-label="Architecture view">
             <button id="live" type="button" aria-pressed="true">Live</button>
             <button id="replay" type="button" aria-pressed="false" disabled>Replay</button>
@@ -226,13 +235,12 @@
         </div>
       </section>
 
-      <section class="activity-section" aria-labelledby="activity-heading">
+      <section class="activity-section" id="activity-panel" aria-labelledby="activity-heading" hidden>
         <div class="activity-heading">
           <div><h2 id="activity-heading">Activity stream</h2><p id="activity-note">Observable work, independent of classification.</p></div>
           <span id="activity-count">0 events</span>
-          <button id="activity-toggle" type="button" aria-expanded="true" aria-controls="activity-content">Hide activity log</button>
         </div>
-        <div id="activity-content">
+        <div id="activity-content" hidden>
           <p class="activity-empty" id="activity-empty">No activity received. Start work in a connected agent session; its captured events will appear here.</p>
           <ol id="activity-list" class="activity-list" aria-label="Recent activity, newest first"></ol>
         </div>

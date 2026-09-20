@@ -313,6 +313,10 @@ hook feed. Receipts from before that restart cannot be reconstructed.
 
 ## Arrange the diagram
 
+The diagram fills the workspace. Layout, theme, search, and type filters sit
+above it. **Details**, **History**, and **Activity** open panels that are hidden
+by default. Selecting a shape opens its evidence inspector.
+
 The dashboard shows the active Git branch, full project path, and running
 Graphlin version. Branch information refreshes every 30 seconds. The update
 check asks npm only for Graphlin's public release metadata and caches the result
@@ -337,8 +341,14 @@ preserve manual zoom and pan.
 
 Type in the search box above the diagram, or press **/** to focus it. Search
 matches any part of a node name, ignoring case, and shows only matching nodes
-and connections between them. Press **Esc** to clear the search. Filtering
-changes the view without deleting nodes or changing exports.
+and connections between them. Each change rearranges the visible nodes and fits
+them into the canvas, including clearing the search with **Esc**.
+
+Type buttons show the component kinds present in the current diagram. Toggle
+them individually, choose **All types**, or **Clear all** to start a new
+selection. Search and type filters work together; Esc clears the search while
+keeping the selected types. Filtering changes the view without deleting nodes
+or changing exports.
 
 Twelve component kinds map to distinct shapes, including functions, classes,
 interfaces, events, configuration, packages, queues, and datastores.

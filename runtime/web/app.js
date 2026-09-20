@@ -157,10 +157,10 @@ export function liveNodeChanges(previous, next, eligible) {
   };
 }
 
-export function filterDiagram(graph, query) {
-  if (!query) return graph;
+export function filterDiagram(graph, query = '', kinds = null) {
+  if (!query && kinds === null) return graph;
   const needle = query.toLowerCase();
-  const nodes = graph.nodes.filter(node => node.label.toLowerCase().includes(needle));
+  const nodes = graph.nodes.filter(node => (kinds === null || kinds.has(node.kind)) && node.label.toLowerCase().includes(needle));
   const visible = new Set(nodes.map(node => node.id));
   return { ...graph, nodes, edges: graph.edges.filter(edge => visible.has(edge.source) && visible.has(edge.target)) };
 }
@@ -842,6 +842,7 @@ export function startDashboardInfo({ load = signal => request('/api/about', { si
       throw new Error('invalid_dashboard_info');
     }
     $('project-path').textContent = safeText(info.projectRoot, 4096) || 'Path unavailable';
+    $('project-path').title = $('project-path').textContent;
     $('graphlin-version').textContent = info.version;
     $('version-update-steps').textContent = info.mode === 'demo'
       ? 'Press Ctrl+C in the demo terminal, then run this command to restart the updated offline demo.'
@@ -851,9 +852,14 @@ export function startDashboardInfo({ load = signal => request('/api/about', { si
       ? safeText(branch.name, 1024) || 'Branch unavailable'
       : branch?.status === 'detached' ? `Detached HEAD${branch.commit ? ` · ${safeText(branch.commit, 12)}` : ''}`
       : branch?.status === 'not_git' ? 'Not a Git repository' : 'Branch unavailable';
+    $('project-branch').title = $('project-branch').textContent;
     const latest = typeof info.update?.latest === 'string' &&
       /^\d+\.\d+\.\d+$/.test(info.update.latest) ? info.update.latest : null;
     const available = info.update?.status === 'available' && latest;
+    $('version-update-indicator').hidden = !available;
+    $('version-update-indicator').textContent = available ? `${latest} available` : 'Update available';
+    $('version-update-indicator').setAttribute('aria-label', available
+      ? `Graphlin ${latest} is available. View update instructions.` : 'View update instructions');
     $('version-update-status').textContent = available ? `Graphlin ${latest} is available`
       : info.update?.status === 'current' ? 'No newer release found'
       : 'Update check unavailable';
@@ -884,6 +890,7 @@ export function startDashboardInfo({ load = signal => request('/api/about', { si
           if ($('project-path').textContent === 'Checking…') $('project-path').textContent = 'Path unavailable';
           if ($('graphlin-version').textContent === 'Checking…') $('graphlin-version').textContent = 'Version unavailable';
           $('version-update-status').textContent = 'Update check unavailable';
+          $('version-update-indicator').hidden = true;
           $('version-update-guide').hidden = true;
           $('version-update-command').textContent = '';
           command = '';
@@ -1556,6 +1563,7 @@ export function startViewer() {
     viewport: null, fitBounds: null, zoom: 1, followFit: true, lastGraphSignature: '', inspectorSignature: '',
     nodeElements: new Map(), edgeElements: new Map(), activityElements: new Map(),
     views: new Map(), viewKey: null, view: null, displayGraph: null, searchQuery: '',
+    nodeTypes: null, nodeTypeButtons: new Map(),
     effects: new Map(), liveReady: false, motionReady: false, movement: null, closed: false, projectName: '',
   };
   const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)');
@@ -1630,7 +1638,7 @@ export function startViewer() {
     $('onboarding-action').dataset.action = progress.next.action;
     // Preserve a manual text selection while live snapshots arrive.
     if ($('orientation-prompt').textContent !== ORIENTATION_PROMPT) $('orientation-prompt').textContent = ORIENTATION_PROMPT;
-    $('orientation').hidden = Boolean(state.searchQuery || state.replayFrame || state.snapshot?.mode === 'demo' || state.snapshot?.mode === 'replay');
+    $('orientation').hidden = Boolean(state.searchQuery || state.nodeTypes !== null || state.replayFrame || state.snapshot?.mode === 'demo' || state.snapshot?.mode === 'replay');
   }
   function currentGraph() { return state.replayFrame?.graph || state.snapshot?.graph; }
   function applyTheme() {
@@ -1789,10 +1797,14 @@ export function startViewer() {
     // initial/session snapshots establish it without focusing an old arrival.
     const live = streamed && state.liveReady && !switched && !state.replayFrame &&
       snapshot.mode !== 'replay' && state.snapshot?.mode !== 'replay';
-    const focusNodeId = liveNodeChanges(state.snapshot?.graph, snapshot.graph, live).added.at(-1);
+    const visible = new Set(filterDiagram(snapshot.graph, state.searchQuery, state.nodeTypes).nodes.map(node => node.id));
+    const focusNodeId = liveNodeChanges(state.snapshot?.graph, snapshot.graph, live).added.filter(id => visible.has(id)).at(-1);
     const before = state.displayGraph;
     cancelMovement({ fit: !focusNodeId });
-    if (switched) resetView();
+    if (switched) {
+      resetView();
+      state.nodeTypes = null;
+    }
     state.snapshot = snapshot;
     state.epoch += 1;
     state.frames = historyFrames(snapshot);
@@ -1926,14 +1938,18 @@ export function startViewer() {
     }
   }
   function revealInspector() {
+    revealDetailsSection($('inspector-body')?.parentElement);
+  }
+  function revealDetailsSection(panel) {
+    setWorkspacePanel('details', true);
     const container = $('live-sidebar');
-    const panel = $('inspector-body')?.parentElement;
     if (!container?.scrollTo || !container.getBoundingClientRect || !panel?.getBoundingClientRect ||
       !container.contains(panel)) return;
     const region = container.getBoundingClientRect();
     const evidence = panel.getBoundingClientRect();
     if (!Number.isFinite(region.top) || !Number.isFinite(evidence.top) || !(region.height > 0)) return;
-    const offset = evidence.top - region.top - (container.clientTop || 0);
+    const headingHeight = $('details-heading')?.getBoundingClientRect?.().height || 0;
+    const offset = evidence.top - region.top - (container.clientTop || 0) - headingHeight;
     if (Math.abs(offset) < 1) return;
     container.scrollTo({
       top: Math.max(0, (container.scrollTop || 0) + offset),
@@ -2016,14 +2032,40 @@ export function startViewer() {
     state.followFit = false;
     setViewBox();
   }
-  function renderGraph({ forceFit = false, focusNodeId } = {}) {
+  function renderNodeTypeFilters(canonical) {
+    const container = $('node-type-filters');
+    if (!container) return;
+    // Discover kinds from the current canonical canvas, never search results.
+    const kinds = [...new Set(canonical.nodes.map(node => node.kind))].sort();
+    for (const [kind, button] of state.nodeTypeButtons) {
+      if (!kinds.includes(kind)) {
+        button.remove();
+        state.nodeTypeButtons.delete(kind);
+      }
+    }
+    kinds.forEach((kind, index) => {
+      let button = state.nodeTypeButtons.get(kind);
+      if (!button) {
+        button = html('button', upperFirst(kind), 'node-type-filter');
+        button.setAttribute('type', 'button');
+        button.dataset.kind = kind;
+        state.nodeTypeButtons.set(kind, button);
+      }
+      button.setAttribute('aria-pressed', String(state.nodeTypes === null || state.nodeTypes.has(kind)));
+      if (container.children[index] !== button) container.insertBefore(button, container.children[index] || null);
+    });
+    $('node-types-all')?.setAttribute('aria-pressed', String(state.nodeTypes === null));
+    $('node-types-none')?.setAttribute('aria-pressed', String(state.nodeTypes?.size === 0));
+  }
+  function renderGraph({ forceFit = false, arrange = false, focusNodeId } = {}) {
     const canonical = currentGraph();
     if (!canonical) return;
     const view = presentation();
     applyTheme();
-    // Search only projects visibility; layout, evidence and live arrival
-    // detection retain the complete source graph.
-    const graph = filterDiagram(projectPresentation(canonical, view), state.searchQuery);
+    renderNodeTypeFilters(canonical);
+    // Lay out only visible nodes so hidden components leave no empty slots.
+    // Evidence, exports and live arrival detection retain the canonical graph.
+    const graph = projectPresentation(filterDiagram(canonical, state.searchQuery, state.nodeTypes), view, { arrange });
     state.displayGraph = graph;
     const routes = graphEdgeRoutes(graph);
     const bounds = graphBounds(graph, routes);
@@ -2144,7 +2186,7 @@ export function startViewer() {
     $('diagram-title').textContent = `${state.replayFrame ? 'Historical' : 'Live'} architecture, revision ${graph.revision}`;
     $('diagram-desc').textContent = `${graph.nodes.length} components and ${graph.edges.length} relationships. Code interpretation does not establish runtime connectivity. Use Tab and Enter to inspect a component or relationship. With the diagram focused, use plus and minus to zoom, arrow keys to pan, and 0 to fit.`;
     $('graph-count').textContent = `${graph.nodes.length} components · ${graph.edges.length} relationships`;
-    $('diagram-search-status').textContent = state.searchQuery
+    $('diagram-search-status').textContent = state.searchQuery || state.nodeTypes !== null
       ? `${graph.nodes.length} of ${canonical.nodes.length} components shown` : '';
     $('diagram-search-clear').hidden = !state.searchQuery;
     $('empty-canvas').hidden = graph.nodes.length > 0 || removalBounds().length > 0;
@@ -2156,8 +2198,12 @@ export function startViewer() {
       unavailable: ['Waiting for classification.', 'The classifier is unavailable. Safe activity continues below; supported architecture will appear when classification recovers.'],
       timeout: ['Evidence needs another moment.', 'Classification exceeded its deadline. Activity still appears below, and no unsupported components are added.'],
     };
-    const message = state.searchQuery
-      ? ['No matching components.', `No labels contain “${state.searchQuery}”. Try another search or press Esc to restore the diagram.`]
+    const message = state.nodeTypes?.size === 0
+      ? ['No component types selected.', 'Choose a type or All types to show components.']
+      : state.searchQuery
+      ? ['No matching components.', `No selected components match “${state.searchQuery}”. Try another search or press Esc to clear the search.`]
+      : state.nodeTypes !== null && canonical.nodes.length
+      ? ['No matching components.', 'Choose another type or All types to show components.']
       : state.replayFrame
       ? ['No components in this revision.', 'Move through the recent revisions or return to Live to follow the current map.']
       : emptyMessages[classifier] || ['Your architecture starts here.', 'Work in a connected agent session. Components appear when approved evidence supports them; activity can arrive first.'];
@@ -2227,8 +2273,7 @@ export function startViewer() {
     finishPan();
     cancelMovement();
     const before = state.displayGraph;
-    projectPresentation(graph, presentation(), { arrange: true });
-    renderGraph({ forceFit: true });
+    renderGraph({ forceFit: true, arrange: true });
     moveLayout(before, state.displayGraph);
     announce(`Arranged using ${LAYOUT_NAMES[state.view.algorithm]}. Evidence and selection are unchanged.`);
   }
@@ -2371,6 +2416,7 @@ export function startViewer() {
         button.addEventListener('click', () => {
           const row = state.activityElements.get(event.id);
           if (row) {
+            setWorkspacePanel('activity', true);
             row.querySelector('button').focus();
             row.scrollIntoView({ block: 'nearest' });
           }
@@ -2433,6 +2479,7 @@ export function startViewer() {
           updateSelection();
           renderInspector();
           renderActivity();
+          revealInspector();
           announce(`Related evidence for ${(node || edge).label} is shown in the inspector.`);
         } else toast(state.replayFrame ? 'No evidence link for this event in the displayed revision. Return to Live to inspect current links.' : 'This captured event has no architecture evidence link. Tool activity alone does not establish an architectural claim.');
       });
@@ -2463,6 +2510,7 @@ export function startViewer() {
   function replayAt(index) {
     const frame = state.frames[index];
     if (!frame) return;
+    setWorkspacePanel('history', true);
     resetMotionBaseline();
     state.replayFrame = frame;
     render();
@@ -2534,6 +2582,7 @@ export function startViewer() {
         if (!state.closed && attempt === state.connectEpoch) {
           state.projectName = friendlyProjectName(info.projectRoot);
           $('project-path').textContent = info.projectRoot;
+          $('project-path').title = info.projectRoot;
           renderStatus();
         }
       } catch { /* The project ID remains a usable fallback. */ }
@@ -2588,24 +2637,85 @@ export function startViewer() {
       $('orientation-prompt').focus();
     }
   };
-  const onToggleActivity = () => {
-    const hidden = !$('activity-content').hidden;
-    $('activity-content').hidden = hidden;
-    $('activity-toggle').textContent = hidden ? 'Show activity log' : 'Hide activity log';
-    $('activity-toggle').setAttribute('aria-expanded', String(!hidden));
+  const workspacePanels = {
+    details: { panel: $('live-sidebar'), toggle: $('details-toggle') },
+    history: { panel: $('history-panel'), toggle: $('history-toggle') },
+    activity: { panel: $('activity-panel'), toggle: $('activity-toggle') },
   };
+  function setWorkspacePanel(name, open) {
+    const { panel, toggle } = workspacePanels[name];
+    if (!open && panel.contains(document.activeElement)) toggle.focus();
+    panel.hidden = !open;
+    toggle.setAttribute('aria-expanded', String(open));
+    if (name === 'details') $('workspace-body').dataset.detailsOpen = String(open);
+    if (name === 'activity') $('activity-content').hidden = !open;
+  }
+  const onToggleDetails = () => setWorkspacePanel('details', $('live-sidebar').hidden);
+  const onToggleHistory = () => setWorkspacePanel('history', $('history-panel').hidden);
+  const onToggleActivity = () => setWorkspacePanel('activity', $('activity-panel').hidden);
+  const onCloseDetails = () => {
+    setWorkspacePanel('details', false);
+    $('details-toggle').focus();
+  };
+  const onViewUpdate = () => {
+    $('version-update-guide').open = !$('version-update-guide').hidden;
+    revealDetailsSection($('version-update-status'));
+  };
+  const panelKeyHandlers = new Map();
+  for (const [name, { panel, toggle }] of Object.entries(workspacePanels)) {
+    setWorkspacePanel(name, false);
+    const onKeyDown = event => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.target?.tagName?.toLowerCase() === 'select') return;
+      event.preventDefault();
+      setWorkspacePanel(name, false);
+      toggle.focus();
+    };
+    panel.addEventListener('keydown', onKeyDown);
+    panelKeyHandlers.set(panel, onKeyDown);
+  }
   $('onboarding-action').addEventListener('click', onOnboardingAction);
   $('orientation-copy').addEventListener('click', onCopyOrientation);
+  $('details-toggle').addEventListener('click', onToggleDetails);
+  $('details-close').addEventListener('click', onCloseDetails);
+  $('version-update-indicator').addEventListener('click', onViewUpdate);
+  $('history-toggle').addEventListener('click', onToggleHistory);
   $('activity-toggle').addEventListener('click', onToggleActivity);
-  const onSearchInput = () => {
-    if (state.closed || state.searchQuery === $('diagram-search').value) return;
-    state.searchQuery = $('diagram-search').value;
+  const applyFilters = () => {
     // Filtering is not a source change: cancel existing decoration/movement
     // and render directly, without changing the snapshot arrival baseline.
     finishPan();
     clearMotion();
     renderOnboarding();
-    renderGraph({ forceFit: true });
+    renderGraph({ forceFit: true, arrange: true });
+  };
+  const onSearchInput = () => {
+    if (state.closed || state.searchQuery === $('diagram-search').value) return;
+    state.searchQuery = $('diagram-search').value;
+    applyFilters();
+  };
+  const onNodeTypeClick = event => {
+    if (state.closed || !currentGraph()) return;
+    const container = $('node-type-filters');
+    let button = event.target;
+    while (button && button.parentElement !== container) button = button.parentElement;
+    const kind = button?.dataset.kind;
+    if (!kind || !state.nodeTypeButtons.has(kind)) return;
+    // null means all, including future kinds. Explicit selections retain their
+    // choices when a kind disappears and returns; new kinds stay unselected.
+    if (state.nodeTypes === null) state.nodeTypes = new Set(currentGraph().nodes.map(node => node.kind));
+    if (state.nodeTypes.has(kind)) state.nodeTypes.delete(kind);
+    else state.nodeTypes.add(kind);
+    applyFilters();
+  };
+  const onAllNodeTypes = () => {
+    if (state.closed) return;
+    state.nodeTypes = null;
+    applyFilters();
+  };
+  const onNoNodeTypes = () => {
+    if (state.closed) return;
+    state.nodeTypes = new Set();
+    applyFilters();
   };
   const clearSearch = () => {
     $('diagram-search').value = '';
@@ -2627,6 +2737,9 @@ export function startViewer() {
   };
   $('diagram-search').addEventListener('input', onSearchInput);
   $('diagram-search-clear').addEventListener('click', clearSearch);
+  $('node-type-filters')?.addEventListener('click', onNodeTypeClick);
+  $('node-types-all')?.addEventListener('click', onAllNodeTypes);
+  $('node-types-none')?.addEventListener('click', onNoNodeTypes);
   window.addEventListener('keydown', onSearchKeyDown);
   $('pause').addEventListener('click', () => control(state.snapshot?.paused ? 'resume' : 'pause'));
   $('session').addEventListener('change', () => control('session', $('session').value));
@@ -2771,9 +2884,17 @@ export function startViewer() {
       dashboardInfo.close();
       $('onboarding-action').removeEventListener('click', onOnboardingAction);
       $('orientation-copy').removeEventListener('click', onCopyOrientation);
+      $('details-toggle').removeEventListener('click', onToggleDetails);
+      $('details-close').removeEventListener('click', onCloseDetails);
+      $('version-update-indicator').removeEventListener('click', onViewUpdate);
+      $('history-toggle').removeEventListener('click', onToggleHistory);
       $('activity-toggle').removeEventListener('click', onToggleActivity);
+      for (const [panel, handler] of panelKeyHandlers) panel.removeEventListener('keydown', handler);
       $('diagram-search').removeEventListener('input', onSearchInput);
       $('diagram-search-clear').removeEventListener('click', clearSearch);
+      $('node-type-filters')?.removeEventListener('click', onNodeTypeClick);
+      $('node-types-all')?.removeEventListener('click', onAllNodeTypes);
+      $('node-types-none')?.removeEventListener('click', onNoNodeTypes);
       window.removeEventListener?.('keydown', onSearchKeyDown);
       $('architecture').removeEventListener('wheel', onDiagramWheel);
       connectionDialog.dispose();

@@ -396,10 +396,11 @@ test('labels remain text and every palette applies without adding or replacing h
 test('sidebar has bounded independent scrolling, reduced motion, and no announcement for each receipt', () => {
   assert.match(markup, /<details class="sidebar-hooks" id="sidebar-hooks" open>/);
   const region = markup.slice(markup.indexOf('<aside class="live-sidebar"'), markup.indexOf('</aside>', markup.indexOf('<aside class="live-sidebar"')));
-  assert.doesNotMatch(region, /aria-live|role="(?:status|alert|log)"/);
+  const feed = region.slice(region.indexOf('<details class="sidebar-hooks"'));
+  assert.doesNotMatch(feed, /aria-live|role="(?:status|alert|log)"/);
   assert.match(region, /id="inspector-body"/);
-  assert.match(css, /\.workspace-body\s*\{[^}]*align-items: start/);
-  assert.match(css, /\.diagram-stage\s*\{[^}]*flex: 0 0 auto/);
+  assert.match(css, /\.workspace-body\s*\{[^}]*align-items: stretch/);
+  assert.match(css, /\.diagram-stage\s*\{[^}]*flex: 1 1 0/);
   assert.match(css, /\.live-sidebar\s*\{[^}]*max-height:[^}]*overflow-y: auto/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*animation: none !important/);
 });
