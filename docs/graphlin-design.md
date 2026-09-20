@@ -8,6 +8,9 @@ The recommended architecture is a passive hook collector, a local event service,
 
 This document records the broader design proposal. The [implementation plan](implementation-plan.md)
 defines the first runnable slice, and the [README](../README.md) explains how to run it.
+The next phase is specified in the [visualizer platform plan](visualizer-platform-plan.md):
+source-first discovery, a shared evidence model, and extensible architecture views.
+That plan is planning-only; it does not describe features already shipped.
 The accompanying design walkthrough still replays illustrative events without
 making Jev calls; the runtime serves a separate live viewer. Host activation
 has not been certified. See [live Jev findings](jev-integration-findings.md)

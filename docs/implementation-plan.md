@@ -1,5 +1,9 @@
 # Graphlin implementation plan
 
+This is the historical MVP plan. The next phase is covered by the
+[visualizer platform plan](visualizer-platform-plan.md), including source-first
+discovery and extension-based views.
+
 Baseline: `c3547e9`. This plan implements the Claude-first MVP from the design.
 The coordinator owns integration and code review; workers own disjoint modules.
 Design review must finish before implementation starts.
