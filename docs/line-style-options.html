@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="darkreader-lock">
+  <meta name="description" content="Five hand-drawn line styles for Graphlin. An interactive, local-only comparison of the same shapes and arrows.">
+  <title>Graphlin — line style study</title>
+  <style>
+    :root {
+      color-scheme: only light;
+      --desk: #edf0ed;
+      --paper: #fffefa;
+      --ink: #343d49;
+      --muted: #53606c;
+      --rule: #d5dbd7;
+      --accent: #315a87;
+      --wash: #eaf1f8;
+      --body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-padding-top: 80px; }
+    body {
+      margin: 0;
+      background: var(--desk);
+      color: var(--ink);
+      font: 14px/1.5 var(--body);
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input { font: inherit; }
+    a { color: var(--accent); text-underline-offset: 4px; }
+    a:hover { text-decoration-thickness: 2px; }
+    :focus-visible { outline: 3px solid var(--accent); outline-offset: 5px; }
+    [hidden] { display: none !important; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+      border: 0;
+    }
+    .skip-link {
+      position: fixed;
+      z-index: 10;
+      top: 12px;
+      left: 12px;
+      padding: 10px 16px;
+      background: var(--paper);
+      transform: translateY(-160%);
+    }
+    .skip-link:focus { transform: none; }
+    .page { max-width: 1480px; margin: auto; padding: 28px 36px 24px; }
+    .page-header { margin-bottom: 26px; }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 0 0 12px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .brand svg { width: 29px; height: 25px; flex: none; }
+    h1 {
+      margin: 0;
+      font-size: clamp(29px, 3.3vw, 44px);
+      line-height: 1.15;
+      font-weight: 600;
+      letter-spacing: -1.5px;
+    }
+    .intro { margin: 12px 0 0; color: var(--muted); font-size: 15px; }
+    .intro strong { color: var(--ink); font-weight: 600; }
+    .workbench {
+      display: grid;
+      grid-template-columns: minmax(340px, 0.85fr) minmax(0, 1.6fr);
+      gap: 28px;
+      align-items: start;
+    }
+    .options-area, .preview-area { min-width: 0; }
+    .section-heading {
+      min-height: 35px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      column-gap: 12px;
+      row-gap: 2px;
+      margin-bottom: 9px;
+    }
+    .section-heading h2 { margin: 0; font-size: 16px; font-weight: 600; }
+    .order-note, .preview-scale { font-size: 12px; color: var(--muted); }
+    .option-list { margin: 0; padding: 0; border: 0; min-width: 0; }
+    .option {
+      display: grid;
+      grid-template-columns: 20px minmax(0, 1fr);
+      align-items: start;
+      position: relative;
+      margin-bottom: 8px;
+      padding: 10px 12px 0;
+      gap: 9px;
+      background: var(--paper);
+      border: 1px solid #bcc5bf;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .option:last-child { margin-bottom: 0; }
+    .option:hover { border-color: var(--accent); }
+    .option:has(input:checked) {
+      border-color: var(--accent);
+      box-shadow: inset 3px 0 0 var(--accent);
+      background: #f4f8fc;
+    }
+    .option:has(input:focus-visible) { outline: 3px solid var(--accent); outline-offset: 3px; }
+    .option input {
+      width: 17px;
+      height: 17px;
+      margin: 6px 0 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .option input:focus-visible { outline: none; }
+    .option-body { display: block; min-width: 0; }
+    .option-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-height: 28px; }
+    .letter {
+      display: inline-grid;
+      place-items: center;
+      width: 25px;
+      height: 27px;
+      font-size: 19px;
+      line-height: 1;
+      font-weight: 650;
+    }
+    .option-heading strong { font-size: 15px; font-weight: 600; }
+    .recommended {
+      display: inline-block;
+      color: #245642;
+      background: #e3eee5;
+      border-radius: 3px;
+      padding: 2px 7px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .option-description { display: block; margin-left: 32px; color: var(--muted); font-size: 12px; }
+    .mini-diagram { display: block; margin: 3px 0 0 -22px; }
+    .mini-diagram svg { display: block; width: 100%; height: auto; }
+    .mini-diagram .node-title { font-size: 25px; }
+    .mini-diagram .node-role { font-size: 20px; }
+    .mini-diagram .edge-label { font-size: 20px; }
+    .mobile-preview-link { display: none; }
+    .keyboard-note { color: var(--muted); margin: 11px 0 0; font-size: 12px; }
+    .preview-area { position: sticky; top: 22px; }
+    .preview-sheet {
+      background: var(--paper);
+      border: 1px solid #bdc6bf;
+      border-radius: 4px 4px 12px 4px;
+      box-shadow: 3px 5px 0 #e0e5df;
+      overflow: hidden;
+    }
+    .preview-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 23px 26px 17px;
+      border-bottom: 1px solid var(--rule);
+    }
+    .preview-identity { display: flex; align-items: center; gap: 15px; min-width: 0; }
+    .large-letter {
+      color: var(--accent);
+      font-size: 48px;
+      font-weight: 500;
+      line-height: 1;
+      letter-spacing: -2px;
+    }
+    .preview-header h3 { margin: 0; font-size: 25px; font-weight: 600; letter-spacing: -.65px; }
+    .preview-subtitle { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
+    .preview-header .recommended { margin-top: 7px; }
+    .drawing-scroll { overflow-x: auto; overscroll-behavior-inline: contain; }
+    .drawing-scroll:focus-visible { outline-offset: -4px; }
+    .drawing { min-width: 0; padding: 0 13px; }
+    .drawing svg { display: block; width: 100%; height: auto; overflow: visible; }
+    .drawing-caption { margin: 0; padding: 20px 26px 0; font-size: 13px; font-weight: 600; }
+    .samples-heading { border-top: 1px solid var(--rule); padding-top: 18px; }
+    .preview-footer { border-top: 1px solid var(--rule); padding: 18px 26px 19px; }
+    .preview-footer p { margin: 0; max-width: 67ch; }
+    .preview-footer strong { font-weight: 600; }
+    .detail-note { color: var(--muted); font-size: 13px; line-height: 1.6; margin-top: 4px !important; }
+    .comparison-note {
+      margin: 20px 1px 0;
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      max-width: 65ch;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .comparison-note svg { width: 28px; height: 28px; }
+    .comparison-note p { margin: 0; }
+    .comparison-note strong { color: var(--ink); font-weight: 600; }
+    .page-footer { margin-top: 24px; font-size: 12px; color: var(--muted); }
+    .scroll-note { display: none; }
+    .node-title, .node-role, .edge-label, .sample-label {
+      fill: var(--ink);
+      font-family: var(--body);
+      text-anchor: middle;
+    }
+    .node-title { font-size: 17px; font-weight: 600; }
+    .node-role { font-size: 12px; fill: var(--muted); }
+    .edge-label { font-size: 13px; fill: var(--muted); }
+    .sample-label { font-size: 13px; fill: var(--muted); }
+    .ink { fill: none; stroke: var(--ink); stroke-linecap: round; stroke-linejoin: round; }
+    noscript { display: block; padding: 16px; background: var(--paper); }
+    @media (min-width: 1600px) {
+      .page { padding-top: 38px; }
+      .option { padding-top: 12px; }
+    }
+    @media (max-width: 1080px) {
+      .page { padding: 24px; }
+      .workbench { grid-template-columns: minmax(320px, .85fr) minmax(0, 1.5fr); gap: 20px; }
+      .preview-header { padding: 20px; }
+      .preview-header .recommended { margin-top: 0; }
+      .preview-scale { display: none; }
+      .preview-footer { padding: 17px 20px; }
+      .drawing-caption { padding-left: 20px; }
+    }
+    @media (max-width: 900px) {
+      .page { max-width: 760px; padding: 22px 20px; }
+      .workbench { grid-template-columns: 1fr; gap: 24px; }
+      .page-header { margin-bottom: 24px; }
+      .preview-area { position: static; }
+      .options-toolbar {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        padding: 10px 0;
+        background: var(--desk);
+      }
+      .mobile-preview-link { display: inline; margin-left: auto; font-size: 12px; }
+      .options-toolbar .order-note { width: 100%; }
+      .option { padding: 11px 14px 0; }
+      .mini-diagram { max-width: 580px; }
+      .keyboard-note { display: none; }
+      .preview-scale { display: inline; }
+      .preview-header .recommended { margin-top: 7px; }
+    }
+    @media (max-width: 480px) {
+      .drawing { min-width: 650px; }
+      .scroll-note { display: block; color: var(--muted); font-size: 12px; padding: 0 18px; }
+      .page { padding: 20px 14px; }
+      h1 { font-size: 31px; letter-spacing: -1px; max-width: 14ch; }
+      .intro { font-size: 14px; max-width: 36ch; }
+      .option-heading { gap: 5px; }
+      .option-heading strong { font-size: 14px; }
+      .option-heading .recommended { font-size: 10px; padding: 2px 5px; }
+      .option-description { font-size: 12px; margin-left: 30px; }
+      .mini-diagram { margin-left: -27px; }
+      .preview-header { padding: 18px; }
+      .preview-header h3 { font-size: 23px; }
+      .large-letter { font-size: 44px; }
+      .preview-identity { gap: 12px; }
+      .preview-scale { display: none; }
+      .preview-footer { padding: 16px 18px; }
+      .drawing-caption { padding-left: 18px; }
+      .scroll-note { padding-left: 18px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; }
+    }
+    @media (forced-colors: active) {
+      .option:has(input:checked) { border: 3px solid Highlight; }
+      .recommended { border: 1px solid CanvasText; }
+      .ink { stroke: CanvasText; }
+      .node-title, .node-role, .edge-label, .sample-label { fill: CanvasText; }
+      .shape-fill { fill: Canvas; }
+    }
+    @media print {
+      body { background: white; }
+      .page { max-width: none; padding: 0; }
+      .workbench { grid-template-columns: 1fr 1.5fr; gap: 16px; }
+      .preview-area, .options-toolbar { position: static; }
+      .drawing { min-width: 0; }
+      .mobile-preview-link, .keyboard-note, .scroll-note, .skip-link { display: none; }
+      .option, .preview-sheet { break-inside: avoid; box-shadow: none; }
+      * { print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#line-options">Skip to the five styles</a>
+  <div class="page">
+    <header class="page-header">
+      <p class="brand">
+        <svg viewBox="0 0 32 28" aria-hidden="true">
+          <path d="M 3 5 C 9 3 13 5 17 4 L 17 17 C 11 18 8 16 3 18 Z M 15 12 C 21 10 25 12 29 11 L 28 24 L 15 24 Z"
+            fill="none" stroke="#315a87" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Graphlin line study
+      </p>
+      <h1>How hand-drawn should it feel?</h1>
+      <p class="intro"><strong>D is the chosen style.</strong> Select another strip to compare.</p>
+    </header>
+
+    <noscript>Enable JavaScript to draw the five local previews and switch between them. This page uses no external resources.</noscript>
+
+    <main class="workbench">
+      <section class="options-area" id="line-options" aria-labelledby="options-title">
+        <div class="section-heading options-toolbar">
+          <h2 id="options-title">Five line styles</h2>
+          <span class="order-note">Most hand-drawn → least</span>
+          <a class="mobile-preview-link" href="#enlarged-preview" id="preview-jump">See D enlarged</a>
+        </div>
+        <fieldset class="option-list" id="style-options">
+          <legend class="sr-only">Choose a line style to preview. D is the selected Graphlin style.</legend>
+          <label class="option">
+            <input type="radio" name="line-style" value="A" aria-labelledby="title-a" aria-describedby="description-a">
+            <span class="option-body">
+              <span class="option-heading" id="title-a"><span class="letter">A</span><strong>Wild scribble</strong></span>
+              <span class="option-description" id="description-a">Big gestures. Wandering, scribbled edges.</span>
+              <span class="mini-diagram" data-mini="A" aria-hidden="true"></span>
+            </span>
+          </label>
+          <label class="option">
+            <input type="radio" name="line-style" value="B" aria-labelledby="title-b" aria-describedby="description-b">
+            <span class="option-body">
+              <span class="option-heading" id="title-b"><span class="letter">B</span><strong>Loose sketch</strong></span>
+              <span class="option-description" id="description-b">Expressive bends. Confidently imperfect.</span>
+              <span class="mini-diagram" data-mini="B" aria-hidden="true"></span>
+            </span>
+          </label>
+          <label class="option">
+            <input type="radio" name="line-style" value="C" aria-labelledby="title-c" aria-describedby="description-c">
+            <span class="option-body">
+              <span class="option-heading" id="title-c"><span class="letter">C</span><strong>Whiteboard</strong></span>
+              <span class="option-description" id="description-c">A relaxed, Excalidraw-inspired hand.</span>
+              <span class="mini-diagram" data-mini="C" aria-hidden="true"></span>
+            </span>
+          </label>
+          <label class="option">
+            <input type="radio" name="line-style" value="D" aria-labelledby="title-d" aria-describedby="description-d" checked>
+            <span class="option-body">
+              <span class="option-heading" id="title-d"><span class="letter">D</span><strong>Tidy sketch</strong><span class="recommended">Chosen style</span></span>
+              <span class="option-description" id="description-d">Gentle bends. A more careful hand.</span>
+              <span class="mini-diagram" data-mini="D" aria-hidden="true"></span>
+            </span>
+          </label>
+          <label class="option">
+            <input type="radio" name="line-style" value="E" aria-labelledby="title-e" aria-describedby="description-e">
+            <span class="option-body">
+              <span class="option-heading" id="title-e"><span class="letter">E</span><strong>Barely sketchy</strong></span>
+              <span class="option-description" id="description-e">Almost straight. Closest to current.</span>
+              <span class="mini-diagram" data-mini="E" aria-hidden="true"></span>
+            </span>
+          </label>
+        </fieldset>
+        <p class="keyboard-note">Select a strip to preview it. With a radio focused, use the arrow keys.</p>
+      </section>
+
+      <section class="preview-area" id="enlarged-preview" aria-labelledby="preview-section-title" tabindex="-1">
+        <div class="section-heading">
+          <h2 id="preview-section-title">The bigger picture</h2>
+          <span class="preview-scale">Same shapes. More room to see the ink.</span>
+        </div>
+        <article class="preview-sheet" aria-labelledby="preview-title">
+          <header class="preview-header">
+            <div class="preview-identity">
+              <span class="large-letter" id="preview-letter" aria-hidden="true">D</span>
+              <div>
+                <h3 id="preview-title">Tidy sketch</h3>
+                <p class="preview-subtitle" id="preview-subtitle">Selected for Graphlin</p>
+              </div>
+            </div>
+            <span class="recommended" id="preview-recommendation">Chosen style</span>
+          </header>
+          <h4 class="drawing-caption">A simple database write</h4>
+          <div class="drawing-scroll" tabindex="0" role="region" aria-label="Browser, service and database diagram. Scroll horizontally on smaller screens.">
+            <div class="drawing" id="main-diagram"></div>
+          </div>
+          <h4 class="drawing-caption samples-heading">Corners, curves &amp; connections</h4>
+          <div class="drawing-scroll" tabindex="0" role="region" aria-label="Diamond, function and queue samples. Scroll horizontally on smaller screens.">
+            <div class="drawing" id="shape-samples"></div>
+          </div>
+          <p class="scroll-note">Swipe across each drawing to see it at a readable size.</p>
+          <footer class="preview-footer">
+            <p><strong id="style-summary">A small amount of hand-drawn warmth.</strong></p>
+            <p class="detail-note" id="style-detail">Shallow bends, close double lines and restrained corners. The shapes stay tidy; the oval and open arrowheads retain a little irregularity.</p>
+          </footer>
+        </article>
+        <div class="comparison-note">
+          <svg viewBox="0 0 32 32" aria-hidden="true">
+            <path d="M 5 10 C 12 5 20 14 27 9 M 5 11 C 13 9 18 10 27 11 M 5 23 L 27 23"
+              fill="none" stroke="#53606c" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <p><strong>Only the ink changes.</strong> Every option uses the same shapes, labels, positions and fill colors. Look at the long sides, oval rims and arrow tips.</p>
+        </div>
+      </section>
+    </main>
+    <p class="sr-only" role="status" aria-live="polite" aria-atomic="true" id="preview-status"></p>
+    <footer class="page-footer">A standalone visual study. Previewing a style does not apply it to Graphlin.</footer>
+  </div>
+
+  <script>
+    'use strict';
+
+    // Standalone study: no imports, network, app state or saved preferences.
+    // Geometry is grounded in runtime/web/sketch.js and app.js's shape renderer:
+    // 190 × 104 boxes, component tabs, cylinder rims, the wider diamond,
+    // 23-unit hexagon corners, and 17-unit queue dividers.
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const COLORS = Object.freeze({
+      client: '#dceafb', service: '#e6dcf4', database: '#d7ece5',
+      diamond: '#e6edce', function: '#d6edf2', queue: '#fae8bd'
+    });
+    const STYLES = Object.freeze([
+      {
+        letter: 'A', name: 'Wild scribble', bend: 16.5, join: 4.2,
+        overshoot: 10, separation: 4.5, echo: .76, retrace: .68,
+        subtitle: 'Big gestures and loose ends',
+        summary: 'The most expressive end of the page.',
+        detail: 'Deep, uneven bends, crossing double lines and extra passes. Corners run long, oval rims wander, and arrowheads have a very loose hand.'
+      },
+      {
+        letter: 'B', name: 'Loose sketch', bend: 10.4, join: 2.9,
+        overshoot: 6.4, separation: 3.1, echo: .68, retrace: .24,
+        subtitle: 'An expressive, quick sketch',
+        summary: 'Loose enough to feel drawn in the moment.',
+        detail: 'Noticeable sweeps and separated double lines, with a few overshot corners. The oval and arrowheads are deliberately uneven.'
+      },
+      {
+        letter: 'C', name: 'Whiteboard', bend: 6.1, join: 1.65,
+        overshoot: 3.7, separation: 1.9, echo: .58, retrace: 0,
+        subtitle: 'A relaxed, Excalidraw-inspired hand',
+        summary: 'Relaxed, but easy to read.',
+        detail: 'Softly bowed sides, a visible second stroke and a slightly lopsided oval. A little whiteboard character in every shape and arrow.'
+      },
+      {
+        letter: 'D', name: 'Tidy sketch', bend: 2.6, join: .8,
+        overshoot: 1.65, separation: .85, echo: .46, retrace: 0,
+        subtitle: 'A gentle, careful hand',
+        summary: 'A small amount of hand-drawn warmth.',
+        detail: 'Shallow bends, close double lines and restrained corners. The shapes stay tidy; the oval and open arrowheads retain a little irregularity.'
+      },
+      {
+        letter: 'E', name: 'Barely sketchy', bend: .65, join: .16,
+        overshoot: .3, separation: .22, echo: .36, retrace: 0,
+        subtitle: 'Closest to the current appearance',
+        summary: 'Almost straight, with just a trace of the pen.',
+        detail: 'Very slight bends and nearly overlapping strokes. This is the quietest option and an approximation of the current look, not an exact runtime rendering.'
+      }
+    ]);
+
+    function svgElement(tag, attributes = {}, text) {
+      const element = document.createElementNS(SVG_NS, tag);
+      for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, String(value));
+      if (text !== undefined) element.textContent = text;
+      return element;
+    }
+
+    // FNV seed + fixed LCG, as in the current helper. The style letter is
+    // deliberately absent from the seed: each option varies the same gestures.
+    function randomFor(key) {
+      let state = 2166136261;
+      for (let i = 0; i < key.length; i++) state = Math.imul(state ^ key.charCodeAt(i), 16777619);
+      return () => {
+        state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+        return state / 4294967296;
+      };
+    }
+
+    const number = value => Number(value.toFixed(3));
+    const pair = point => `${number(point[0])} ${number(point[1])}`;
+    const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    const unit = vector => {
+      const length = Math.hypot(...vector) || 1;
+      return [vector[0] / length, vector[1] / length];
+    };
+
+    function straight(a, b) {
+      return {
+        at: t => lerp(a, b, t),
+        tangent: () => unit([b[0] - a[0], b[1] - a[1]]),
+        length: Math.hypot(b[0] - a[0], b[1] - a[1])
+      };
+    }
+
+    function cubic(a, b, c, d) {
+      return {
+        at(t) {
+          const s = 1 - t;
+          return [
+            s * s * s * a[0] + 3 * s * s * t * b[0] + 3 * s * t * t * c[0] + t * t * t * d[0],
+            s * s * s * a[1] + 3 * s * s * t * b[1] + 3 * s * t * t * c[1] + t * t * t * d[1]
+          ];
+        },
+        tangent(t) {
+          const s = 1 - t;
+          return unit([
+            s * s * (b[0] - a[0]) + 2 * s * t * (c[0] - b[0]) + t * t * (d[0] - c[0]),
+            s * s * (b[1] - a[1]) + 2 * s * t * (c[1] - b[1]) + t * t * (d[1] - c[1])
+          ]);
+        },
+        length: Math.hypot(b[0] - a[0], b[1] - a[1])
+          + Math.hypot(c[0] - b[0], c[1] - b[1])
+          + Math.hypot(d[0] - c[0], d[1] - c[1])
+      };
+    }
+
+    // A small number of irregularly spaced anchors makes broad pen gestures.
+    // Convert the perturbed anchors to adjoining cubic curves; do not use a
+    // sine wave, a displacement filter, or dense point-by-point noise.
+    function spline(points) {
+      let path = `M ${pair(points[0])}`;
+      for (let i = 0; i < points.length - 1; i++) {
+        const before = points[Math.max(0, i - 1)];
+        const start = points[i];
+        const end = points[i + 1];
+        const after = points[Math.min(points.length - 1, i + 2)];
+        const c1 = [start[0] + (end[0] - before[0]) / 6, start[1] + (end[1] - before[1]) / 6];
+        const c2 = [end[0] - (after[0] - start[0]) / 6, end[1] - (after[1] - start[1]) / 6];
+        path += ` C ${pair(c1)} ${pair(c2)} ${pair(end)}`;
+      }
+      return path;
+    }
+
+    function strokePath(route, style, key, pass, strength = 1, partial = false) {
+      const random = randomFor(`${key}/pass/${pass}`);
+      const signed = () => random() * 2 - 1;
+      const scale = Math.min(1, route.length / 150) * strength;
+      const from = partial ? .09 + random() * .16 : 0;
+      const to = partial ? .69 + random() * .18 : 1;
+      const stations = [from, from + (to - from) * (.23 + random() * .13),
+        from + (to - from) * (.62 + random() * .14), to];
+      const gesture = signed() < 0 ? -1 : 1;
+      const offsets = [
+        signed() * style.join,
+        gesture * style.bend * (.58 + random() * .56),
+        style.bend * (signed() * .85 - gesture * .12),
+        signed() * style.join
+      ];
+      const bias = pass ? signed() * style.separation : 0;
+      const extraStart = style.overshoot * (.25 + random() * .75) * scale;
+      const extraEnd = style.overshoot * (.25 + random() * .75) * scale;
+      const points = stations.map((t, i) => {
+        const point = route.at(t);
+        const tangent = route.tangent(t);
+        const offset = (offsets[i] + bias) * scale;
+        const extension = i === 0 ? -extraStart : i === 3 ? extraEnd : 0;
+        return [point[0] - tangent[1] * offset + tangent[0] * extension,
+          point[1] + tangent[0] * offset + tangent[1] * extension];
+      });
+      return spline(points);
+    }
+
+    function drawStroke(group, route, style, key, { strength = 1, width = 1.9, dashed = false } = {}) {
+      for (let pass = 0; pass < 2; pass++) {
+        group.append(svgElement('path', {
+          d: strokePath(route, style, key, pass, strength),
+          class: 'ink',
+          'stroke-width': pass ? width * .63 : width,
+          opacity: pass ? style.echo : .96,
+          ...(dashed ? { 'stroke-dasharray': '10 9' } : {})
+        }));
+      }
+      if (!dashed && route.length > 65 && randomFor(`${key}/retrace`)() < style.retrace) {
+        group.append(svgElement('path', {
+          d: strokePath(route, style, key, 2, strength, true),
+          class: 'ink', 'stroke-width': width * .6, opacity: .56
+        }));
+      }
+    }
+
+    function polygon(group, points, fill, style, key) {
+      group.append(svgElement('path', {
+        d: `M ${points.map(pair).join(' L ')} Z`, fill, class: 'shape-fill'
+      }));
+      points.forEach((point, index) => drawStroke(group,
+        straight(point, points[(index + 1) % points.length]), style, `${key}/side/${index}`));
+    }
+
+    function arrow(group, route, style, key, options = {}) {
+      drawStroke(group, route, style, `${key}/shaft`, options);
+      const tip = route.at(1);
+      const tangent = route.tangent(1);
+      const random = randomFor(`${key}/head`);
+      const wobble = style.join * .9;
+      const shiftedTip = [tip[0] + (random() - .5) * wobble, tip[1] + (random() - .5) * wobble];
+      // Two independently drawn open wings, with unequal reach and angle.
+      // Nominal tips and connection positions remain identical in A–E.
+      for (const side of [-1, 1]) {
+        const length = 13 + (random() - .5) * style.bend * .6;
+        const spread = 7 + (random() - .5) * style.bend * .35;
+        const tail = [tip[0] - tangent[0] * length - tangent[1] * side * spread,
+          tip[1] - tangent[1] * length + tangent[0] * side * spread];
+        drawStroke(group, straight(tail, shiftedTip), style, `${key}/wing/${side}`, {
+          strength: 1.7, width: options.width || 1.9
+        });
+      }
+    }
+
+    function text(group, x, y, content, className) {
+      group.append(svgElement('text', { x, y, class: className }, content));
+    }
+
+    function node(group, kind, x, y, style, title, role) {
+      const shape = svgElement('g', { transform: `translate(${x} ${y})`, 'data-shape': kind });
+      const fill = COLORS[kind];
+      const key = `sample/${kind}`;
+      const box = [[0, 0], [190, 0], [190, 104], [0, 104]];
+      if (kind === 'database') {
+        shape.append(svgElement('path', {
+          d: 'M 0 17 C 0 -2 190 -2 190 17 L 190 87 C 190 109 0 109 0 87 Z',
+          fill, class: 'shape-fill'
+        }));
+        // Back and front halves make a visibly imperfect oval, not a perfect
+        // SVG ellipse sitting on a rough box.
+        drawStroke(shape, cubic([0, 17], [0, -2], [190, -2], [190, 17]), style, `${key}/rim-back`, { strength: .72 });
+        drawStroke(shape, straight([190, 17], [190, 87]), style, `${key}/right`);
+        drawStroke(shape, cubic([190, 87], [190, 109], [0, 109], [0, 87]), style, `${key}/base`, { strength: .7 });
+        drawStroke(shape, straight([0, 87], [0, 17]), style, `${key}/left`);
+        drawStroke(shape, cubic([0, 17], [0, 37], [190, 37], [190, 17]), style, `${key}/rim-front`, { strength: .72 });
+      } else if (kind === 'service') {
+        polygon(shape, [[10, 0], [190, 0], [190, 104], [10, 104], [10, 85],
+          [0, 85], [0, 68], [10, 68], [10, 35], [0, 35], [0, 18], [10, 18]], fill, style, key);
+        for (const top of [18, 68]) {
+          const tabs = [[10, top], [21, top], [21, top + 17], [10, top + 17]];
+          tabs.slice(0, -1).forEach((point, i) =>
+            drawStroke(shape, straight(point, tabs[i + 1]), style, `${key}/tab/${top}/${i}`));
+        }
+      } else if (kind === 'diamond') {
+        polygon(shape, [[95, -12], [204, 52], [95, 116], [-14, 52]], fill, style, key);
+      } else if (kind === 'function') {
+        polygon(shape, [[23, 0], [167, 0], [190, 52], [167, 104], [23, 104], [0, 52]], fill, style, key);
+      } else {
+        polygon(shape, box, fill, style, key);
+        if (kind === 'client') {
+          drawStroke(shape, straight([0, 23], [190, 23]), style, `${key}/toolbar`, { strength: .55, width: 1.5 });
+          for (const cx of [12, 22, 32]) {
+            shape.append(svgElement('circle', { cx, cy: 12, r: 2, fill: '#343d49' }));
+          }
+        } else if (kind === 'queue') {
+          for (const edge of [17, 173]) {
+            drawStroke(shape, straight([edge, 0], [edge, 104]), style, `${key}/divider/${edge}`, { strength: .65, width: 1.6 });
+          }
+          arrow(shape, straight([40, 16], [150, 16]), style, `${key}/direction`, { strength: .5, width: 1.4 });
+        }
+      }
+      text(shape, 95, 62, title, 'node-title');
+      text(shape, 95, 83, role, 'node-role');
+      group.append(shape);
+    }
+
+    function diagram(style, samples = false) {
+      const svg = svgElement('svg', {
+        viewBox: samples ? '0 0 900 210' : '0 0 900 200',
+        width: 900, height: samples ? 210 : 200,
+        role: 'img', 'aria-label': samples
+          ? `${style.name}: diamond, hexagonal function and queue, with a curved arrow and dashed connection.`
+          : `${style.name}: a browser client sends a request to a service, which writes to a database.`
+      });
+      const group = svgElement('g');
+      if (samples) {
+        node(group, 'diamond', 32, 34, style, 'Diamond', 'decision');
+        node(group, 'function', 354, 34, style, 'Function', 'hexagon');
+        node(group, 'queue', 676, 34, style, 'Queue', 'channel');
+        arrow(group, cubic([249, 88], [262, 21], [322, 22], [337, 88]), style, 'sample/curved', { strength: .85 });
+        arrow(group, straight([564, 88], [657, 88]), style, 'sample/dashed', { dashed: true });
+        text(group, 292, 171, 'Curved arrow', 'sample-label');
+        text(group, 610, 171, 'Dashed connection', 'sample-label');
+      } else {
+        node(group, 'client', 32, 42, style, 'Browser', 'client');
+        node(group, 'service', 354, 42, style, 'Orders', 'service');
+        node(group, 'database', 676, 42, style, 'Orders DB', 'database');
+        arrow(group, straight([240, 94], [334, 94]), style, 'sample/request');
+        arrow(group, straight([564, 94], [657, 94]), style, 'sample/write');
+        text(group, 287, 66, 'request', 'edge-label');
+        text(group, 610, 66, 'write', 'edge-label');
+      }
+      svg.append(group);
+      return svg;
+    }
+
+    // Build once and clone. Selecting, resizing, or returning to a style never
+    // produces a new stroke, and preview selection is not persisted anywhere.
+    const previews = new Map(STYLES.map(style =>
+      [style.letter, { main: diagram(style), samples: diagram(style, true) }]));
+
+    for (const mount of document.querySelectorAll('[data-mini]')) {
+      const mini = previews.get(mount.dataset.mini).main.cloneNode(true);
+      mini.setAttribute('viewBox', '0 12 900 160');
+      mini.setAttribute('height', '160');
+      mini.setAttribute('aria-hidden', 'true');
+      mini.removeAttribute('role');
+      mini.removeAttribute('aria-label');
+      mount.append(mini);
+    }
+
+    function showStyle(letter, userInitiated = false) {
+      const style = STYLES.find(option => option.letter === letter);
+      if (!style) return;
+      const preview = previews.get(letter);
+      document.getElementById('main-diagram').replaceChildren(preview.main.cloneNode(true));
+      document.getElementById('shape-samples').replaceChildren(preview.samples.cloneNode(true));
+      document.getElementById('preview-letter').textContent = letter;
+      document.getElementById('preview-title').textContent = style.name;
+      document.getElementById('preview-subtitle').textContent =
+        userInitiated ? `Previewing ${letter} · ${style.subtitle}` : 'Selected for Graphlin';
+      document.getElementById('preview-recommendation').hidden = letter !== 'D';
+      document.getElementById('style-summary').textContent = style.summary;
+      document.getElementById('style-detail').textContent = style.detail;
+      document.getElementById('preview-jump').textContent = `See ${letter} enlarged`;
+      if (userInitiated) {
+        document.getElementById('preview-status').textContent =
+          `Previewing ${letter}, ${style.name}. ${style.summary} Preview only; nothing has been applied to Graphlin.`;
+      }
+    }
+
+    document.getElementById('style-options').addEventListener('change', event => {
+      if (event.target.name === 'line-style') showStyle(event.target.value, true);
+    });
+    // Keep the radio and diagram in sync if a browser restores form controls.
+    for (const input of document.querySelectorAll('input[name="line-style"]')) input.checked = input.value === 'D';
+    showStyle('D');
+  </script>
+</body>
+</html>
