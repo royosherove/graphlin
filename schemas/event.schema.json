@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Graphlin event",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+    },
+    "projectId": {
+      "type": "string",
+      "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+    },
+    "sessionId": {
+      "type": "string",
+      "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+    },
+    "agentId": {
+      "type": "string",
+      "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+    },
+    "toolCallId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "enum": [
+        "session.started",
+        "turn.prompted",
+        "intent.observed",
+        "tool.requested",
+        "tool.succeeded",
+        "tool.failed",
+        "tool.interrupted",
+        "tool.denied",
+        "tool.unresolved",
+        "batch.completed",
+        "artifact.changed",
+        "verification.observed",
+        "agent.started",
+        "agent.stopped",
+        "turn.stopped",
+        "session.ended",
+        "capture.gap"
+      ]
+    },
+    "toolCategory": {
+      "enum": [
+        "read",
+        "write",
+        "edit",
+        "shell",
+        "search",
+        "test",
+        "other"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "pending",
+        "succeeded",
+        "failed",
+        "interrupted",
+        "denied",
+        "unresolved",
+        "observed"
+      ]
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 32
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "incomplete": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "id",
+    "projectId",
+    "sessionId",
+    "agentId",
+    "toolCallId",
+    "kind",
+    "toolCategory",
+    "outcome",
+    "at",
+    "sequence",
+    "incomplete"
+  ]
+}

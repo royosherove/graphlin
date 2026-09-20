@@ -1,0 +1,9 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [{"hooks":[{"type":"command","command":"if [ -r \"${PLUGIN_ROOT}/scripts/collect.sh\" ]; then /bin/sh \"${PLUGIN_ROOT}/scripts/collect.sh\" codex; fi >/dev/null 2>&1; exit 0","timeout":2}]}],
+    "PreToolUse": [{"matcher":".*","hooks":[{"type":"command","command":"if [ -r \"${PLUGIN_ROOT}/scripts/collect.sh\" ]; then /bin/sh \"${PLUGIN_ROOT}/scripts/collect.sh\" codex; fi >/dev/null 2>&1; exit 0","timeout":2}]}],
+    "PostToolUse": [{"matcher":".*","hooks":[{"type":"command","command":"if [ -r \"${PLUGIN_ROOT}/scripts/collect.sh\" ]; then /bin/sh \"${PLUGIN_ROOT}/scripts/collect.sh\" codex; fi >/dev/null 2>&1; exit 0","timeout":2}]}],
+    "SessionStart": [{"hooks":[{"type":"command","command":"if [ -r \"${PLUGIN_ROOT}/scripts/collect.sh\" ]; then /bin/sh \"${PLUGIN_ROOT}/scripts/collect.sh\" codex; fi >/dev/null 2>&1; exit 0","timeout":2}]}],
+    "Stop": [{"hooks":[{"type":"command","command":"if [ -r \"${PLUGIN_ROOT}/scripts/collect.sh\" ]; then /bin/sh \"${PLUGIN_ROOT}/scripts/collect.sh\" codex; fi >/dev/null 2>&1; exit 0","timeout":2}]}]
+  }
+}

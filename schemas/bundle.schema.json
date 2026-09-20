@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Graphlin bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+    },
+    "policyVersion": {
+      "type": "string",
+      "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/candidate"
+      },
+      "minItems": 0,
+      "maxItems": 12
+    },
+    "readSet": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "artifactId": {
+                "type": "string",
+                "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+              },
+              "hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "generation": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "artifactId",
+              "hash",
+              "generation"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "message"
+              },
+              "messageId": {
+                "type": "string",
+                "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+              },
+              "hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "contentVersion": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "type",
+              "messageId",
+              "hash",
+              "contentVersion"
+            ]
+          }
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 12
+    }
+  },
+  "required": [
+    "id",
+    "policyVersion",
+    "candidates",
+    "readSet"
+  ],
+  "$defs": {
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+        },
+        "artifactId": {
+          "type": "string",
+          "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1800
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        },
+        "sourceClass": {
+          "enum": [
+            "source",
+            "public_intent"
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "entityKey": {
+          "type": "string",
+          "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+        },
+        "labelOrigin": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "span"
+                },
+                "startLine": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000000
+                },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000000
+                },
+                "startColumn": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1800
+                },
+                "endColumn": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1801
+                }
+              },
+              "required": [
+                "type",
+                "startLine",
+                "endLine",
+                "startColumn",
+                "endColumn"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "generic"
+                },
+                "label": {
+                  "enum": [
+                    "Component",
+                    "Module",
+                    "Client",
+                    "Service",
+                    "Datastore",
+                    "Queue",
+                    "External",
+                    "Function",
+                    "Class",
+                    "Interface",
+                    "Event",
+                    "Configuration",
+                    "Package"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "label"
+              ]
+            }
+          ]
+        },
+        "sourceRef": {
+          "$ref": "graph.schema.json#/$defs/sourceRef"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "artifactId",
+        "hash",
+        "generation",
+        "label",
+        "text",
+        "startLine",
+        "endLine",
+        "sourceClass",
+        "complete",
+        "entityKey",
+        "labelOrigin",
+        "sourceRef",
+        "digest"
+      ]
+    }
+  },
+  "$comment": "JSON shape alone is insufficient authorization. Core materializes and brands the exact immutable bundle after validating finite independent intake verdicts and policy-bound candidate digests. Compilation requires that exact bundle identity. Source spans, read-set equality and source-version consistency are checked at runtime."
+}

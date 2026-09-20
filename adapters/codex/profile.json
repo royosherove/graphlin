@@ -1,0 +1,22 @@
+{
+  "host": "codex",
+  "platforms": [
+    "darwin",
+    "linux"
+  ],
+  "events": [
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "SessionStart",
+    "Stop"
+  ],
+  "activation": "not_verified",
+  "requiresHookTrust": true,
+  "coverageGaps": [
+    "hosted_tools",
+    "repeated_write_stdin",
+    "private_reasoning",
+    "unimplemented_streaming_events"
+  ]
+}

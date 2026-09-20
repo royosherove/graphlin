@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Graphlin patch",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+        },
+        {
+          "const": "restore"
+        }
+      ]
+    },
+    "baseRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "causedBy": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+      },
+      "minItems": 0,
+      "maxItems": 12
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "op": {
+                "const": "node.upsert"
+              },
+              "node": {
+                "$ref": "graph.schema.json#/$defs/node"
+              }
+            },
+            "required": [
+              "op",
+              "node"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "op": {
+                "const": "edge.upsert"
+              },
+              "edge": {
+                "$ref": "graph.schema.json#/$defs/edge"
+              }
+            },
+            "required": [
+              "op",
+              "edge"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "op": {
+                "enum": [
+                  "node.remove",
+                  "edge.remove"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+              }
+            },
+            "required": [
+              "op",
+              "id"
+            ]
+          }
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 1024
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "id",
+    "baseRevision",
+    "revision",
+    "causedBy",
+    "operations"
+  ],
+  "$comment": "Runtime enforces revision=baseRevision+1, atomic final graph integrity, cascading node removal, and bounded in-process patch-ID replay history."
+}

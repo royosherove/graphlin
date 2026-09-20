@@ -1,0 +1,112 @@
+{
+  "name": "graphlin",
+  "version": "0.1.0",
+  "description": "Live architecture and activity diagrams from observable coding-agent work.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "bin": {
+    "graphlin": "./scripts/graphlin.mjs"
+  },
+  "scripts": {
+    "start": "node scripts/graphlin.mjs start",
+    "demo": "node scripts/graphlin.mjs demo",
+    "test": "node --test",
+    "build": "node scripts/build-packages.mjs",
+    "doctor": "node scripts/graphlin.mjs doctor",
+    "eval:jev": "node scripts/evaluate-jev.mjs",
+    "eval:discovery": "node scripts/evaluate-discovery.mjs",
+    "validate": "node scripts/validate-packages.mjs",
+    "prepack": "npm run validate",
+    "release:check": "node .github/scripts/verify-release.mjs",
+    "pack:check": "node .github/scripts/verify-pack.mjs",
+    "check:packages": "npm run validate && npm run build && npm run pack:check"
+  },
+  "license": "MIT",
+  "author": "Graphlin contributors",
+  "homepage": "https://github.com/royosherove/graphlin#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/royosherove/graphlin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/royosherove/graphlin/issues"
+  },
+  "keywords": [
+    "architecture",
+    "coding-agents",
+    "visualization",
+    "mcp",
+    "claude",
+    "codex"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "files": [
+    "./LICENSE",
+    "./README.md",
+    "./plugin.json",
+    "./mcp.json",
+    "./.mcp.json",
+    "./.claude-plugin/plugin.json",
+    "./.codex-plugin/plugin.json",
+    "./adapters/README.md",
+    "./adapters/claude/hooks.json",
+    "./adapters/claude/profile.json",
+    "./adapters/codex/hooks.json",
+    "./adapters/codex/profile.json",
+    "./adapters/kiro/profile.json",
+    "./skills/graphlin/SKILL.md",
+    "./runtime/collector/index.mjs",
+    "./runtime/core/candidates.mjs",
+    "./runtime/core/common.mjs",
+    "./runtime/core/evidence.mjs",
+    "./runtime/core/graph.mjs",
+    "./runtime/core/index.mjs",
+    "./runtime/core/lexical.mjs",
+    "./runtime/core/privacy.mjs",
+    "./runtime/core/tool-discovery.mjs",
+    "./runtime/daemon/auth.mjs",
+    "./runtime/daemon/connection-info.mjs",
+    "./runtime/daemon/demo.mjs",
+    "./runtime/daemon/diagnostics.mjs",
+    "./runtime/daemon/export.mjs",
+    "./runtime/daemon/ipc.mjs",
+    "./runtime/daemon/lock.mjs",
+    "./runtime/daemon/manager.mjs",
+    "./runtime/daemon/paths.mjs",
+    "./runtime/daemon/persistence.mjs",
+    "./runtime/daemon/server.mjs",
+    "./runtime/jev/fixture.mjs",
+    "./runtime/jev/index.mjs",
+    "./runtime/jev/questions.mjs",
+    "./runtime/jev/wire.mjs",
+    "./runtime/pipeline.mjs",
+    "./runtime/web/app.js",
+    "./runtime/web/index.html",
+    "./runtime/web/layout.js",
+    "./runtime/web/sidebar.js",
+    "./runtime/web/sketch.js",
+    "./runtime/web/style.css",
+    "./schemas/bundle.schema.json",
+    "./schemas/event.schema.json",
+    "./schemas/graph.schema.json",
+    "./schemas/patch.schema.json",
+    "./scripts/arguments.mjs",
+    "./scripts/build-packages.mjs",
+    "./scripts/collect.sh",
+    "./scripts/collector.mjs",
+    "./scripts/control.mjs",
+    "./scripts/daemon.mjs",
+    "./scripts/graphlin.mjs",
+    "./scripts/validate-packages.mjs"
+  ]
+}

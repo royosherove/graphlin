@@ -1,0 +1,12 @@
+{
+  "name": "graphlin",
+  "version": "0.1.0",
+  "description": "Local architecture and activity viewer with passive, bounded event hooks.",
+  "author": {
+    "name": "Graphlin contributors"
+  },
+  "hooks": "./adapters/claude/hooks.json",
+  "license": "MIT",
+  "repository": "https://github.com/royosherove/graphlin",
+  "homepage": "https://github.com/royosherove/graphlin"
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "graphlin",
+  "version": "0.1.0",
+  "description": "Local architecture and activity diagrams from observable coding-agent work.",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Graphlin",
+        "shortDescription": "Live architecture and activity viewer",
+        "longDescription": "A local viewer with passive event collection, explicit source-sharing controls, and an offline fixture demo.",
+        "developerName": "Graphlin contributors",
+        "category": "Productivity",
+        "defaultPrompt": ["Start Graphlin for this project in metadata-only mode."],
+        "brandColor": "#20BFA9"
+      },
+      "hooks": "./adapters/codex/hooks.json"
+    }
+  }
+}

@@ -1,0 +1,449 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Graphlin graph",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "minItems": 0,
+      "maxItems": 256
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      },
+      "minItems": 0,
+      "maxItems": 768
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "revision",
+    "nodes",
+    "edges"
+  ],
+  "$defs": {
+    "sourceRef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "artifact"
+            },
+            "artifactId": {
+              "type": "string",
+              "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+            },
+            "hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "type",
+            "artifactId",
+            "hash",
+            "generation"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "message"
+            },
+            "messageId": {
+              "type": "string",
+              "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+            },
+            "hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "contentVersion": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "type",
+            "messageId",
+            "hash",
+            "contentVersion"
+          ]
+        }
+      ]
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "eventId": {
+          "type": "string",
+          "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        },
+        "sourceClass": {
+          "enum": [
+            "source",
+            "public_intent"
+          ]
+        },
+        "basis": {
+          "const": "jev_interpretation"
+        },
+        "sourceRef": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "artifact"
+                },
+                "artifactId": {
+                  "type": "string",
+                  "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+                },
+                "hash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "generation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "type",
+                "artifactId",
+                "hash",
+                "generation"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "message"
+                },
+                "messageId": {
+                  "type": "string",
+                  "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+                },
+                "hash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "contentVersion": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "type",
+                "messageId",
+                "hash",
+                "contentVersion"
+              ]
+            }
+          ]
+        },
+        "excerpt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "artifactId",
+        "hash",
+        "generation",
+        "eventId",
+        "startLine",
+        "endLine",
+        "sourceClass",
+        "basis"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "sourceClass": {
+                "const": "public_intent"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "sourceRef"
+            ],
+            "properties": {
+              "sourceRef": {
+                "properties": {
+                  "type": {
+                    "const": "message"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+        },
+        "evidenceState": {
+          "enum": [
+            "proposed",
+            "observed",
+            "verified",
+            "removed"
+          ]
+        },
+        "classification": {
+          "enum": [
+            "pending",
+            "accepted",
+            "tentative",
+            "abstained",
+            "stale"
+          ]
+        },
+        "validity": {
+          "enum": [
+            "current",
+            "stale",
+            "retracted"
+          ]
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "kind": {
+          "enum": [
+            "client",
+            "service",
+            "datastore",
+            "queue",
+            "external",
+            "module",
+            "function",
+            "class",
+            "interface",
+            "event",
+            "configuration",
+            "package"
+          ]
+        },
+        "shape": {
+          "enum": [
+            "rounded_rect",
+            "rect",
+            "cylinder",
+            "cloud",
+            "diamond",
+            "group",
+            "hexagon",
+            "class_box",
+            "interface_box",
+            "document",
+            "parallelogram",
+            "folder",
+            "browser",
+            "component",
+            "queue"
+          ]
+        },
+        "x": {
+          "type": "number",
+          "minimum": -100000,
+          "maximum": 100000
+        },
+        "y": {
+          "type": "number",
+          "minimum": -100000,
+          "maximum": 100000
+        },
+        "activityState": {
+          "enum": [
+            "idle",
+            "pending",
+            "running",
+            "failed",
+            "interrupted",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "evidenceState",
+        "classification",
+        "validity",
+        "sourceRefs",
+        "label",
+        "kind",
+        "shape",
+        "x",
+        "y",
+        "activityState"
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+        },
+        "evidenceState": {
+          "enum": [
+            "proposed",
+            "observed",
+            "verified",
+            "removed"
+          ]
+        },
+        "classification": {
+          "enum": [
+            "pending",
+            "accepted",
+            "tentative",
+            "abstained",
+            "stale"
+          ]
+        },
+        "validity": {
+          "enum": [
+            "current",
+            "stale",
+            "retracted"
+          ]
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+        },
+        "target": {
+          "type": "string",
+          "pattern": "^(?:[a-z][a-z0-9_]{0,23}-)?[a-f0-9]{24,64}$"
+        },
+        "relation": {
+          "enum": [
+            "calls",
+            "reads",
+            "writes",
+            "publishes",
+            "consumes",
+            "depends_on"
+          ]
+        },
+        "label": {
+          "enum": [
+            "calls",
+            "reads",
+            "writes",
+            "publishes",
+            "consumes",
+            "depends_on"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "evidenceState",
+        "classification",
+        "validity",
+        "sourceRefs",
+        "source",
+        "target",
+        "relation",
+        "label"
+      ]
+    }
+  },
+  "$comment": "Runtime additionally enforces canonical source versions, exact labels, provenance, unique IDs, endpoints, relation labels, secret/control filtering, source spans, public-intent state, and serialized UTF-8 size. New compiled graphs: 896 KiB; hard limit: 1 MiB. Invalidation has reserved headroom."
+}

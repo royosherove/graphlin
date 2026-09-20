@@ -1,0 +1,63 @@
+name: Release npm
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: graphlin-npm-release
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm run release:check
+        env:
+          NPM_PUBLISH_ENABLED: ${{ vars.NPM_PUBLISH_ENABLED }}
+
+  checks:
+    needs: guard
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: [guard, checks]
+    if: >-
+      github.repository == 'royosherove/graphlin' &&
+      github.event.repository.private == false &&
+      vars.NPM_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      # OIDC requires npm >=11.5.1 and Node >=22.14.0.
+      - run: npm install --global npm@11.17.0 --ignore-scripts --no-audit --no-fund
+      - run: npm run release:check
+        env:
+          NPM_PUBLISH_ENABLED: ${{ vars.NPM_PUBLISH_ENABLED }}
+      - run: npm run build
+      - run: npm run pack:check
+      - name: Publish with npm OIDC and provenance
+        run: npm publish --access public --provenance

@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="darkreader-lock">
+  <title>Graphlin · Watch the architecture take shape</title>
+  <style>
+    :root{--paper:#f5f8fe;--ink:#16324e;--muted:#526982;--blue:#285ede;--teal:#087c70;--amber:#976013;--red:#b33750;--line:#d2dfef;--white:#fff;--soft:#eaf0fc;--body:"Avenir Next",Avenir,"Segoe UI",sans-serif}
+    *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.5}button,input,select{font:inherit}button,a,input,select{-webkit-tap-highlight-color:transparent}button{cursor:pointer}button:disabled{cursor:default;opacity:.45}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #517aea;outline-offset:4px}a{color:var(--blue)}button{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;padding:9px 16px;font-weight:600}button:hover:not(:disabled){background:#eaf0fc}button.primary{background:var(--blue);color:#fff;border-color:var(--blue)}button.primary:hover{background:#204fc1}.page{max-width:1480px;margin:auto;padding:0 40px}header{display:flex;align-items:center;justify-content:space-between;padding:27px 0;border-bottom:1px solid var(--line);gap:18px}.brand{display:flex;align-items:center;gap:12px;font-size:28px;font-weight:750;letter-spacing:-1.4px;color:var(--ink);text-decoration:none}.brand-mark{width:28px;height:28px;border:3px solid var(--blue);border-radius:7px;transform:rotate(-9deg);position:relative}.brand-mark:after{content:"";position:absolute;right:-8px;bottom:-6px;width:12px;height:12px;background:var(--teal);border:3px solid var(--paper);border-radius:50%}header nav{display:flex;align-items:center;gap:24px;font-size:13px}.version{color:var(--muted)}h1{font-size:clamp(30px,3.7vw,52px);line-height:1.12;letter-spacing:-1.8px;font-weight:650;max-width:800px;margin:0}.intro{display:flex;justify-content:space-between;align-items:end;gap:30px;padding:36px 0 25px}.intro p{max-width:480px;margin:13px 0 0;color:var(--muted);font-size:16px}.demo-note{display:flex;gap:9px;align-items:center;white-space:nowrap;color:var(--muted);font-size:13px;padding-bottom:3px}.demo-note:before{content:"";width:8px;height:8px;border-radius:50%;background:var(--amber)}.tabs{display:flex;gap:24px;margin-bottom:20px;border-bottom:1px solid var(--line)}.tabs button{border:0;border-bottom:3px solid transparent;border-radius:0;background:none;padding:12px 0;color:var(--muted)}.tabs button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--blue)}[hidden]{display:none!important}.workspace{background:var(--white);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 10px 35px #16324e06}.workspace-top{padding:17px 22px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);gap:14px}.project{display:flex;align-items:center;gap:10px;font-size:14px}.project strong{font-weight:650}.project span{color:var(--muted)}.scenario{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}.scenario select{background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:7px 10px;color:var(--ink);max-width:220px}.workspace-body{display:grid;grid-template-columns:minmax(0,1fr) 305px;min-height:465px}.drawing{position:relative;display:flex;flex-direction:column;background-color:#f8faff;background-image:radial-gradient(#b6c9e5 0.7px,transparent 0.7px);background-size:18px 18px;padding:20px 24px 14px;min-width:0}.drawing-head{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:12px;color:var(--muted)}.live-label{display:flex;gap:7px;align-items:center}.live-label:before{content:"";height:6px;width:6px;background:var(--blue);border-radius:50%}.revision{font-variant-numeric:tabular-nums}#architecture{width:100%;height:328px;overflow:visible;display:block;margin:10px 0}.diagram-node{cursor:pointer}.diagram-node:focus{outline:none}.diagram-node:focus-visible .node-shape{stroke-width:4;stroke:#002876}.diagram-node .node-shape{stroke-width:1.6;fill:#fff;stroke:var(--blue)}.diagram-node .node-title{fill:var(--ink);font:600 16px var(--body)}.diagram-node .node-subtitle{fill:var(--muted);font:12px var(--body)}.diagram-node .node-state{fill:var(--blue);font:600 11px var(--body)}.diagram-node[data-state=proposed] .node-shape{stroke:var(--amber);stroke-dasharray:6 5;fill:#fffcf5}.diagram-node[data-state=proposed] .node-state{fill:var(--amber)}.diagram-node[data-state=verified] .node-shape{stroke:var(--teal);fill:#f2fcf9}.diagram-node[data-state=verified] .node-state{fill:var(--teal)}.diagram-node[data-state=pending] .node-shape{stroke:var(--amber);fill:#fffaf0;stroke-width:2.5}.diagram-node[data-state=pending] .node-state{fill:var(--amber)}.diagram-node[data-state=failed] .node-shape{stroke:var(--red);fill:#fff5f7}.diagram-node[data-state=failed] .node-state{fill:var(--red)}.diagram-node.selected .selection-ring{opacity:1}.selection-ring{fill:none;stroke:#7898e7;stroke-width:1;opacity:0;stroke-dasharray:3 5}.diagram-edge{fill:none;stroke:#678bb8;stroke-width:1.8;marker-end:url(#arrow)}.diagram-edge.proposed{stroke:var(--amber);stroke-dasharray:5 5;marker-end:url(#arrow-amber)}.edge-label{font:11px var(--body);fill:var(--muted);paint-order:stroke;stroke:#f8faff;stroke-width:5px;stroke-linejoin:round}.legend{display:flex;gap:18px;flex-wrap:wrap;color:var(--muted);font-size:11px;margin-top:auto}.legend span{display:flex;align-items:center;gap:6px}.legend i{width:15px;height:10px;border:1.5px solid var(--blue);display:inline-block;border-radius:3px;background:#fff}.legend .proposed{border-style:dashed;border-color:var(--amber)}.legend .verified{border-color:var(--teal);background:#effaf5}.inspector{border-left:1px solid var(--line);padding:22px;display:flex;flex-direction:column}.inspector-heading{display:flex;justify-content:space-between;align-items:center}.inspector h2{font-size:13px;font-weight:600;margin:0;color:var(--muted)}.tiny-dot{width:6px;height:6px;background:var(--teal);border-radius:50%}.step-label{font-size:12px;color:var(--blue);margin:23px 0 5px}h3{font-size:23px;line-height:1.25;letter-spacing:-.5px;margin:0 0 12px}.inspector p{font-size:13px;color:var(--muted);margin:0 0 14px}.proof{margin-top:12px;border-left:3px solid var(--line);padding-left:12px}.proof strong{display:block;font-size:12px;margin-bottom:5px}.proof span{font-size:12px;color:var(--muted);display:block;overflow-wrap:anywhere}.state-pill{font-size:11px;align-self:flex-start;color:var(--blue);background:var(--soft);padding:4px 8px;border-radius:4px;margin-top:auto}.inspector-tip{margin-top:15px!important;margin-bottom:0!important;font-size:11px!important}.playback{padding:18px 22px;border-top:1px solid var(--line);display:grid;grid-template-columns:auto minmax(90px,1fr) auto;gap:22px;align-items:center}.play-buttons{display:flex;gap:8px}.play-buttons button{padding:8px 13px;font-size:13px}.scrubber{display:flex;align-items:center;gap:15px}.scrubber input{width:100%;accent-color:var(--blue);cursor:pointer}.scrubber output{font-size:12px;color:var(--muted);min-width:48px;font-variant-numeric:tabular-nums}.playback .speed{font-size:12px;color:var(--muted)}.event-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;border-top:1px solid var(--line);background:#fcfdff}.event-cell{padding:15px 19px;min-height:96px;border-right:1px solid var(--line)}.event-cell:last-child{border:0}.event-cell span{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}.event-cell strong{font-size:13px;font-weight:600;display:block;line-height:1.4}.event-cell small{display:block;font-size:11px;color:var(--muted);margin-top:4px}.explanation{display:grid;grid-template-columns:1fr 1fr;gap:55px;padding:34px 0 24px}.explanation h2{font-size:20px;letter-spacing:-.4px;margin:0 0 10px}.explanation p{font-size:14px;color:var(--muted);margin:0;max-width:65ch}.code-toggle{margin-top:12px;font-size:12px;padding:6px 11px}pre{background:#eaf0f9;padding:20px;border-radius:8px;overflow:auto;font-size:12px;line-height:1.6;margin:15px 0 0;color:#254365}footer{border-top:1px solid var(--line);margin-top:22px;padding:21px 0 30px;display:flex;justify-content:space-between;gap:20px;font-size:12px;color:var(--muted)}footer p{margin:0}footer a{margin-left:18px}.pipeline-title{max-width:730px;padding:12px 0 22px}.pipeline-title h2{font-size:29px;letter-spacing:-.7px;margin:0 0 10px}.pipeline-title p{color:var(--muted);margin:0}.flow{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));align-items:stretch;gap:28px;padding:30px 0 45px}.flow-step{position:relative;min-height:200px;border-top:3px solid var(--blue);padding-top:15px}.flow-step:not(:last-child):after{content:"→";position:absolute;right:-23px;top:12px;color:#93a9c7;font-size:20px}.flow-step .num{font-size:12px;color:var(--blue);display:block;margin-bottom:12px}.flow-step h3{font-size:19px;margin-bottom:8px;letter-spacing:-.25px}.flow-step p{font-size:13px;color:var(--muted);line-height:1.65;margin:0}.flow-step.cloud{border-top-color:var(--teal)}.flow-step.cloud .num{color:var(--teal)}.platform-table{width:100%;border-collapse:collapse;font-size:14px;margin-top:20px}.platform-table td,.platform-table th{text-align:left;padding:14px 16px;border-bottom:1px solid var(--line)}.platform-table th{font-size:12px;color:var(--muted);font-weight:500}.platform-table td:first-child{font-weight:600}.platform-table caption{text-align:left;font-size:23px;font-weight:600;letter-spacing:-.5px;margin:10px 0}.portable{background:#eaf1fe;padding:26px 30px;border-radius:10px;display:grid;grid-template-columns:1fr 1fr;gap:36px}.portable h3{font-size:21px}.portable p{font-size:14px;color:var(--muted);margin:0}.portable code{font-size:12px;display:inline-block;background:#fff8;padding:2px 5px;border-radius:3px}.screen-reader{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    @media(min-width:1200px){#architecture{height:365px}.workspace-body{min-height:484px}}
+    @media(max-width:1050px){.flow{grid-template-columns:repeat(3,minmax(0,1fr))}.flow-step:nth-child(3):after{display:none}.page{padding:0 24px}.workspace-body{grid-template-columns:minmax(0,1fr) 260px}.inspector{padding:18px}.intro{align-items:start}.demo-note{white-space:normal}.flow{gap:20px}.flow-step:not(:last-child):after{right:-18px}.flow-step h3{font-size:17px}}
+    @media(max-width:780px){.intro{display:block;padding:25px 0}.demo-note{margin-top:17px}.workspace-body{grid-template-columns:1fr}.inspector{border-left:0;border-top:1px solid var(--line);display:grid;grid-template-columns:1fr 1fr;gap:6px 20px}.inspector-heading,.inspector-tip{grid-column:1/-1}.step-label{margin:12px 0 0}.inspector h3{grid-column:1;grid-row:3;font-size:20px}.inspector>p{grid-column:1;grid-row:4;margin-bottom:0}.inspector .inspector-tip{grid-column:1/-1;grid-row:6}.proof{grid-column:2;grid-row:3/5;margin-top:0}.state-pill{grid-column:2;grid-row:5;margin-top:5px}.workspace-top{align-items:start;flex-wrap:wrap}.event-strip{grid-template-columns:1fr 1fr}.event-cell:nth-child(2){border:0}.event-cell:last-child{grid-column:1/-1}.event-cell:nth-child(3),.event-cell:nth-child(4){border-bottom:1px solid var(--line)}.event-cell:nth-child(-n+2){border-bottom:1px solid var(--line)}.playback{gap:12px;grid-template-columns:auto 1fr}.speed{display:none}.explanation{gap:25px}.flow{grid-template-columns:1fr;gap:16px;padding-top:10px}.flow-step{min-height:0;padding:12px 0 12px 60px;border-top:0;border-left:3px solid var(--blue)}.flow-step .num{position:absolute;left:18px;top:14px}.flow-step:not(:last-child):after{display:none}.flow-step.cloud{border-left-color:var(--teal)}.portable{grid-template-columns:1fr;gap:22px}.platform-table{font-size:12px}.platform-table td,.platform-table th{padding:12px 8px}}
+    @media(max-width:520px){.page{padding:0 14px}header{padding:20px 0}header nav{gap:13px}.version{display:none}.brand{font-size:25px}.intro h1{font-size:33px;letter-spacing:-1px}.intro p{font-size:14px}.workspace{border-radius:10px}.drawing{padding:15px 12px}#architecture{height:440px;margin:0}.drawing-head{font-size:11px}.legend{gap:12px}.workspace-top{padding:14px}.project span{font-size:12px}.scenario{width:100%;justify-content:space-between}.scenario select{max-width:230px}.playback{padding:13px;grid-template-columns:1fr;gap:6px}.play-buttons{justify-content:center}.play-buttons button{min-height:44px}.scrubber input{min-height:36px}.scrubber output{font-size:12px}.inspector{padding:16px;gap:7px 13px}.inspector h3{font-size:18px}.inspector p{font-size:12px}.proof span{font-size:11px}.explanation{grid-template-columns:1fr;gap:25px}.event-cell{padding:12px;min-height:92px}.event-cell strong{font-size:12px}.event-cell small{font-size:10px}.tabs{gap:23px}.tabs button{font-size:13px;min-height:44px}footer{display:block}footer nav{margin-top:12px}footer a{margin:0 18px 0 0}.portable{padding:22px}.platform-table td,.platform-table th{padding:10px 5px;font-size:11px}}
+    .diagram-node[data-state=stale] .node-shape{stroke:#65748b;stroke-dasharray:2 5;fill:#f0f3f7}.diagram-node[data-state=stale] .node-state{fill:#526178}
+    .pipeline-open .intro{display:none}
+    .pipeline-open .tabs{margin-top:14px}
+    .call-heading{max-width:800px;padding:6px 0 18px}
+    .call-heading h2{font-size:30px;letter-spacing:-.7px;margin:0 0 8px}
+    .call-heading p{margin:0;color:var(--muted);max-width:73ch;font-size:14px}
+    .call-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+    .call-controls button{font-size:12px;padding:8px 12px}
+    .call-controls button[aria-pressed=true]{background:var(--ink);border-color:var(--ink);color:white}
+    .call-controls .call-key{margin-left:auto;display:flex;gap:15px;font-size:11px;color:var(--muted)}
+    .call-key span{display:flex;align-items:center;gap:6px}
+    .call-key i{display:block;width:21px;border-top:2px solid var(--blue)}
+    .call-key i.answer{border-color:var(--teal);border-top-style:dashed}
+    .call-figure{margin:0 0 24px}
+    .call-map{position:relative;isolation:isolate;display:grid;grid-template-columns:minmax(215px,1.15fr) minmax(130px,.42fr) minmax(175px,.85fr);grid-template-rows:auto repeat(7,minmax(66px,auto));gap:24px 0;padding:20px 20px 22px;align-items:stretch}
+    .call-zone{z-index:-1;grid-row:1/9;border-radius:13px;pointer-events:none}
+    .call-zone.local{grid-column:1;background:#edf3fe;border:1px solid #ccdbee;margin:-20px -12px -22px}
+    .call-zone.cloud{grid-column:3;background:#edf8f5;border:1px solid #b8dad2;margin:-20px -12px -22px}
+    .call-lane{grid-row:1;display:flex;flex-direction:column;gap:3px;margin-bottom:2px}
+    .call-lane strong{font-size:16px;font-weight:650;letter-spacing:-.2px}
+    .call-lane span{font-size:11px;color:var(--muted)}
+    .call-lane.local{grid-column:1}.call-lane.cloud{grid-column:3}
+    .call-node{position:relative;z-index:2;display:flex;flex-direction:column;justify-content:center;gap:3px;background:white;border:1px solid #bccde5;border-radius:8px;padding:10px 13px;min-width:0;text-align:left;color:var(--ink);margin:0;box-shadow:0 2px 3px #16324e03}
+    .call-node strong{font-size:14px;line-height:1.35;font-weight:650}
+    .call-node span{font-size:11px;line-height:1.4;color:var(--muted);font-weight:400}
+    .call-node .call-place{display:none}
+    .call-node.remote{border-color:#8bbfb4;background:#fcfffd}
+    .call-node.remote strong{color:#076e62}
+    .call-node.optional{border-style:dashed}
+    .call-node.selected{outline:2px solid var(--blue);outline-offset:3px}
+    .call-node.remote.selected{outline-color:var(--teal)}
+    .call-map button.call-node:hover{background:#f8fbff;border-color:var(--blue)}
+    .call-map button.call-node.remote:hover{background:#f0fbf7;border-color:var(--teal)}
+    .call-node.deemphasized{opacity:.48}
+    #call-host{grid-area:2/1}#call-prepare{grid-area:3/1}#call-intake{grid-area:4/1}#call-bundle{grid-area:5/1}#call-graph{grid-area:6/1}#call-compile{grid-area:7/1}#call-viewer{grid-area:8/1}
+    #call-jev-a{grid-area:4/3}#call-jev-b{grid-area:6/3}#call-jev-extra{grid-area:8/3}
+    .call-endpoint{grid-column:3;grid-row:2/4;align-self:center;font-size:12px;color:#2d6960;line-height:1.7;max-width:27ch}
+    .call-endpoint strong{display:block;font-size:13px;font-weight:600;color:#18564d;margin-bottom:5px}
+    .call-endpoint code{font-size:11px;overflow-wrap:anywhere}
+    #call-arrows{position:absolute;inset:0;width:100%;height:100%;z-index:1;overflow:visible;pointer-events:none}
+    #call-arrows .local-path{stroke:#8a9fbb;stroke-width:1.4;fill:none}
+    #call-arrows .request-path{stroke:var(--blue);stroke-width:1.8;fill:none}
+    #call-arrows .response-path{stroke:var(--teal);stroke-width:1.8;stroke-dasharray:5 4;fill:none}
+    #call-arrows .optional-path{stroke-dasharray:3 5}
+    #call-arrows .arrow-label{font:11px var(--body);fill:var(--blue);text-anchor:middle;paint-order:stroke;stroke:var(--paper);stroke-width:5;stroke-linejoin:round}
+    #call-arrows .answer-label{fill:var(--teal)}
+    #call-arrows .deemphasized{opacity:.2}
+    #call-arrows .call-pulse{stroke-dasharray:8 4;animation:call-travel .65s linear 2}
+    @keyframes call-travel{to{stroke-dashoffset:-24}}
+    .call-figure figcaption{font-size:12px;color:var(--muted);padding:13px 0 0;max-width:100ch}
+    .call-details{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:20px 0 23px;margin-bottom:30px}
+    .call-details h3{font-size:20px;margin:0 0 7px}
+    .call-details>p{margin:0 0 18px;color:var(--muted);font-size:13px}
+    .call-details dl{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:22px;margin:0}
+    .call-details dt{font-size:11px;color:var(--muted);margin-bottom:5px}
+    .call-details dd{margin:0;font-size:13px;line-height:1.55;overflow-wrap:anywhere}
+    @media(max-width:780px){.call-map{grid-template-columns:minmax(185px,1.15fr) 104px minmax(140px,.85fr);padding:16px 12px 20px;gap:26px 0}.call-zone.local,.call-zone.cloud{margin:-16px -7px -20px}.call-node{padding:9px 10px}.call-node strong{font-size:13px}.call-lane strong{font-size:14px}.call-endpoint{font-size:11px}.call-controls .call-key{width:100%;margin-left:0;margin-top:5px}.call-details dl{grid-template-columns:1fr 1fr;gap:18px 25px}}
+    @media(max-width:550px){.call-map{display:flex;flex-direction:column;gap:39px;padding:0 30px 0 3px}.call-zone,.call-lane{display:none}.call-node{min-height:75px;padding:11px 15px}.call-node strong{font-size:14px}.call-node .call-place{display:block;font-size:10px;color:#5d7290}.call-node.remote .call-place{color:var(--teal)}.call-node.local{background:#f4f7fe}.call-node.remote{background:#eefaf5}.call-endpoint{order:-1;margin:0 0 -22px;max-width:none;font-size:12px}.call-endpoint strong{display:inline;margin-right:6px}.call-endpoint code{white-space:nowrap}#call-jev-extra{order:10}.call-heading h2{font-size:26px}.call-details dl{grid-template-columns:1fr}.call-controls button{min-height:42px}.call-figure figcaption{padding-top:15px}.call-node.deemphasized{opacity:.65}}
+    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
+  </style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <a class="brand" href="graphlin-design.html"><span class="brand-mark" aria-hidden="true"></span>graphlin</a>
+    <nav aria-label="Resources"><span class="version">Design proposal · September 2026</span><a href="graphlin-design.md">Read the design</a></nav>
+  </header>
+  <section class="intro">
+    <div><h1>Watch the architecture<br>take shape.</h1><p>A living map of what the agent proposes, changes, and verifies. Every connection has a reason to be there.</p></div>
+    <div class="demo-note">Interactive concept · simulated events</div>
+  </section>
+  <div class="tabs" role="tablist" aria-label="Explore the proposal">
+    <button id="replay-tab" role="tab" type="button" aria-selected="true" aria-controls="replay-panel">Watch a session</button>
+    <button id="pipeline-tab" role="tab" type="button" aria-selected="false" aria-controls="pipeline-panel">How Jev works</button>
+  </div>
+  <main>
+    <section id="replay-panel" role="tabpanel" aria-labelledby="replay-tab">
+      <div class="workspace">
+        <div class="workspace-top">
+          <div class="project"><strong>notes-app</strong><span>/ main session</span></div>
+          <label class="scenario">Scenario <select id="scenario"><option value="build">Build a persistent notes API</option><option value="outage">The classifier goes offline</option></select></label>
+        </div>
+        <div class="workspace-body">
+          <div class="drawing">
+            <div class="drawing-head"><span class="live-label" id="canvas-label">Architecture · proposed</span><span class="revision" id="revision">Revision 01</span></div>
+            <svg id="architecture" role="group" aria-labelledby="diagram-title diagram-desc" viewBox="0 0 750 328">
+              <title id="diagram-title">Notes application architecture</title>
+              <desc id="diagram-desc">Use the replay controls to see proposed components become supported by evidence.</desc>
+              <defs>
+                <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#678bb8"/></marker>
+                <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#976013"/></marker>
+              </defs>
+              <g id="edge-layer"></g><g id="node-layer"></g>
+            </svg>
+            <div class="legend"><span><i class="proposed"></i>Proposed</span><span><i></i>Observed in artifacts</span><span><i class="verified"></i>Scoped check passed</span></div>
+          </div>
+          <aside class="inspector" aria-label="Evidence inspector">
+            <div class="inspector-heading"><h2>Why the map changed</h2><span class="tiny-dot" aria-hidden="true"></span></div>
+            <div class="step-label" id="step-label"></div>
+            <h3 id="event-title"></h3>
+            <p id="event-description"></p>
+            <div class="proof"><strong id="proof-title"></strong><span id="proof-text"></span></div>
+            <span class="state-pill" id="state-pill"></span>
+            <p class="inspector-tip">Select a component to inspect its evidence.</p>
+          </aside>
+        </div>
+        <div class="playback">
+          <div class="play-buttons"><button id="play" class="primary" type="button">Play session</button><button id="next" type="button">Next</button><button id="reset" type="button" aria-label="Restart replay">Reset</button></div>
+          <label class="scrubber"><span class="screen-reader">Replay position</span><input id="scrub" type="range" min="0" max="8" value="0"><output id="step-count" for="scrub">1 / 9</output></label>
+          <span class="speed">One event at a time</span>
+        </div>
+        <div class="event-strip" aria-label="Event processing">
+          <div class="event-cell"><span>Observed event</span><strong id="event-source"></strong><small id="event-source-note"></small></div>
+          <div class="event-cell"><span>Jev A · intake</span><strong id="intake-decision"></strong><small id="intake-note"></small></div>
+          <div class="event-cell"><span>Jev B · architecture</span><strong id="decision"></strong><small id="decision-note"></small></div>
+          <div class="event-cell"><span>Local compiler</span><strong id="compiler"></strong><small id="compiler-note"></small></div>
+          <div class="event-cell"><span>Agent impact</span><strong>Continues normally</strong><small>Capture returns before classification</small></div>
+        </div>
+      </div>
+      <div class="explanation">
+        <div><h2>Intent has a different outline.</h2><p>A proposed database is drawn with a dashed border. It becomes observed when source or configuration supports it. Verification names the particular check that passed.</p></div>
+        <div><h2>Ask the code a focused question.</h2><p>Jev first helps prepare the evidence. It then evaluates snippets directly: “Does this function write to PostgreSQL?” Noul supplies a yes probability; an optional Score describes the strength of support.</p><button class="code-toggle" id="show-patch" type="button" aria-expanded="false" aria-controls="patch">Inspect this diagram change</button><pre id="patch" hidden></pre></div>
+      </div>
+      <div class="screen-reader" id="announcement" aria-live="polite"></div>
+    </section>
+    <section id="pipeline-panel" role="tabpanel" aria-labelledby="pipeline-tab" hidden>
+      <div class="call-heading"><h2>Where Jev gets called.</h2><p>The Graphlin service on your machine makes the requests. Jev runs in TypeSafe’s cloud and returns decisions to that service. Select a call to follow its inputs and answers.</p></div>
+      <div class="call-controls" role="group" aria-label="Highlight a Jev call">
+        <button type="button" data-call-select="all" aria-pressed="true">All calls</button>
+        <button type="button" data-call-select="intake" aria-pressed="false">1 · Intake</button>
+        <button type="button" data-call-select="graph" aria-pressed="false">2 · Architecture</button>
+        <button type="button" data-call-select="extra" aria-pressed="false">Optional checks</button>
+        <div class="call-key" aria-label="Arrow legend"><span><i></i>Request</span><span><i class="answer"></i>Answer</span></div>
+      </div>
+      <figure class="call-figure" aria-label="Jev call diagram">
+        <div class="call-map" id="call-map">
+          <div class="call-zone local" aria-hidden="true"></div><div class="call-zone cloud" aria-hidden="true"></div>
+          <div class="call-lane local"><strong>Your machine</strong><span>Graphlin’s local service and browser</span></div>
+          <div class="call-lane cloud"><strong>TypeSafe cloud</strong><span>One Jev service · separate requests</span></div>
+          <div class="call-endpoint"><strong>Shared API destination</strong><code>api.typesafe.ai<br>POST /v1/systemone</code></div>
+          <div id="call-host" class="call-node local"><span class="call-place">Your machine</span><strong>Agent hooks</strong><span>Prompt, public text, and tool events</span></div>
+          <div id="call-prepare" class="call-node local"><span class="call-place">Your machine</span><strong>Queue + local privacy filter</strong><span>Allowed metadata and permitted snippets</span></div>
+          <button id="call-intake" class="call-node local" data-call-node="intake" type="button" aria-label="Inspect call 1 from the local intake stage"><span class="call-place">Your machine · API caller</span><strong>Decision service · intake</strong><span>Build normalization and redaction questions</span></button>
+          <button id="call-jev-a" class="call-node remote" data-call-node="intake" type="button" aria-label="Inspect Jev intake request and response"><span class="call-place">TypeSafe cloud</span><strong>Jev · call 1</strong><span>Normalize, classify sensitivity, select entities</span></button>
+          <div id="call-bundle" class="call-node local"><span class="call-place">Your machine</span><strong>Evidence builder</strong><span>Apply answers; redact and select code snippets</span></div>
+          <button id="call-graph" class="call-node local" data-call-node="graph" type="button" aria-label="Inspect call 2 from the local architecture stage"><span class="call-place">Your machine · API caller</span><strong>Decision service · architecture</strong><span>Build Noul / Score questions about the code</span></button>
+          <button id="call-jev-b" class="call-node remote" data-call-node="graph" type="button" aria-label="Inspect Jev architecture request and response"><span class="call-place">TypeSafe cloud</span><strong>Jev · call 2</strong><span>Judge component and connection claims</span></button>
+          <button id="call-jev-extra" class="call-node remote optional" data-call-node="extra" type="button" aria-label="Inspect optional Jev calls from the decision service"><span class="call-place">TypeSafe cloud · optional branch</span><strong>Jev · extra checks</strong><span>Aliases, missing context, conflicts, grouping</span></button>
+          <div id="call-compile" class="call-node local"><span class="call-place">Your machine</span><strong>Graph compiler + state</strong><span>Validate decisions; create precise drawing updates</span></div>
+          <div id="call-viewer" class="call-node local"><span class="call-place">Your machine</span><strong>Local browser</strong><span>Draw nodes, connections, and activity</span></div>
+          <svg id="call-arrows" aria-hidden="true"></svg>
+        </div>
+        <figcaption>Calls 1 and 2 use the same local API client and remote Jev service. Call 2 receives the approved evidence produced after call 1. Extra checks are conditional; each stays within the event’s time and request budget. Immediate activity and evidence-freshness updates also have local paths outside this call diagram.</figcaption>
+      </figure>
+      <section class="call-details" aria-labelledby="call-detail-title" aria-live="polite">
+        <h3 id="call-detail-title">One local caller, two decision stages.</h3>
+        <p id="call-detail-summary">The hooks hand off events locally. The background decision service manages both Jev calls, then the compiler sends drawing updates to the browser.</p>
+        <dl>
+          <div><dt>Who calls</dt><dd id="call-detail-who">Graphlin’s background decision service</dd></div>
+          <div><dt>What is sent</dt><dd id="call-detail-input">Permitted event or code snippets, context, and typed questions</dd></div>
+          <div><dt>What returns</dt><dd id="call-detail-output">Choice answers, Noul probabilities, and optional Scores</dd></div>
+          <div><dt>Who uses the answer</dt><dd id="call-detail-consumer">Evidence builder, then graph compiler, then local browser</dd></div>
+        </dl>
+      </section>
+      <div class="portable">
+        <div><h3>One portable core.</h3><p>Target Agent Plugins 1.0 with <code>plugin.json</code>, <code>mcp.json</code>, and <code>skills/</code>. The same service, event schema, classifier, and drawing language serve every host.</p></div>
+        <div><h3>Adapters for what each host exposes.</h3><p>Hooks are client-specific. Use Claude’s native package and Codex’s portable extension support, with compatibility builds where needed. Validate Kiro’s target surfaces and show coverage gaps.</p></div>
+      </div>
+      <table class="platform-table">
+        <caption>Portable design, honest coverage.</caption>
+        <thead><tr><th scope="col">Host</th><th scope="col">Observation path</th><th scope="col">Delivery</th></tr></thead>
+        <tbody>
+          <tr><td>Claude Code</td><td>Pre/post tools; public displayed text and batch boundary where available</td><td>First integration</td></tr>
+          <tr><td>Codex</td><td>Native lifecycle hooks; some tool paths have coverage gaps</td><td>Second adapter</td></tr>
+          <tr><td>Kiro</td><td>Surface-specific prompt and pre/post tool hooks</td><td>Validate IDE and CLI separately</td></tr>
+        </tbody>
+      </table>
+      <div class="explanation">
+        <div><h2>No rule for every library.</h2><p>Jev interprets the supplied code, including wrapper implementations. Local helpers capture context and exact references. Missing context keeps a relationship tentative or triggers bounded enrichment.</p></div>
+        <div><h2>Privacy starts before the first call.</h2><p>Local rules remove prohibited content before Jev A sees it. Jev adds contextual redaction over permitted content. If either pass is unavailable, safe activity stays visible and the agent continues.</p></div>
+      </div>
+    </section>
+  </main>
+  <footer><p>This is a design walkthrough. No agent hooks are installed and no Jev calls are made.</p><nav aria-label="Design documents"><a href="graphlin-design.md">Full proposal</a><a href="graphlin-review.md">Independent review</a></nav></footer>
+</div>
+<script>
+(() => {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const NS = "http://www.w3.org/2000/svg";
+  const baseNodes = {
+    client:{id:"client",label:"Web client",sub:"Existing interface",kind:"client",source:"Existing baseline: src/app/page.tsx",state:"observed"},
+    api:{id:"api",label:"Notes API",sub:"HTTP service",kind:"service",source:"Public intent: “Add a persistent notes API.”",state:"proposed"},
+    db:{id:"db",label:"PostgreSQL",sub:"Persistent storage",kind:"datastore",source:"Public intent names PostgreSQL as the proposed store.",state:"proposed"},
+    cache:{id:"cache",label:"Cache module",sub:"Optional fast reads",kind:"module",source:"Public intent proposes a cache module.",state:"proposed"}
+  };
+  const steps = [
+    {title:"A plan becomes visible",description:"The agent proposes an API, a Postgres store, and a cache module. They appear as possibilities, with dashed outlines.",source:"Public assistant message",sourceNote:"Displayed intent, not private thinking",decision:"Accept proposed candidates",decisionNote:"Choice + candidate-specific Noul",compiler:"Add proposed components",compilerNote:"Names copied from public evidence",proofTitle:"Stated intent",proof:'“I’ll add a notes API backed by Postgres, with an optional cache.”',badge:"Proposed · not built",focus:"api",nodes:{},edges:[],ops:[{op:"node.upsert",id:"api",evidenceState:"proposed"},{op:"node.upsert",id:"db",evidenceState:"proposed"},{op:"node.upsert",id:"cache",evidenceState:"proposed"}]},
+    {title:"A write is about to run",description:"The API is highlighted while the write is attempted. The hook has no evidence yet that the file was created.",source:"PreToolUse · Write",sourceNote:"src/api/notes.ts",decision:"Implementing a service",decisionNote:"Activity classification",compiler:"Mark API as pending",compilerNote:"No success promotion",proofTitle:"Tool attempt",proof:"Write has been requested. Completion has not been observed.",badge:"Pending · awaiting result",focus:"api",nodes:{api:{state:"pending"}},edges:[],ops:[{op:"node.state",id:"api",activityState:"pending"}]},
+    {title:"The service exists in code",description:"The write completes. Jev evaluates the handler and client snippets to identify the service and its call relationship.",source:"PostToolUse + captured snippets",sourceNote:"Successful write and versioned source",decision:"Service · client calls API",decisionNote:"Noul over supplied code",compiler:"Add source-backed call edge",compilerNote:"Jev interpretation; not runtime verification",proofTitle:"Artifact evidence",proof:"Supplied snippets show the handler export and the client’s notes request. Jev evaluates whether those snippets support the call relationship.",badge:"Classified from code",focus:"api",nodes:{api:{state:"observed",source:"Successful write: src/api/notes.ts. Jev classifies the supplied handler snippet as a service."}},edges:[["client","api","calls"]],ops:[{op:"node.state",id:"api",evidenceState:"observed",activityState:"idle"},{op:"edge.upsert",from:"client",to:"api",relation:"calls",basis:"jev_interpretation"}]},
+    {title:"The snippets support a database write",description:"Jev evaluates the database setup, repository function, and caller snippets directly. Separate questions ask whether a PostgreSQL client and a write path are present.",source:"PostToolUse + captured snippets",sourceNote:"Setup, write function, and caller",decision:"Client configured · write supported",decisionNote:"Noul questions; optional support Score",compiler:"Add classified write edge",compilerNote:"No per-driver semantic rule required",proofTitle:"Questions answered from code",proof:"Does this code configure PostgreSQL? Does the repository issue a write? Does the API call that function? Is any required binding missing? This replay illustrates acceptance, not a measured Jev result.",badge:"Write path classified from code",focus:"db",nodes:{db:{state:"observed",source:"Jev interprets the approved database setup and write-function snippets. This is source classification, not proof of live connectivity."}},edges:[["api","db","writes"]],ops:[{op:"node.state",id:"db",evidenceState:"observed"},{op:"edge.upsert",from:"api",to:"db",relation:"writes",basis:"jev_interpretation"}]},
+    {title:"The cache joins the map",description:"A cache module is created. Jev evaluates the API and cache snippets to decide whether the dependency is supported.",source:"PostToolUse + captured snippets",sourceNote:"src/notes/cache.ts and caller context",decision:"Module · API depends on cache",decisionNote:"Noul over the candidate relationship",compiler:"Add cache and dependency",compilerNote:"Stable IDs; existing positions retained",proofTitle:"Artifact evidence",proof:"The file write completed. Jev interprets the supplied API import and cache implementation as a dependency.",badge:"Classified from code",focus:"cache",nodes:{cache:{state:"observed",source:"Successful write: src/notes/cache.ts; dependency classified from supplied API/cache snippets."}},edges:[["api","cache","depends on"]],ops:[{op:"node.state",id:"cache",evidenceState:"observed"},{op:"edge.upsert",from:"api",to:"cache",relation:"depends_on",basis:"jev_interpretation"}]},
+    {title:"A check fails. The code remains.",description:"The notes persistence test fails. Graphlin marks the failed check while retaining the source-backed components and relationships.",source:"Tool result · test failed",sourceNote:"notes.persistence.test.ts",decision:"No success inference needed",decisionNote:"Exit status is a local fact",compiler:"Attach failed check to API",compilerNote:"Do not erase observed source",proofTitle:"Failed verification",proof:"The persistence test expected a saved note and received no result. The test process exited with failure.",badge:"Check failed · source retained",focus:"api",nodes:{api:{state:"failed",source:"API source is still observed. The scoped persistence check failed."}},edges:[],ops:[{op:"node.state",id:"api",evidenceState:"observed",activityState:"failed"},{op:"annotation.upsert",id:"persistence-check",label:"Persistence test failed"}]},
+    {title:"One behavior is verified",description:"After a repair, the targeted test passes. The API gains a named verification badge; PostgreSQL is still only observed in configuration.",source:"Tool result · test passed",sourceNote:"notes.persistence.test.ts",decision:"Verification activity",decisionNote:"Check scope supplied by local evidence",compiler:"Attach scoped test evidence",compilerNote:"No system-wide verified claim",proofTitle:"Check and scope",proof:"“POST /notes saves a note” passed at the repaired artifact revision. Deployment and production behavior were not checked.",badge:"Persistence check passed",focus:"api",nodes:{api:{state:"verified",source:"Targeted check passed: POST /notes saves a note. Applies to the tested artifact revision."}},edges:[],ops:[{op:"node.state",id:"api",activityState:"idle"},{op:"annotation.upsert",id:"persistence-check",label:"POST /notes saves a note · passed"}]},
+    {title:"A component is removed",description:"The agent deletes the optional cache and removes its import. Reconciliation confirms both changes before the live map drops the component.",source:"Completed edit + reconciliation",sourceNote:"Cache deletion and import removal confirmed",decision:"Existing cache candidate matched",decisionNote:"Deletion requires artifact evidence",compiler:"Remove node and incident edge",compilerNote:"History remains replayable",proofTitle:"Removal evidence",proof:"src/notes/cache.ts is absent in the new snapshot. The API no longer imports it.",badge:"Removed · history preserved",focus:"api",nodes:{cache:null,api:{state:"observed",source:"Cache-removal edit changed the API revision. The prior check is historical until rerun."}},edges:[],ops:[{op:"edge.remove",from:"api",to:"cache"},{op:"node.remove",id:"cache"},{op:"annotation.upsert",id:"persistence-check",label:"Prior check predates latest edit"}]},
+    {title:"The map can tell its story",description:"The remaining API-to-database relationship is supported by source. Replay preserves the failed check, the later success, and the cache removal.",source:"Turn stopped",sourceNote:"Session history retained",decision:"No new architecture decision",decisionNote:"Accepted revisions are replayed locally",compiler:"Keep the final graph",compilerNote:"Latest edit still needs a fresh check",proofTitle:"Current evidence",proof:"Source supports the API and its database dependency. The successful test preceded the cache-removal edit.",badge:"Observed · check is historical",focus:"api",nodes:{},edges:[],ops:[]}
+  ];
+  const outageSteps = [
+    steps[0], steps[1], steps[2],
+    {title:"Jev is temporarily unavailable",description:"A storage edit completes, but classification times out. Activity remains visible and the semantic graph stays at its last accepted revision.",source:"PostToolUse · storage edit",sourceNote:"Captured locally; classification deferred",decision:"Unavailable · request timed out",decisionNote:"Illustration; no real request was made",compiler:"Keep last accepted graph",compilerNote:"Storage remains proposed",proofTitle:"What is known",proof:"The tool reported a completed write. The pending semantic result cannot yet establish the component mapping.",badge:"Classification delayed",focus:"db",nodes:{},edges:[],ops:[],offline:true},
+    {title:"Old evidence is invalidated locally",description:"The API file changes while Jev is unavailable. A direct artifact observation marks its prior interpretation stale, without waiting for classification.",source:"Artifact generation changed",sourceNote:"A newer API revision was observed",decision:"Deferred · bounded queue",decisionNote:"No retry storm",compiler:"Mark prior API evidence stale",compilerNote:"Validity updates independently of Jev",proofTitle:"Artifact evidence",proof:"src/api/notes.ts has a new content hash. Its previous classification no longer describes the current bytes.",badge:"Stale · awaiting current interpretation",focus:"api",nodes:{api:{state:"stale",source:"The backing artifact changed. Previous evidence is historical until the new revision is reconciled."}},edges:[],ops:[{op:"node.state",id:"api",evidenceValidity:"stale",classificationState:"stale"}],offline:true},
+    {title:"Recovery uses current evidence",description:"When classification is available again, the worker reconciles pending evidence against the current artifact and graph versions before adding the storage relationship.",source:"Queued evidence reconciled",sourceNote:"Artifact generations and graph revision checked",decision:"Datastore · API writes",decisionNote:"Current context, not a blind stale patch",compiler:"Reconcile API and relationship",compilerNote:"Atomic accepted revision",proofTitle:"Recovered evidence",proof:"The approved evidence bundle is bound to the current API and repository content hashes. It supports the PostgreSQL dependency.",badge:"Classification recovered",focus:"db",nodes:{...steps[3].nodes,api:{state:"observed",source:"The current API artifact generation is reconciled with its PostgreSQL dependency."}},edges:steps[3].edges,ops:[...steps[3].ops,{op:"node.state",id:"api",evidenceValidity:"current",classificationState:"accepted"}]}
+  ];
+  let current=0, scenario="build", timer=null, selected=null, lastNodePositions=new Map();
+  const reduced=matchMedia("(prefers-reduced-motion: reduce)");
+  function activeSteps(){return scenario==="outage"?outageSteps:steps}
+  function el(tag,attrs={},text){const e=document.createElementNS(NS,tag);for(const [k,v] of Object.entries(attrs))e.setAttribute(k,v);if(text!==undefined)e.textContent=text;return e}
+  function graphAt(index){const nodes=JSON.parse(JSON.stringify(baseNodes));const edges=new Map();let rev=0;for(let i=0;i<=index;i++){const s=activeSteps()[i];for(const [id,change]of Object.entries(s.nodes)){if(change===null){delete nodes[id];for(const[k,v]of edges)if(v[0]===id||v[1]===id)edges.delete(k)}else nodes[id]={...nodes[id],...change}}for(const edge of s.edges)edges.set(edge[0]+"-"+edge[1],edge);if(s.ops.length)rev++}return{nodes,edges:[...edges.values()],rev}}
+  function positions(){const width=$("architecture").clientWidth,mobile=width<680;if(width<370)return{mobile,stack:true,w:230,h:640,nodes:{client:[25,10],api:[25,175],db:[25,340],cache:[25,505]},nw:180,nh:105};return mobile?{mobile,w:340,h:440,nodes:{client:[10,25],api:[185,25],db:[185,265],cache:[10,265]},nw:145,nh:105}:{mobile,w:750,h:328,nodes:{client:[20,111],api:[280,111],db:[545,31],cache:[545,210]},nw:178,nh:94}}
+  function renderGraph(graph,s){
+    const p=positions(),svg=$("architecture");svg.setAttribute("viewBox",`0 0 ${p.w} ${p.h}`);svg.style.height=p.mobile?`${p.h}px`:"365px";
+    $("edge-layer").replaceChildren();$("node-layer").replaceChildren();
+    for(const [from,to,label]of graph.edges){if(!graph.nodes[from]||!graph.nodes[to])continue;const a=p.nodes[from],b=p.nodes[to];let path,lx,ly;
+      if(p.stack&&from==="api"&&to==="cache"){const ay=a[1]+p.nh/2,by=b[1]+p.nh/2;path=`M${a[0]},${ay} L8,${ay} L8,${by} L${b[0]},${by}`;lx=65;ly=by-12}
+      else if(p.mobile&&a[1]!==b[1]){const ax=a[0]+p.nw/2,ay=a[1]+p.nh,bx=b[0]+p.nw/2,by=b[1];path=`M${ax},${ay} C${ax},${ay+75} ${bx},${by-70} ${bx},${by}`;lx=(ax+bx)/2;ly=(ay+by)/2}
+      else{const ax=a[0]+p.nw,ay=a[1]+p.nh/2,bx=b[0],by=b[1]+p.nh/2;path=`M${ax},${ay} C${ax+40},${ay} ${bx-40},${by} ${bx},${by}`;lx=(ax+bx)/2;ly=(ay+by)/2-9}
+      $("edge-layer").append(el("path",{d:path,class:"diagram-edge"}),el("text",{x:lx,y:ly,"text-anchor":"middle",class:"edge-label"},label));
+    }
+    for(const n of Object.values(graph.nodes)){
+      const[x,y]=p.nodes[n.id],w=p.nw,h=p.nh,focused=selected===n.id||(!selected&&s.focus===n.id);
+      const group=el("g",{transform:`translate(${x} ${y})`,class:"diagram-node"+(focused?" selected":""),"data-state":n.state,role:"button",tabindex:"0","aria-label":`${n.label}: ${n.state}. Inspect evidence`});
+      group.append(el("rect",{x:-6,y:-6,width:w+12,height:h+12,rx:13,class:"selection-ring"}));
+      if(n.kind==="datastore"){group.append(el("path",{d:`M0,14 C0,-3 ${w},-3 ${w},14 L${w},${h-14} C${w},${h+3} 0,${h+3} 0,${h-14} Z`,class:"node-shape"}));group.append(el("path",{d:`M0,14 C0,31 ${w},31 ${w},14`,fill:"none",stroke:n.state==="proposed"?"#976013":"#285ede","stroke-width":"1.3"}))}
+      else group.append(el("rect",{width:w,height:h,rx:n.kind==="service"?10:5,class:"node-shape"}));
+      const ty=n.kind==="datastore"?43:30;
+      group.append(el("text",{x:w/2,y:ty,"text-anchor":"middle",class:"node-title"},n.label),el("text",{x:w/2,y:ty+20,"text-anchor":"middle",class:"node-subtitle"},n.sub));
+      const stateLabel={proposed:"Proposed",observed:"Observed",pending:"Write pending",failed:"Check failed",verified:"Persistence check passed",stale:"Evidence stale"}[n.state];
+      group.append(el("text",{x:w/2,y:h-11,"text-anchor":"middle",class:"node-state",...(p.mobile&&n.state==="verified"?{"font-size":"10"}:{})},stateLabel));
+      group.addEventListener("click",()=>inspect(n.id));group.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();inspect(n.id)}});
+      $("node-layer").append(group);
+      const old=lastNodePositions.get(n.id);if(!reduced.matches&&old&&(old[0]!==x||old[1]!==y)){group.animate([{transform:`translate(${old[0]}px, ${old[1]}px)`},{transform:`translate(${x}px, ${y}px)`}],{duration:220,easing:"ease-out"})}
+      lastNodePositions.set(n.id,[x,y]);
+    }
+    $("diagram-desc").textContent=`Step ${current+1}: ${s.title}. `+Object.values(graph.nodes).map(n=>`${n.label} is ${n.state}`).join(". ")+".";
+  }
+  function inspect(id){selected=selected===id?null:id;render(false)}
+  function render(announce=true){
+    const list=activeSteps(),s=list[current],graph=graphAt(current);if(selected&&!graph.nodes[selected])selected=null;
+    renderGraph(graph,s);
+    $("step-label").textContent=`Event ${String(current+1).padStart(2,"0")} / ${String(list.length).padStart(2,"0")}`;
+    $("event-title").textContent=s.title;$("event-description").textContent=s.description;
+    $("proof-title").textContent=selected?graph.nodes[selected].label+" · evidence":s.proofTitle;
+    $("proof-text").textContent=selected?graph.nodes[selected].source:s.proof;
+    $("state-pill").textContent=selected?graph.nodes[selected].state:s.badge;
+    $("event-source").textContent=s.source;$("event-source-note").textContent=s.sourceNote;
+    $("intake-decision").textContent=s.offline?"Deferred · keep safe references":current===0?"Select named component spans":s.source.includes("test")?"Reuse structured outcome":"Normalize and select evidence";
+    $("intake-note").textContent=s.offline?"No unapproved text retained":"Contextual redaction over permitted input";
+    $("decision").textContent=s.decision;$("decision-note").textContent=s.decisionNote;
+    $("compiler").textContent=s.compiler;$("compiler-note").textContent=s.compilerNote;
+    $("revision").textContent=`Revision ${String(graph.rev).padStart(2,"0")}`;
+    $("canvas-label").textContent=s.offline?"Architecture · classification delayed":"Architecture · "+(current<2?"proposed":"evidence linked");
+    $("scrub").max=list.length-1;$("scrub").value=current;$("step-count").textContent=`${current+1} / ${list.length}`;
+    $("next").disabled=current===list.length-1;
+    $("patch").textContent=JSON.stringify({illustration:true,revision:graph.rev,operations:s.ops},null,2);
+    if(announce)$("announcement").textContent=`Event ${current+1}. ${s.title}. ${s.description}`;
+  }
+  function stop(){if(timer)clearInterval(timer);timer=null;$("play").textContent="Play session"}
+  function advance(){selected=null;if(current<activeSteps().length-1){current++;render()}if(current===activeSteps().length-1)stop()}
+  $("play").addEventListener("click",()=>{if(timer){stop();return}if(current===activeSteps().length-1){current=0;selected=null;render()}$("play").textContent="Pause";timer=setInterval(advance,2600)});
+  $("next").addEventListener("click",()=>{stop();advance()});
+  $("reset").addEventListener("click",()=>{stop();current=0;selected=null;render()});
+  $("scrub").addEventListener("input",event=>{stop();current=Number(event.target.value);selected=null;render()});
+  $("scenario").addEventListener("change",event=>{stop();scenario=event.target.value;current=0;selected=null;render()});
+  $("show-patch").addEventListener("click",()=>{const expanded=$("show-patch").getAttribute("aria-expanded")==="true";$("show-patch").setAttribute("aria-expanded",String(!expanded));$("patch").hidden=expanded;$("show-patch").textContent=expanded?"Inspect this diagram change":"Hide diagram change"});
+  const callDetails={
+    all:{
+      title:"One local caller, two decision stages.",
+      summary:"The hooks hand off events locally. The background decision service manages both Jev calls, then the compiler sends drawing updates to the browser.",
+      who:"Graphlin’s background decision service",
+      input:"Permitted event or code snippets, context, and typed questions",
+      output:"Choice answers, Noul probabilities, and optional Scores",
+      consumer:"Evidence builder, then graph compiler, then local browser"
+    },
+    intake:{
+      title:"Call 1 · Interpret the incoming event.",
+      summary:"The local intake stage calls Jev after the initial privacy filter. Jev returns decisions; the local evidence builder applies them before the next call.",
+      who:"Decision service · intake stage, running in the local Graphlin service",
+      input:"Permitted event text, candidate spans, and normalization, sensitivity, and entity-selection questions",
+      output:"Normalized categories, sensitivity decisions, and selected candidate IDs",
+      consumer:"Local evidence builder: apply redactions, copy approved spans, and prepare the snippet bundle"
+    },
+    graph:{
+      title:"Call 2 · Judge the architectural claim.",
+      summary:"After call 1’s answers have been applied, the local architecture stage sends the approved code bundle to the same Jev API.",
+      who:"Decision service · architecture stage, running in the local Graphlin service",
+      input:"Focused code snippets, relevant bindings and graph context; questions such as “does this function write to PostgreSQL?”",
+      output:"Noul probabilities for the specific claims, optional support Scores, and component or relation Choices",
+      consumer:"Local graph compiler: check evidence and versions, then send precise drawing updates to the browser"
+    },
+    extra:{
+      title:"Optional calls · Resolve a specific ambiguity.",
+      summary:"The same decision service can request an extra judgment when a stage needs it. The dashed branch illustrates a follow-up from the architecture stage; intake can also request bounded enrichment.",
+      who:"The local decision service, at the stage that needs another judgment",
+      input:"A small approved candidate set or added context, with one focused matching, conflict, grouping, or enrichment question",
+      output:"A typed decision plus uncertainty, returned to the requesting stage",
+      consumer:"That local stage: apply the answer or keep the claim tentative. Extra calls share the event’s deadline and budget."
+    }
+  };
+  let activeCall="all";
+  function drawCallMap(animate=false){
+    if($("pipeline-panel").hidden)return;
+    const map=$("call-map"),svg=$("call-arrows"),bounds=map.getBoundingClientRect();
+    if(!bounds.width||!bounds.height)return;
+    const mobile=getComputedStyle(map).display==="flex",w=bounds.width,h=bounds.height;
+    svg.setAttribute("viewBox",`0 0 ${w} ${h}`);svg.replaceChildren();
+    const defs=el("defs");
+    for(const[id,color]of[["local","#8a9fbb"],["request","#285ede"],["response","#087c70"]]){
+      const marker=el("marker",{id:`call-${id}-tip`,viewBox:"0 0 10 10",refX:9,refY:5,markerWidth:5,markerHeight:5,orient:"auto"});
+      marker.append(el("path",{d:"M0 0 L10 5 L0 10 Z",fill:color}));defs.append(marker);
+    }
+    svg.append(defs);
+    const rect=id=>{const r=$(id).getBoundingClientRect();return{l:r.left-bounds.left,r:r.right-bounds.left,t:r.top-bounds.top,b:r.bottom-bounds.top,x:(r.left+r.right)/2-bounds.left,y:(r.top+r.bottom)/2-bounds.top}};
+    const path=(d,kind,call,optional=false)=>{
+      const dim=call&&activeCall!=="all"&&activeCall!==call;
+      const classes=[`${kind}-path`,optional?"optional-path":"",dim?"deemphasized":"",animate&&call===activeCall&&!reduced.matches?"call-pulse":""].filter(Boolean).join(" ");
+      svg.append(el("path",{d,class:classes,"marker-end":`url(#call-${kind}-tip)`}));
+    };
+    const label=(lines,x,y,kind="request",call,rotate=0)=>{
+      const dim=call&&activeCall!=="all"&&activeCall!==call;
+      const text=el("text",{x,y,class:`arrow-label ${kind==="response"?"answer-label":""} ${dim?"deemphasized":""}`,...(rotate?{transform:`rotate(${rotate} ${x} ${y})`}:{})});
+      lines.forEach((line,i)=>text.append(el("tspan",{x,dy:i?13:0},line)));svg.append(text);
+    };
+    const vertical=(from,to,kind="local",call,caption)=>{
+      const a=rect(from),b=rect(to),start=a.b+2,end=b.t-4,mid=(start+end)/2;
+      path(`M${a.x},${start} C${a.x},${mid} ${b.x},${mid} ${b.x},${end}`,kind,call);
+      if(caption)label([caption],a.x+4,mid-4,kind,call);
+    };
+    if(mobile){
+      vertical("call-host","call-prepare");vertical("call-prepare","call-intake");
+      vertical("call-intake","call-jev-a","request","intake","1 · event + questions");
+      vertical("call-jev-a","call-bundle","response","intake","1 · intake answers");
+      vertical("call-bundle","call-graph");
+      vertical("call-graph","call-jev-b","request","graph","2 · code + questions");
+      vertical("call-jev-b","call-compile","response","graph","2 · claim answers");
+      vertical("call-compile","call-viewer");
+      const a=rect("call-graph"),b=rect("call-jev-extra"),out=w-5,back=w-16;
+      path(`M${a.r+2},${a.y-8} H${out} V${b.y-8} H${b.r+4}`,"request","extra",true);
+      path(`M${b.r+2},${b.y+9} H${back} V${a.y+11} H${a.r+4}`,"response","extra",true);
+      label(["Optional"],out-4,(a.y+b.y)/2,"request","extra",90);
+    }else{
+      for(const[a,b]of[["call-host","call-prepare"],["call-prepare","call-intake"],["call-intake","call-bundle"],["call-bundle","call-graph"],["call-graph","call-compile"],["call-compile","call-viewer"]])vertical(a,b);
+      for(const[call,from,to,requestLines,answer]of[
+        ["intake","call-intake","call-jev-a",["1 · event","+ questions"],"1 · decisions"],
+        ["graph","call-graph","call-jev-b",["2 · code + graph","+ questions"],"2 · probabilities"]
+      ]){
+        const a=rect(from),b=rect(to),x=(a.r+b.l)/2;
+        path(`M${a.r+3},${a.y-10} L${b.l-4},${b.y-10}`,"request",call);
+        path(`M${b.l-3},${b.y+12} L${a.r+4},${a.y+12}`,"response",call);
+        label(requestLines,x,a.y-32,"request",call);label([answer],x,a.y+30,"response",call);
+      }
+      const a=rect("call-graph"),b=rect("call-jev-extra"),gap=b.l-a.r,requestX=a.r+gap*.34,responseX=a.r+gap*.52;
+      path(`M${a.r+3},${a.b-5} H${requestX} V${b.y-9} H${b.l-4}`,"request","extra",true);
+      path(`M${b.l-3},${b.y+12} H${responseX} V${a.b+4} H${a.r-12} V${a.b+2}`,"response","extra",true);
+      label(["Extra","questions"],(responseX+b.l)/2,b.y-33,"request","extra");
+      label(["Answers"],(responseX+b.l)/2,b.y+30,"response","extra");
+    }
+  }
+  function selectCall(call,animate=true){
+    activeCall=call;const detail=callDetails[call];
+    for(const button of document.querySelectorAll("[data-call-select]"))button.setAttribute("aria-pressed",String(button.dataset.callSelect===call));
+    for(const node of document.querySelectorAll("[data-call-node]")){
+      const matches=node.dataset.callNode===call||(call==="extra"&&node.id==="call-graph");
+      node.classList.toggle("selected",matches);node.classList.toggle("deemphasized",call!=="all"&&!matches);
+    }
+    $("call-detail-title").textContent=detail.title;$("call-detail-summary").textContent=detail.summary;
+    for(const key of["who","input","output","consumer"])$(`call-detail-${key}`).textContent=detail[key];
+    drawCallMap(animate);
+  }
+  for(const button of document.querySelectorAll("[data-call-select]"))button.addEventListener("click",()=>selectCall(button.dataset.callSelect));
+  for(const node of document.querySelectorAll("[data-call-node]"))node.addEventListener("click",()=>selectCall(node.dataset.callNode));
+  const tabs=[$("replay-tab"),$("pipeline-tab")];
+  function activateTab(tab){stop();for(const t of tabs){const active=t===tab;t.setAttribute("aria-selected",String(active));$(t.getAttribute("aria-controls")).hidden=!active}const pipeline=tab===tabs[1];document.querySelector(".page").classList.toggle("pipeline-open",pipeline);history.replaceState(null,"",pipeline?"#jev-calls":"#session");if(pipeline)drawCallMap();else render(false)}
+  tabs.forEach((tab,i)=>{tab.addEventListener("click",()=>activateTab(tab));tab.addEventListener("keydown",event=>{if(!event.ctrlKey&&!event.metaKey&&!event.altKey&&["ArrowLeft","ArrowRight","Home","End"].includes(event.key)){event.preventDefault();const target=event.key==="Home"?tabs[0]:event.key==="End"?tabs[1]:tabs[1-i];activateTab(target);target.focus()}})});
+  let resize;window.addEventListener("resize",()=>{clearTimeout(resize);resize=setTimeout(()=>{if($("pipeline-panel").hidden)render(false);else drawCallMap()},100)});
+  document.addEventListener("visibilitychange",()=>{if(document.hidden)stop()});
+  render(false);
+  if(location.hash==="#jev-calls")activateTab(tabs[1]);
+  window.graphlinDemo={snapshot:()=>({scenario,current,...graphAt(current)}),setStep:index=>{stop();current=Math.max(0,Math.min(index,activeSteps().length-1));selected=null;render(false)}};
+})();
+</script>
+</body>
+</html>

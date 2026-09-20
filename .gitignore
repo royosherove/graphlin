@@ -1,0 +1,42 @@
+# Dependencies and generated distributions
+node_modules/
+dist/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+.npmrc
+*.tgz
+*.bundle
+
+# Graphlin state, event journals, sockets, and temporary files
+.graphlin/
+.graphlin-data/
+.graphlin-local/
+# Keep pre-rename state private too.
+.visualive/
+.visualive-data/
+*.log
+*.sock
+*.pid
+tmp/
+.cache/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Browser test output
+playwright-report/
+test-results/

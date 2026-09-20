@@ -1,0 +1,29 @@
+{
+  "name": "graphlin",
+  "version": "0.1.0",
+  "description": "Local architecture and activity diagrams from observable coding-agent work.",
+  "author": {
+    "name": "Graphlin contributors"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Graphlin",
+    "shortDescription": "Live architecture and activity viewer",
+    "longDescription": "A local viewer with passive event collection, explicit source-sharing controls, and an offline fixture demo.",
+    "developerName": "Graphlin contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Start Graphlin for this project in metadata-only mode."
+    ],
+    "brandColor": "#20BFA9"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/royosherove/graphlin",
+  "homepage": "https://github.com/royosherove/graphlin"
+}

@@ -1,0 +1,1071 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
+import path from 'node:path';
+import {
+  createPolicy, normalizeHostEvent, metadataEvent, EvidenceStore,
+  buildCandidates, emptyGraph, compileDecision, invalidateArtifacts,
+  applyPatch, projectGraph,
+} from './core/index.mjs';
+import { safeLabel, safeText, excluded } from './core/privacy.mjs';
+
+const MAX_ACTIVITY = 200;
+const MAX_HOOK_EVENTS = 200;
+const MAX_HISTORY = 80;
+const MAX_HISTORY_BYTES = 384 * 1024;
+const MAX_RETENTION_BYTES = 1400 * 1024;
+const MAX_SESSIONS = 16;
+const MAX_DEDUP = 4000;
+const MAX_LOCAL_QUEUE = 64;
+const MAX_CLASSIFICATIONS = 2;
+const MAX_CLASSIFICATION_QUEUE = 64;
+const CLASSIFICATION_QUEUE_TTL_MS = 120_000;
+const DEADLINE_MS = 2000;
+const PENDING_LEASE_MS = 60_000;
+const TERMINAL = new Set(['succeeded', 'failed', 'interrupted', 'unresolved']);
+const SOURCE_EXT = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|rb|php|cs|swift|sql|ya?ml|json|toml|tf)$/i;
+const SKIP_DIR = new Set([
+  '.git', '.graphlin', '.graphlin-data', 'node_modules', 'dist', 'build',
+  'coverage', '.next', '.cache', '.venv', 'venv', 'vendor', 'research',
+]);
+const FIXED_CLASSIFIER = new Set([
+  'ready', 'metadata_only', 'missing_key', 'paused', 'unavailable', 'timeout', 'demo',
+]);
+const opaque = (value) => createHash('sha256').update(value).digest('hex').slice(0, 24);
+
+function activityState(event) {
+  if (event.kind === 'tool.requested') return 'pending';
+  if (event.kind === 'tool.succeeded') return 'succeeded';
+  if (event.kind === 'tool.failed' || event.kind === 'tool.denied') return 'failed';
+  if (event.kind === 'tool.interrupted') return 'interrupted';
+  if (event.kind === 'tool.unresolved') return 'unresolved';
+  return 'observed';
+}
+
+function activityLabel(event) {
+  const labels = {
+    'session.started': 'Session started', 'turn.prompted': 'Request received',
+    'intent.observed': 'Public intent observed', 'tool.requested': 'Tool requested',
+    'tool.succeeded': 'Tool completed', 'tool.failed': 'Tool failed',
+    'tool.denied': 'Tool denied', 'tool.interrupted': 'Tool interrupted',
+    'tool.unresolved': 'Tool outcome unavailable', 'batch.completed': 'Tool batch completed',
+    'artifact.changed': 'Source changed', 'verification.observed': 'Check result observed',
+    'agent.started': 'Agent started', 'agent.stopped': 'Agent stopped',
+    'turn.stopped': 'Turn ended', 'session.ended': 'Session ended',
+    'capture.gap': 'Observation unavailable',
+  };
+  return labels[event.kind] ?? 'Activity observed';
+}
+
+function freshSession(id, label) {
+  return { id, label, graph: emptyGraph(), activity: [], history: [] };
+}
+
+function restoreGraph(input, { stale = true } = {}) {
+  if (!input || input.schemaVersion !== 1 || !Array.isArray(input.nodes) ||
+      !Array.isArray(input.edges) || !Number.isSafeInteger(input.revision) ||
+      input.revision < 0 || Object.keys(input).sort().join(',') !== 'edges,nodes,revision,schemaVersion') return emptyGraph();
+  // Empty graphs have no legal patch operations, but their revision still
+  // records real history (for example, removal of the final component).
+  if (!input.nodes.length && !input.edges.length) return { ...emptyGraph(), revision: input.revision };
+  try {
+    // Validate the persisted finite grammar before importing it into live state.
+    const graph = structuredClone(applyPatch(emptyGraph(), {
+      schemaVersion: 1, id: opaque('restore'), baseRevision: 0, revision: 1, causedBy: [],
+      operations: [
+        ...input.nodes.map(node => ({ op: 'node.upsert', node })),
+        ...input.edges.map(edge => ({ op: 'edge.upsert', edge })),
+      ],
+    }));
+    graph.revision = Number.isSafeInteger(input.revision) && input.revision >= 0 ? input.revision : 0;
+    for (const item of stale ? [...graph.nodes, ...graph.edges] : []) {
+      item.validity = 'stale';
+      item.classification = 'stale';
+      if (item.evidenceState === 'verified') item.evidenceState = 'observed';
+      if ('activityState' in item) item.activityState = 'unknown';
+    }
+    if (stale && graph.revision < Number.MAX_SAFE_INTEGER) graph.revision++;
+    return graph;
+  } catch {
+    return emptyGraph();
+  }
+}
+
+/**
+ * Integrates independently testable modules. All artifact observations and graph
+ * acceptance pass through one local sequence; remote classification runs outside it.
+ */
+export function createPipeline({
+  projectRoot, policy: policyOptions, decisionService, onChange = () => {},
+  onDiagnostic = () => {}, restoredState, mode = 'live', clock = Date.now,
+  classificationDeadlineMs = DEADLINE_MS,
+} = {}) {
+  if (!Number.isSafeInteger(classificationDeadlineMs) ||
+      classificationDeadlineMs < DEADLINE_MS || classificationDeadlineMs > 10_000) {
+    throw new TypeError('INVALID_CLASSIFICATION_DEADLINE');
+  }
+  const root = realpathSync(projectRoot);
+  const inputRoot = path.resolve(projectRoot);
+  const projectId = opaque(root);
+  const policy = createPolicy(policyOptions ?? {});
+  const evidence = new EvidenceStore({ projectRoot, policy });
+  const sessions = new Map();
+  const dedup = new Map();
+  const sessionStarts = new Map();
+  const hookEvents = [];
+  const knownArtifacts = new Map();
+  const messageVersions = new Map();
+  const deferredWork = new Map();
+  const classificationQueue = [];
+  const activeClassifications = new Set();
+  const completedClassifications = new Map();
+  const tasks = new Set();
+  let selectedSession = null;
+  let sequence = 0;
+  let receipt = 0;
+  let paused = false;
+  let closed = false;
+  let localQueue = 0;
+  let dropped = 0;
+  let pending = 0;
+  let classifier = mode === 'demo' ? 'demo' : policy.transmitSource ? 'ready' : 'metadata_only';
+  let serial = Promise.resolve();
+  let lastDiscoveryAt = -Infinity;
+  let discoveredPaths = [];
+  let reconciliationTask = null;
+  let resumeScheduled = false;
+
+  const serialized = (fn) => {
+    const operation = serial.then(fn);
+    serial = operation.catch(() => {});
+    return operation;
+  };
+
+  function artifactMetadata(artifact) {
+    const relative = artifact.relativePath;
+    return {
+      artifactId: artifact.id, status: artifact.status, complete: artifact.complete === true,
+      ...(policy.transmitSource && (policy.displayEvidence || policy.persistEvidence) && typeof relative === 'string' &&
+        safeText(relative, 4096) && !excluded(relative, policy) ? { path: relative } : {}),
+    };
+  }
+
+  function candidateMetadata(candidates) {
+    return candidates.map(candidate => ({
+      candidateId: candidate.id, artifactId: candidate.artifactId,
+      sourceClass: candidate.sourceClass, complete: candidate.complete,
+      startLine: candidate.startLine, endLine: candidate.endLine,
+      ...(policy.transmitSource && (policy.displayEvidence || policy.persistEvidence) && safeLabel(candidate.label)
+        ? { label: candidate.label } : {}),
+    }));
+  }
+
+  function trace(event, stage, detail = {}) {
+    try {
+      const record = {
+        schemaVersion: 1, at: new Date(clock()).toISOString(), stage,
+        ...(event ? { eventId: event.id, sessionId: event.sessionId,
+          eventKind: event.kind, toolCategory: event.toolCategory } : {}),
+        ...detail,
+      };
+      // Observers only receive a detached metadata record, never evidence objects.
+      const pending = onDiagnostic(structuredClone(record));
+      if (pending && typeof pending.then === 'function') Promise.resolve(pending).catch(() => {});
+    } catch { /* Logging cannot interrupt capture, classification, or acceptance. */ }
+  }
+
+  function classificationContext(candidates, sourceEventId) {
+    const ids = new Set(candidates.map(candidate => candidate.artifactId));
+    return {
+      ...(sourceEventId ? { sourceEventId } : {}),
+      artifacts: [...ids].flatMap(id => {
+        const artifact = knownArtifacts.get(id);
+        return artifact ? [{ ...artifact.metadata,
+          candidateCount: candidates.filter(candidate => candidate.artifactId === id).length }] : [];
+      }),
+      candidates: candidateMetadata(candidates),
+    };
+  }
+
+  function observedCandidates(event, artifacts, publicText, sourceEventId) {
+    const extraction = [];
+    const candidates = buildCandidates({
+      event, artifacts, publicText, policy, onDiagnostic: entry => extraction.push(entry),
+    });
+    trace(event, 'candidates', {
+      ...classificationContext(candidates, sourceEventId),
+      artifacts: artifacts.map(artifact => {
+        const entry = extraction.find(item => item.artifactId === artifact.id);
+        return { ...artifactMetadata(artifact), candidateCount: entry?.selected ?? 0,
+          availableCandidates: entry?.available ?? 0, reason: entry?.reason ?? 'no_candidates' };
+      }),
+      status: candidates.length ? 'ready' : 'skipped',
+      reason: !policy.transmitSource ? 'metadata_only' : candidates.length ? 'candidates_ready' : 'no_candidates',
+      diagnostics: { extraction },
+    });
+    return candidates;
+  }
+
+  function ensureSession(id) {
+    if (sessions.has(id)) return sessions.get(id);
+    if (sessions.size >= MAX_SESSIONS) {
+      // Eviction loses live coverage for an old session; it never merges identities.
+      const victim = [...sessions.keys()].find(key => key !== selectedSession);
+      if (victim) evictSession(victim);
+      dropped++;
+    }
+    const session = freshSession(id, `Session ${sessions.size + 1}`);
+    sessions.set(id, session);
+    selectedSession ??= id;
+    return session;
+  }
+
+  function evictSession(id) {
+    sessions.delete(id);
+    deferredWork.delete(id);
+    for (const key of completedClassifications.keys()) {
+      if (key.startsWith(`${id}:`)) completedClassifications.delete(key);
+    }
+  }
+
+  if (restoredState?.projectId === projectId) {
+    const saved = Array.isArray(restoredState.sessionStates)
+      ? [restoredState, ...restoredState.sessionStates.filter(s => s.id !== restoredState.sessionId)].slice(-MAX_SESSIONS)
+      : [restoredState];
+    for (const entry of saved) {
+      const id = entry.sessionId ?? entry.id;
+      if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(id)) continue;
+      const session = ensureSession(id);
+      session.graph = restoreGraph(entry.graph);
+      // Activity is reconstructed through the metadata allowlist, never trusted verbatim.
+      session.activity = (Array.isArray(entry.activity) ? entry.activity : [])
+        .slice(-MAX_ACTIVITY).map(item => {
+          const event = metadataEvent(item);
+          return { ...event, label: activityLabel(event), state: activityState(event) };
+        });
+      session.history = (Array.isArray(entry.history) ? entry.history : []).slice(-MAX_HISTORY)
+        .filter(item => Number.isSafeInteger(item.revision) && item.revision >= 0 &&
+          item.graph?.revision === item.revision &&
+          typeof item.at === 'string' && Number.isFinite(Date.parse(item.at)))
+        .map(item => ({ revision: item.revision, at: new Date(item.at).toISOString(),
+          graph: restoreGraph(item.graph, { stale: false }) }))
+        .filter(item => item.graph.revision === item.revision);
+      if (session.graph.revision && session.history.at(-1)?.revision !== session.graph.revision) session.history.push({
+        revision: session.graph.revision, at: new Date(clock()).toISOString(),
+        graph: structuredClone(session.graph),
+      });
+    }
+    if (sessions.has(restoredState.sessionId)) selectedSession = restoredState.sessionId;
+    trimRetention();
+  }
+
+  function snapshotSession(session, persistent) {
+    return {
+      id: session.id, sessionId: session.id, label: session.label,
+      graph: projectGraph(session.graph, policy, { persistent }),
+      activity: structuredClone(session.activity),
+      history: session.history.map(item => ({
+        revision: item.revision, at: item.at,
+        graph: projectGraph(item.graph, policy, { persistent }),
+      })),
+    };
+  }
+
+  function getState({ persistent = false } = {}) {
+    const current = selectedSession ? sessions.get(selectedSession) : null;
+    const view = current ? snapshotSession(current, persistent)
+      : { graph: emptyGraph(), activity: [], history: [] };
+    const stats = decisionService?.stats?.() ?? {};
+    const calls = Number.isSafeInteger(stats.calls) ? stats.calls
+      : Number.isSafeInteger(stats.requests) ? stats.requests : 0;
+    const state = {
+      schemaVersion: 1, projectId, sessionId: selectedSession,
+      mode: mode === 'demo' ? 'demo' : 'live', paused,
+      sessions: [...sessions.values()].map(session => ({ id: session.id, label: session.label })),
+      graph: view.graph, activity: view.activity, history: view.history,
+      status: {
+        connection: closed ? 'closed' : 'connected',
+        classifier: paused ? 'paused' : FIXED_CLASSIFIER.has(classifier) ? classifier : 'unavailable',
+        coverage: 'Tools and public prompts; source observations have unknown authorship. Streamed reasoning is not captured.',
+        dropped, pending, calls,
+      },
+    };
+    if (persistent) {
+      // The selected session is already at the root; avoid duplicating its graph.
+      state.sessionStates = [...sessions.values()].filter(session => session.id !== selectedSession)
+        .map(session => snapshotSession(session, true));
+    } else state.hookEvents = structuredClone(hookEvents);
+    return state;
+  }
+
+  function notify() {
+    if (closed) return;
+    try { onChange(getState()); } catch { /* Observers cannot break capture. */ }
+  }
+
+  function recordHook(event) {
+    const metadata = metadataEvent(event);
+    hookEvents.push({
+      ...metadata, at: new Date(clock()).toISOString(),
+      label: activityLabel(metadata), state: activityState(metadata), receipt: ++receipt,
+    });
+    if (hookEvents.length > MAX_HOOK_EVENTS) hookEvents.shift();
+    // Receipt visibility is independent of queue admission, replay suppression,
+    // and the coalesced activity list. Never retain the host payload here.
+    notify();
+  }
+
+  function sessionStartIdentity(raw, event, host) {
+    // Native hooks do not always supply an event ID. A fixed sequence gives
+    // those starts a stable replay identity without hashing raw host content.
+    // Without a host ID, identical repeated resumes cannot be distinguished
+    // from transport replay and keep the same identity.
+    const stable = normalizeHostEvent(raw, { host, projectId, sequence: 0, now: event.at }).event;
+    const payload = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const source = ['startup', 'resume', 'clear', 'compact'].includes(payload?.source) ? payload.source : 'other';
+    return { key: `${stable.id}:${source}`, follow: source !== 'compact' };
+  }
+
+  function recordPatch(session, patch) {
+    if (!patch || !patch.operations?.length) return;
+    session.graph = applyPatch(session.graph, patch);
+    session.history.push({
+      revision: session.graph.revision, at: new Date(clock()).toISOString(),
+      graph: structuredClone(session.graph),
+    });
+    if (session.history.length > MAX_HISTORY) session.history.shift();
+    trimRetention();
+  }
+
+  function trimRetention() {
+    const size = value => Buffer.byteLength(JSON.stringify(value));
+    let historyBytes = [...sessions.values()].reduce((sum, session) => sum + size(session.history), 0);
+    while (historyBytes > MAX_HISTORY_BYTES) {
+      const owner = [...sessions.values()].filter(session => session.history.length)
+        .sort((a, b) => a.history[0].at.localeCompare(b.history[0].at))[0];
+      if (!owner) break;
+      historyBytes -= size(owner.history.shift());
+    }
+    // Bound retained inactive sessions as well as replay. Eviction is reported
+    // as lost coverage and cannot merge an old session into the selected one.
+    while (sessions.size > 1 && size([...sessions.values()]) > MAX_RETENTION_BYTES) {
+      const victim = [...sessions.keys()].find(id => id !== selectedSession);
+      if (!victim) break;
+      evictSession(victim);
+      dropped++;
+    }
+  }
+
+  function registerArtifacts(artifacts) {
+    const changed = [];
+    for (const artifact of artifacts) {
+      const previous = knownArtifacts.get(artifact.id);
+      if (!previous || previous.hash !== artifact.hash ||
+          previous.generation !== artifact.generation || previous.status !== artifact.status) {
+        changed.push(artifact);
+      }
+      knownArtifacts.set(artifact.id, {
+        hash: artifact.hash, generation: artifact.generation, status: artifact.status,
+        path: artifact.path, metadata: artifactMetadata(artifact),
+      });
+    }
+    if (changed.length) {
+      for (const session of sessions.values()) {
+        const supported = new Set([...session.graph.nodes, ...session.graph.edges]
+          .flatMap(item => item.sourceRefs.map(ref => ref.artifactId)));
+        if (paused && policy.transmitSource) {
+          const ids = changed.filter(artifact => supported.has(artifact.id)).map(artifact => artifact.id);
+          if (ids.length) {
+            let work = deferredWork.get(session.id);
+            if (!work && deferredWork.size < MAX_SESSIONS) {
+              work = { artifacts: new Set(), messages: new Map() };
+              deferredWork.set(session.id, work);
+            }
+            if (work) for (const id of ids) {
+              if (work.artifacts.size < 128) work.artifacts.add(id);
+              else dropped++;
+            }
+          }
+        }
+        recordPatch(session, invalidateArtifacts(session.graph, changed));
+      }
+    }
+    return changed;
+  }
+
+  function addActivity(session, event) {
+    const state = activityState(event);
+    const row = { ...metadataEvent(event), label: activityLabel(event), state };
+    const existing = event.toolCallId
+      ? session.activity.findIndex(item => item.toolCallId === event.toolCallId &&
+          item.agentId === event.agentId && item.kind?.startsWith('tool.'))
+      : -1;
+    if (existing >= 0) {
+      const old = session.activity[existing];
+      if (TERMINAL.has(old.state) && state === 'pending') return;
+      session.activity[existing] = row;
+    } else {
+      session.activity.push(row);
+      if (session.activity.length > MAX_ACTIVITY) session.activity.shift();
+    }
+  }
+
+  function expirePending() {
+    let changed = false;
+    for (const session of sessions.values()) {
+      for (let index = 0; index < session.activity.length; index++) {
+        const row = session.activity[index];
+        if (row.state !== 'pending' || clock() - Date.parse(row.at) < PENDING_LEASE_MS) continue;
+        const event = metadataEvent({
+          ...row, id: opaque(`${row.id}:expired`), kind: 'tool.unresolved',
+          outcome: 'unresolved', at: new Date(clock()).toISOString(),
+          sequence: ++sequence, incomplete: true,
+        });
+        session.activity[index] = { ...event, label: activityLabel(event), state: 'unresolved' };
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  async function discoverPaths() {
+    // Bounded name discovery lets a shell-created file enter the next observation.
+    // Core still authorizes each resolved file before reading any content.
+    if (clock() - lastDiscoveryAt < 1000) return discoveredPaths;
+    lastDiscoveryAt = clock();
+    const found = [];
+    const dirs = [{ dir: root, depth: 0 }];
+    let visited = 0;
+    while (dirs.length && found.length < 64 && visited++ < 100) {
+      const { dir, depth } = dirs.shift();
+      let entries;
+      try { entries = await readdir(dir, { withFileTypes: true }); } catch { continue; }
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        if (entry.isSymbolicLink() || entry.name.startsWith('.')) continue;
+        if (entry.isDirectory() && depth < 5 && !SKIP_DIR.has(entry.name)) {
+          dirs.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+        } else if (entry.isFile() && SOURCE_EXT.test(entry.name) &&
+            !/(?:package-lock|pnpm-lock|yarn\.lock)/.test(entry.name)) {
+          found.push(path.join(dir, entry.name));
+          if (found.length >= 64) break;
+        }
+      }
+    }
+    discoveredPaths = found;
+    return found;
+  }
+
+  function canonicalNamedPaths(paths, raw) {
+    const aliases = [inputRoot];
+    // A host can report a system alias such as /var instead of /private/var.
+    // Normalize only an established project-root prefix, never child symlinks.
+    if (typeof raw?.cwd === 'string') {
+      try { if (realpathSync(raw.cwd) === root) aliases.push(path.resolve(raw.cwd)); } catch {}
+    }
+    return paths.slice(0, 32).map(file => {
+      const absolute = path.resolve(inputRoot, file);
+      for (const alias of aliases) {
+        const relative = path.relative(alias, absolute);
+        if (relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+          return path.resolve(root, relative);
+        }
+      }
+      return absolute;
+    });
+  }
+
+  function messageCurrent(candidate) {
+    const ref = candidate.sourceRef;
+    if (ref?.type !== 'message') return true;
+    const current = messageVersions.get(ref.messageId);
+    return current?.hash === ref.hash && current?.contentVersion === ref.contentVersion;
+  }
+
+  function observeMessage(event, text) {
+    if (!['intent.observed', 'turn.prompted'].includes(event.kind)) return;
+    const ref = {
+      type: 'message', messageId: event.id,
+      hash: createHash('sha256').update(text ?? '').digest('hex'),
+      contentVersion: event.sequence,
+    };
+    const previous = messageVersions.get(ref.messageId);
+    messageVersions.set(ref.messageId, ref);
+    if (messageVersions.size > MAX_DEDUP) messageVersions.delete(messageVersions.keys().next().value);
+    if (!previous || previous.hash === ref.hash) return;
+    for (const session of sessions.values()) {
+      const operations = [];
+      const removed = new Set();
+      for (const [kind, items] of [['node', session.graph.nodes], ['edge', session.graph.edges]]) {
+        for (const item of items) {
+          const refs = item.sourceRefs.filter(old => old.sourceRef?.messageId !== ref.messageId ||
+            old.hash === ref.hash && old.generation === ref.contentVersion);
+          if (refs.length === item.sourceRefs.length) continue;
+          if (!refs.length) {
+            operations.push({ op: `${kind}.remove`, id: item.id });
+            if (kind === 'node') removed.add(item.id);
+          } else {
+            operations.push({ op: `${kind}.upsert`, [kind]: {
+              ...item, sourceRefs: refs, classification: 'stale', validity: 'stale',
+              evidenceState: refs.some(r => r.sourceClass === 'public_intent') ? 'proposed' : 'observed',
+              ...(kind === 'node' ? { activityState: 'unknown' } : {}),
+            } });
+          }
+        }
+      }
+      const effective = operations.filter(op => op.op !== 'edge.upsert' ||
+        !removed.has(op.edge.source) && !removed.has(op.edge.target));
+      if (effective.length) recordPatch(session, {
+        schemaVersion: 1, id: opaque(`${event.id}:${event.sequence}:${session.id}:${session.graph.revision}`),
+        baseRevision: session.graph.revision, revision: session.graph.revision + 1,
+        causedBy: [event.id], operations: effective,
+      });
+    }
+  }
+
+  function deferClassification(event, candidates) {
+    if (!candidates.length || !policy.transmitSource) return;
+    let work = deferredWork.get(event.sessionId);
+    if (!work) {
+      if (deferredWork.size >= MAX_SESSIONS) { dropped++; return; }
+      work = { artifacts: new Set(), messages: new Map() };
+      deferredWork.set(event.sessionId, work);
+    }
+    for (const candidate of candidates) {
+      if (candidate.sourceRef?.type === 'message') {
+        if (!messageCurrent(candidate)) continue;
+        if (!work.messages.has(event.id) && work.messages.size >= 16) { dropped++; continue; }
+        work.messages.set(event.id, { event, candidates: candidates.filter(c =>
+          c.sourceRef?.messageId === candidate.sourceRef.messageId) });
+      } else if (work.artifacts.size < 128) work.artifacts.add(candidate.artifactId);
+      else dropped++;
+    }
+  }
+
+  function observationEvent(sessionId) {
+    return {
+      schemaVersion: 1, id: opaque(randomUUID()), projectId, sessionId,
+      agentId: opaque(`${projectId}:unattributed`), toolCallId: null,
+      kind: 'artifact.changed', toolCategory: 'other', outcome: 'observed',
+      at: new Date(clock()).toISOString(), sequence: ++sequence, incomplete: false,
+    };
+  }
+
+  async function flushDeferred() {
+    if (closed || paused || !deferredWork.size) return;
+    const work = [...deferredWork];
+    deferredWork.clear();
+    const artifacts = await evidence.reconcile();
+    registerArtifacts(artifacts);
+    for (const [sessionId, entry] of work) {
+      const session = sessions.get(sessionId);
+      if (!session) continue;
+      const byId = new Map(artifacts.map(artifact => [artifact.id, artifact]));
+      const covered = new Set();
+      const groups = new Map();
+      // A relationship may need several files. Reassemble its currently
+      // authorized dependencies instead of classifying each endpoint alone.
+      for (const edge of session.graph.edges) {
+        const ids = [...new Set(edge.sourceRefs.filter(ref => ref.sourceClass === 'source')
+          .map(ref => ref.artifactId))].sort();
+        if (!ids.some(id => entry.artifacts.has(id))) continue;
+        if (groups.size >= 16) { dropped++; continue; }
+        groups.set(ids.join(','), ids.flatMap(id => byId.has(id) ? [byId.get(id)] : []));
+        ids.forEach(id => covered.add(id));
+      }
+      const remaining = artifacts.filter(a => entry.artifacts.has(a.id) && !covered.has(a.id));
+      for (let index = 0; index < remaining.length; index += 4) {
+        if (groups.size >= 16) { dropped += remaining.length - index; break; }
+        const group = remaining.slice(index, index + 4);
+        groups.set(group.map(a => a.id).join(','), group);
+      }
+      for (const group of groups.values()) {
+        const event = observationEvent(sessionId);
+        const candidates = observedCandidates(event, group, null);
+        scheduleClassification(event, candidates);
+      }
+      for (const message of entry.messages.values()) {
+        scheduleClassification(message.event, message.candidates.filter(messageCurrent));
+      }
+    }
+    notify();
+  }
+
+  function sourceVersions(candidates) {
+    return [...new Map(candidates.filter(candidate => candidate.sourceRef?.type !== 'message')
+      .map(candidate => [candidate.artifactId, {
+        artifactId: candidate.artifactId, hash: candidate.hash, generation: candidate.generation,
+      }])).values()];
+  }
+
+  const versionKey = ref => `${ref.hash}:${ref.generation}`;
+  const sourceIdentity = job => job.candidates.some(candidate => candidate.sourceRef?.type === 'message')
+    ? null : sourceVersions(job.candidates).map(ref => ref.artifactId).sort().join(',');
+  const classificationKey = job => `${job.event.sessionId}:${opaque(JSON.stringify([
+    policy.version,
+    { kind: job.event.kind, toolCategory: job.event.toolCategory,
+      outcome: job.event.outcome, incomplete: job.event.incomplete !== false },
+    job.candidates.map(candidate => candidate.digest),
+  ]))}`;
+
+  function coverageReason(job) {
+    if (!sourceIdentity(job)) return null;
+    const key = classificationKey(job);
+    // Only the exact ordered candidate input has been examined. A union of
+    // individual file judgments does not cover a cross-file relationship, and
+    // a small shared budget does not cover a later fuller Read. Order also
+    // affects which finite relation proposals are considered. Include the event
+    // metadata given to Jev: complete capture can promote an earlier tentative
+    // judgment even when its candidate evidence has not changed.
+    if (completedClassifications.has(key)) return 'source_version_completed';
+    if ([...activeClassifications, ...classificationQueue].some(other =>
+      other !== job && other.session === job.session && classificationKey(other) === key)) {
+      return 'source_version_pending';
+    }
+    return null;
+  }
+
+  function queueDiagnostics(job, extra = {}) {
+    return { queue: {
+      waitMs: Math.max(0, clock() - job.enqueuedAt),
+      depth: classificationQueue.length, active: activeClassifications.size,
+      capacity: MAX_CLASSIFICATION_QUEUE, ...extra,
+    } };
+  }
+
+  function skipJob(job, reason, status = 'skipped') {
+    trace(job.event, 'skip', {
+      ...classificationContext(job.candidates, job.sourceEventId), status, reason,
+      diagnostics: queueDiagnostics(job),
+    });
+  }
+
+  function scheduleClassification(event, candidates, sourceEventId) {
+    const context = classificationContext(candidates, sourceEventId);
+    const skip = reason => trace(event, 'skip', { ...context, status: 'skipped', reason });
+    if (closed) { skip('pipeline_closed'); return; }
+    if (!policy.transmitSource) { skip('metadata_only'); return; }
+    if (!candidates.length) { skip('no_candidates'); return; }
+    if (!decisionService) { skip('classifier_unavailable'); return; }
+    const session = sessions.get(event.sessionId);
+    if (!session) { skip('session_evicted'); return; }
+    if (paused) { deferClassification(event, candidates); skip('paused_deferred'); return; }
+    const job = { event, candidates, sourceEventId, session, enqueuedAt: clock(),
+      needsRefresh: activeClassifications.size >= MAX_CLASSIFICATIONS };
+    const covered = coverageReason(job);
+    if (covered) { skipJob(job, covered); return; }
+    const identity = sourceIdentity(job);
+    const superseded = identity && classificationQueue.findIndex(other =>
+      other.session === session && sourceIdentity(other) === identity &&
+      sourceVersions(other.candidates).some(ref => !sourceVersions(candidates).some(current =>
+        current.artifactId === ref.artifactId && versionKey(current) === versionKey(ref))));
+    if (Number.isInteger(superseded) && superseded >= 0) {
+      skipJob(classificationQueue[superseded], 'queued_source_superseded');
+      job.needsRefresh = true;
+      classificationQueue[superseded] = job;
+    } else {
+      if (classificationQueue.length >= MAX_CLASSIFICATION_QUEUE) {
+        dropped++;
+        skipJob(job, 'classification_queue_full');
+        return;
+      }
+      pending++;
+      classificationQueue.push(job);
+    }
+    trace(event, 'classification', { ...context, status: 'queued', reason: 'classification_queued',
+      diagnostics: queueDiagnostics(job) });
+    pumpClassifications();
+  }
+
+  function pumpClassifications() {
+    if (closed || paused) return;
+    while (classificationQueue.length && activeClassifications.size < MAX_CLASSIFICATIONS) {
+      const job = classificationQueue.shift();
+      activeClassifications.add(job);
+      job.controller = new AbortController();
+      const task = runClassification(job).catch(() => {
+        // Fixed diagnostics only: neither input nor API error bodies enter the feed.
+        dropped++;
+        classifier = 'unavailable';
+        skipJob(job, 'classification_pipeline_error', 'failed');
+      }).finally(() => {
+        pending--;
+        activeClassifications.delete(job);
+        tasks.delete(task);
+        pumpClassifications();
+        notify();
+      });
+      tasks.add(task);
+    }
+  }
+
+  async function refreshQueuedJob(job) {
+    if (closed || sessions.get(job.event.sessionId) !== job.session) {
+      skipJob(job, closed ? 'pipeline_closed' : 'session_evicted');
+      return false;
+    }
+    if (paused) { deferClassification(job.event, job.candidates); skipJob(job, 'paused_deferred'); return false; }
+    if (clock() - job.enqueuedAt >= CLASSIFICATION_QUEUE_TTL_MS) {
+      dropped++;
+      skipJob(job, 'classification_queue_expired');
+      return false;
+    }
+    const before = sourceVersions(job.candidates);
+    if (before.length) {
+      // Queued snippets may no longer describe the worktree. Reauthorize and
+      // reread the entire source before rebuilding any candidate from it.
+      const artifacts = await evidence.capture(before.flatMap(ref => {
+        const file = knownArtifacts.get(ref.artifactId)?.path;
+        return file ? [file] : [];
+      }));
+      registerArtifacts(artifacts);
+      const messages = job.candidates.filter(candidate =>
+        candidate.sourceRef?.type === 'message' && messageCurrent(candidate));
+      job.candidates = [...observedCandidates(job.event, artifacts, null, job.sourceEventId), ...messages].slice(0, 12);
+      if (!job.candidates.length) { skipJob(job, 'queued_source_unavailable'); return false; }
+      if (before.some(ref => !sourceVersions(job.candidates).some(current =>
+        current.artifactId === ref.artifactId && versionKey(current) === versionKey(ref)))) {
+        trace(job.event, 'classification', {
+          ...classificationContext(job.candidates, job.sourceEventId),
+          status: 'queued', reason: 'queued_source_refreshed', diagnostics: queueDiagnostics(job),
+        });
+      }
+    } else {
+      job.candidates = job.candidates.filter(messageCurrent);
+      if (!job.candidates.length) { skipJob(job, 'source_changed_during_classification'); return false; }
+    }
+    const covered = coverageReason(job);
+    if (covered) { skipJob(job, covered); return false; }
+    return true;
+  }
+
+  async function runClassification(job) {
+    if (job.needsRefresh && !await serialized(() => refreshQueuedJob(job))) return;
+    const { event, candidates, sourceEventId, session } = job;
+    const context = classificationContext(candidates, sourceEventId);
+    const skip = reason => skipJob(job, reason);
+    if (closed || job.controller.signal.aborted) { skip('pipeline_closed'); return; }
+    if (sessions.get(event.sessionId) !== session) { skip('session_evicted'); return; }
+    if (paused) { deferClassification(event, candidates); skip('paused_deferred'); return; }
+    if (clock() - job.enqueuedAt >= CLASSIFICATION_QUEUE_TTL_MS) {
+      dropped++;
+      skip('classification_queue_expired');
+      return;
+    }
+    // Waiting for a free workflow does not spend Jev's configured active
+    // deadline. The slot remains occupied until final local acceptance ends.
+    const deadlineAt = clock() + classificationDeadlineMs;
+    trace(event, 'classification', { ...context, status: 'started', reason: 'classification_started',
+      diagnostics: queueDiagnostics(job) });
+    let timer;
+    let cancel;
+    try {
+      let result;
+      try {
+        const interrupted = new Promise(resolve => {
+          cancel = () => resolve({ status: 'unavailable', diagnostics: { code: 'service_closed' } });
+          job.controller.signal.addEventListener('abort', cancel, { once: true });
+          timer = setTimeout(() => {
+            resolve({ status: 'timeout', diagnostics: { code: 'deadline_exceeded' } });
+            job.controller.abort();
+          }, classificationDeadlineMs);
+        });
+        result = await Promise.race([
+          decisionService.classify({ event, candidates, policy, deadlineAt, signal: job.controller.signal }),
+          interrupted,
+        ]);
+      } catch {
+        result = { status: 'unavailable', diagnostics: { code: 'classifier_exception' } };
+      }
+      clearTimeout(timer);
+      trace(event, 'classification', { ...context, status: result?.status ?? 'invalid',
+        reason: result?.diagnostics?.code ?? result?.status ?? 'invalid_result',
+        diagnostics: result?.diagnostics ?? {} });
+      await serialized(async () => {
+        if (closed || !sessions.has(event.sessionId)) { skip(closed ? 'pipeline_closed' : 'session_evicted'); return; }
+        if (paused) { deferClassification(event, candidates); skip('paused_deferred'); notify(); return; }
+        if (clock() >= deadlineAt) { classifier = 'timeout'; dropped++; skip('deadline_before_apply'); notify(); return; }
+        if (result.status === 'timeout') classifier = 'timeout';
+        else if (result.status === 'unavailable') {
+          classifier = result.diagnostics?.code === 'missing_key' ? 'missing_key' : 'unavailable';
+        } else if (result.status === 'invalid' || result.status === 'overloaded') {
+          classifier = 'unavailable';
+        } else classifier = mode === 'demo' ? 'demo' : 'ready';
+        const bundle = result.bundle;
+        if (['accepted', 'abstained', 'irrelevant'].includes(result.status) &&
+            bundle?.policyVersion === policy.version && Array.isArray(bundle.candidates)) {
+          // Reobserve the worktree before accepting remote answers; a tool could
+          // have edited these files while either Jev request was in flight.
+          registerArtifacts(await evidence.reconcile());
+          if (closed || sessions.get(event.sessionId) !== session) { skip(closed ? 'pipeline_closed' : 'session_evicted'); return; }
+          if (paused) { deferClassification(event, candidates); skip('paused_deferred'); notify(); return; }
+          const artifactRefs = sourceVersions(candidates);
+          if (clock() >= deadlineAt) {
+            classifier = 'timeout';
+            dropped++;
+            skip('deadline_after_revalidation');
+          } else if (evidence.isCurrent(artifactRefs) && candidates.every(messageCurrent)) {
+            // Remember only completed judgments over still-current source.
+            // Timeouts, unavailable results, and stale answers remain retryable.
+            const remember = () => {
+              if (!artifactRefs.length) return;
+              completedClassifications.set(classificationKey(job), true);
+              if (completedClassifications.size > MAX_DEDUP) {
+                completedClassifications.delete(completedClassifications.keys().next().value);
+              }
+            };
+            if (result.status === 'irrelevant') {
+              remember();
+              skip('classification_not_drawable');
+              notify();
+              return;
+            }
+            const before = session.graph;
+            const admission = [];
+            const patch = compileDecision(before, { event, decision: result, policy,
+              onDiagnostic: entry => admission.push(entry) });
+            recordPatch(session, patch);
+            remember();
+            const after = session.graph;
+            const counts = { revisionBefore: before.revision, revisionAfter: after.revision };
+            for (const kind of ['nodes', 'edges']) {
+              const previous = new Map(before[kind].map(item => [item.id, item]));
+              const current = new Map(after[kind].map(item => [item.id, item]));
+              counts[`${kind}Added`] = [...current.keys()].filter(id => !previous.has(id)).length;
+              counts[`${kind}Removed`] = [...previous.keys()].filter(id => !current.has(id)).length;
+              counts[`${kind}Updated`] = [...current].filter(([id, item]) =>
+                previous.has(id) && JSON.stringify(previous.get(id)) !== JSON.stringify(item)).length;
+            }
+            trace(event, 'apply', { ...context, status: patch ? 'applied' : 'unchanged',
+              reason: patch ? 'patch_applied' : 'no_graph_change', patch: counts, diagnostics: { admission } });
+          } else {
+            dropped++;
+            skip('source_changed_during_classification');
+          }
+        } else skip(['accepted', 'abstained'].includes(result.status) ? 'invalid_bundle' : 'classification_not_drawable');
+        notify();
+      });
+    } finally {
+      clearTimeout(timer);
+      job.controller.signal.removeEventListener('abort', cancel);
+    }
+  }
+
+  function scheduleSourceGroup(event, artifacts, sourceEventId) {
+    const observation = {
+      ...event, id: opaque(`${event.id}:snapshot:${artifacts.map(a => `${a.id}:${a.generation}`).join(',')}`),
+      kind: 'artifact.changed', agentId: opaque(`${projectId}:unattributed`),
+      toolCallId: null, toolCategory: 'other', outcome: 'observed',
+    };
+    scheduleClassification(observation, observedCandidates(observation, artifacts, null, sourceEventId), sourceEventId);
+  }
+
+  async function ingest(raw, { host = 'claude' } = {}) {
+    if (closed) { trace(null, 'skip', { status: 'skipped', reason: 'pipeline_closed' }); return { accepted: false, reason: 'closed' }; }
+    let prepared;
+    try {
+      prepared = normalizeHostEvent(raw, {
+        host, projectId, sequence: ++sequence, now: new Date(clock()).toISOString(),
+      });
+    } catch {
+      recordHook({
+        projectId, id: opaque(randomUUID()), kind: 'capture.gap',
+        sequence, at: new Date(clock()).toISOString(),
+      });
+      dropped++;
+      trace(null, 'skip', { status: 'failed', reason: 'invalid_capture' });
+      notify();
+      return { accepted: false, reason: 'invalid' };
+    }
+    recordHook(prepared.event);
+    if (localQueue >= MAX_LOCAL_QUEUE) {
+      dropped++;
+      trace(null, 'skip', { status: 'skipped', reason: 'capture_queue_full' });
+      notify();
+      return { accepted: false, reason: 'overloaded' };
+    }
+    localQueue++;
+    try {
+      return await serialized(async () => {
+        if (closed) return { accepted: false, reason: 'closed' };
+        const event = prepared.event;
+        if (!event?.sessionId || !event.id) { dropped++; return { accepted: false, reason: 'invalid' }; }
+        let followSession = false;
+        const isMessage = ['intent.observed', 'turn.prompted'].includes(event.kind);
+        const key = event.toolCallId && event.kind.startsWith('tool.')
+          ? `${event.sessionId}:${event.agentId}:${event.toolCallId}:${event.kind}`
+          : event.id;
+        if (isMessage) {
+          const hash = createHash('sha256').update(prepared.publicText ?? '').digest('hex');
+          if (messageVersions.get(event.id)?.hash === hash) {
+            trace(event, 'skip', { status: 'skipped', reason: 'duplicate_event' });
+            return { accepted: true, duplicate: true };
+          }
+        } else if (event.kind === 'session.started') {
+          const start = sessionStartIdentity(raw, event, host);
+          if (sessionStarts.has(start.key)) {
+            trace(event, 'skip', { status: 'skipped', reason: 'duplicate_event' });
+            return { accepted: true, duplicate: true };
+          }
+          // Keep lifecycle replay identities apart from ordinary tool traffic,
+          // including when the corresponding old session has been evicted.
+          sessionStarts.set(start.key, true);
+          if (sessionStarts.size > MAX_DEDUP) sessionStarts.delete(sessionStarts.keys().next().value);
+          // Compaction can run in another active session. Its lifecycle receipt
+          // remains visible without overriding the user's current session.
+          followSession = start.follow;
+        } else {
+          if (dedup.has(key)) {
+            trace(event, 'skip', { status: 'skipped', reason: 'duplicate_event' });
+            return { accepted: true, duplicate: true };
+          }
+          dedup.set(key, true);
+          if (dedup.size > MAX_DEDUP) dedup.delete(dedup.keys().next().value);
+        }
+        const session = ensureSession(event.sessionId);
+        if (followSession) selectedSession = session.id;
+        observeMessage(event, prepared.publicText);
+        addActivity(session, event);
+        if (event.kind === 'capture.gap') dropped++;
+        // Publish the new selection before source discovery or classification.
+        if (event.kind === 'session.started') notify();
+        let artifacts = [];
+        let namedSet = new Set();
+        try {
+          const named = Array.isArray(prepared.paths) ? canonicalNamedPaths(prepared.paths, raw) : [];
+          const discover = event.kind === 'session.started' ||
+            ['tool.succeeded', 'tool.failed'].includes(event.kind);
+          const paths = [...new Set([...named, ...(discover ? await discoverPaths() : [])])];
+          // EvidenceStore bounds each capture to 32 paths. Process the bounded
+          // discovery list in chunks rather than silently losing its tail.
+          for (let index = 0; index < paths.length; index += 32) {
+            artifacts.push(...await evidence.capture(paths.slice(index, index + 32)));
+          }
+          const changed = registerArtifacts(artifacts);
+          trace(event, 'capture', { status: 'observed', reason: 'artifacts_observed',
+            artifacts: artifacts.map(artifact => ({ ...artifactMetadata(artifact),
+              reason: changed.some(item => item.id === artifact.id) ? 'artifact_changed' : 'artifact_unchanged' })) });
+          // A tool completion also reconciles prior support, including deletions
+          // omitted from the tool's returned file list.
+          if (event.kind.startsWith('tool.') && event.kind !== 'tool.requested') {
+            registerArtifacts(await evidence.reconcile());
+          }
+          namedSet = new Set(named.map(file => path.resolve(root, file)));
+          // Global observation history is not a session's classification
+          // history. A new session may discover entirely unchanged source.
+          artifacts = artifacts.filter(a => discover || changed.some(c => c.id === a.id) || namedSet.has(a.path));
+        } catch {
+          dropped++;
+          trace(event, 'skip', { status: 'failed', reason: 'capture_failed' });
+        }
+        notify();
+        // Requests describe intentions. They cannot confirm future file content.
+        if (event.kind !== 'tool.requested' && event.kind !== 'capture.gap') {
+          if (artifacts.length && !prepared.publicText) {
+            // Preserve explicit multi-file context in small groups. Incidental
+            // discovery gets its own per-file budget, so a busy source file
+            // cannot crowd the rest of an existing project out of the diagram.
+            const named = artifacts.filter(artifact => namedSet.has(artifact.path));
+            for (let index = 0; index < named.length; index += 4) {
+              scheduleSourceGroup(event, named.slice(index, index + 4), event.id);
+            }
+            for (const artifact of artifacts.filter(artifact => !namedSet.has(artifact.path))) {
+              scheduleSourceGroup(event, [artifact], event.id);
+            }
+          } else {
+            const candidates = observedCandidates(event, artifacts, prepared.publicText, event.id);
+            scheduleClassification(event, candidates, event.id);
+          }
+          notify();
+        } else trace(event, 'skip', { status: 'skipped',
+          reason: event.kind === 'tool.requested' ? 'tool_request_has_no_source_outcome' : 'unsupported_event' });
+        return { accepted: true, eventId: event.id };
+      });
+    } catch {
+      dropped++;
+      trace(null, 'skip', { status: 'failed', reason: 'invalid_capture' });
+      notify();
+      return { accepted: false, reason: 'invalid' };
+    } finally {
+      localQueue--;
+    }
+  }
+
+  function reconcile() {
+    if (reconciliationTask) return reconciliationTask;
+    if (closed || localQueue >= MAX_LOCAL_QUEUE) return Promise.resolve();
+    localQueue++;
+    reconciliationTask = serialized(async () => {
+      if (closed) return;
+      const expired = expirePending();
+      const artifacts = await evidence.capture(await discoverPaths());
+      const known = await evidence.reconcile();
+      const changed = registerArtifacts([...artifacts, ...known]);
+      if (!changed.length) { if (expired) notify(); return; }
+      const session = selectedSession ? sessions.get(selectedSession) : null;
+      if (session) {
+        const event = observationEvent(session.id);
+        addActivity(session, event);
+        trace(event, 'capture', { status: 'observed', reason: 'source_reconciliation',
+          artifacts: changed.map(artifactMetadata) });
+        for (let index = 0; index < changed.length; index += 4) {
+          scheduleSourceGroup(event, changed.slice(index, index + 4), event.id);
+        }
+      } else trace(null, 'skip', { status: 'skipped', reason: 'no_session',
+        artifacts: changed.map(artifactMetadata) });
+      notify();
+    }).finally(() => { localQueue--; reconciliationTask = null; });
+    return reconciliationTask;
+  }
+
+  function setPaused(value) {
+    const wasPaused = paused;
+    paused = Boolean(value);
+    if (!wasPaused && paused) {
+      for (const job of classificationQueue.splice(0)) {
+        deferClassification(job.event, job.candidates);
+        skipJob(job, 'paused_deferred');
+        pending--;
+      }
+    }
+    if (wasPaused && !paused && !resumeScheduled) {
+      resumeScheduled = true;
+      serialized(flushDeferred).catch(() => { dropped++; })
+        .finally(() => { resumeScheduled = false; });
+    }
+    notify();
+    return getState();
+  }
+
+  function selectSession(id) {
+    if (!sessions.has(id)) return false;
+    selectedSession = id;
+    notify();
+    return true;
+  }
+
+  async function whenIdle() {
+    await serial;
+    while (tasks.size || classificationQueue.length) {
+      pumpClassifications();
+      await Promise.allSettled([...tasks]);
+      await serial;
+    }
+    await serial;
+  }
+
+  async function close() {
+    if (closed) return;
+    closed = true;
+    deferredWork.clear();
+    for (const job of classificationQueue.splice(0)) {
+      skipJob(job, 'pipeline_closed');
+      pending--;
+    }
+    for (const job of activeClassifications) job.controller.abort();
+    decisionService?.close?.();
+    await whenIdle();
+  }
+
+  return { ingest, getState, reconcile, setPaused, selectSession, whenIdle, close };
+}

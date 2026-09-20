@@ -1,0 +1,8 @@
+{
+  "host": "kiro",
+  "enabled": false,
+  "experimental": true,
+  "activation": "not_certified",
+  "events": [],
+  "reason": "IDE and CLI trigger/payload and passive-launch contracts require separate release-specific certification."
+}

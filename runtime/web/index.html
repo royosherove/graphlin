@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="darkreader-lock">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>Graphlin — Live architecture</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to architecture</a>
+  <div class="page">
+    <header class="masthead">
+      <a class="brand" href="/" aria-label="Graphlin live viewer"><span class="brand-mark" aria-hidden="true"></span>graphlin</a>
+      <div class="connection" id="connection" data-state="connecting">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-label" role="status">Connecting to local service</span>
+        <button id="retry" class="text-button" type="button" hidden>Reconnect</button>
+      </div>
+    </header>
+
+    <main id="main">
+      <div class="intro">
+        <div>
+          <h1>Architecture, as it happens.</h1>
+          <p>Follow the work. Inspect the evidence behind each connection.</p>
+        </div>
+        <p id="project-label" class="project-label">Local project</p>
+      </div>
+
+      <div id="demo-banner" class="notice demo-notice" role="status" hidden>
+        <strong>Demo session</strong>
+        <span>Generated project and fixture classifier answers. This is an offline illustration, not a live Jev evaluation.</span>
+      </div>
+      <div id="error-banner" class="notice error-notice" role="alert" hidden></div>
+      <noscript><p class="notice">Enable JavaScript to receive local snapshots and inspect this architecture.</p></noscript>
+
+      <section class="workspace" aria-label="Session workspace">
+        <div class="workspace-toolbar">
+          <label class="session-picker" for="session">
+            <span>Session</span>
+            <select id="session" disabled><option value="">Waiting for a session</option></select>
+          </label>
+          <div class="session-actions">
+            <button type="button" id="classification-log" aria-haspopup="dialog" aria-controls="diagnostics-dialog">Classification log</button>
+            <button type="button" id="how-to-connect" aria-haspopup="dialog" aria-controls="connection-dialog">How to connect</button>
+            <button type="button" id="pause" aria-describedby="capture-note" disabled>Pause classification</button>
+            <button type="button" id="export" disabled>Export JSON</button>
+          </div>
+        </div>
+
+        <div class="status-strip" aria-label="Capture and classification status">
+          <div class="classification-status">
+            <span class="status-dot" id="classifier-dot" data-state="waiting" aria-hidden="true"></span>
+            <strong id="classifier-label">Waiting for local service</strong>
+            <span id="capture-note">Capture status will appear with the first snapshot.</span>
+          </div>
+          <div class="coverage-status"><span id="coverage-label">Coverage not reported</span><span id="queue-label">No snapshot yet</span></div>
+        </div>
+
+        <div class="workspace-body">
+          <section class="drawing" id="drawing" data-theme="sketchbook" aria-labelledby="canvas-title">
+            <div class="drawing-toolbar">
+              <div class="drawing-heading">
+                <h2 id="canvas-title">Live architecture</h2>
+                <span id="revision">Revision —</span>
+              </div>
+              <div class="zoom-controls" role="group" aria-label="Diagram zoom">
+                <button type="button" id="zoom-out" aria-label="Zoom out" disabled>−</button>
+                <output id="zoom-level" aria-label="Zoom level">100%</output>
+                <button type="button" id="zoom-in" aria-label="Zoom in" disabled>+</button>
+                <button type="button" id="fit" disabled>Fit</button>
+              </div>
+            </div>
+            <div class="layout-toolbar" role="group" aria-label="Diagram arrangement">
+              <label for="layout">Layout
+                <select id="layout" disabled>
+                  <option value="hierarchy">Hierarchy top-down</option>
+                  <option value="dependency">Dependency left-right</option>
+                  <option value="grouped">Group by type</option>
+                  <option value="circular">Circular</option>
+                  <option value="grid">Grid</option>
+                  <option value="original">Original</option>
+                </select>
+              </label>
+              <button type="button" id="arrange" disabled>Arrange</button>
+              <label class="auto-arrange" for="auto-arrange"><input id="auto-arrange" type="checkbox" checked disabled> Auto-arrange</label>
+              <div class="theme-picker">
+                <label for="theme">Theme
+                  <select id="theme" aria-describedby="theme-note" disabled>
+                    <option value="sketchbook">Sketchbook</option>
+                    <option value="ocean">Ocean</option>
+                    <option value="forest">Forest</option>
+                    <option value="sunset">Sunset</option>
+                    <option value="berry">Berry</option>
+                    <option value="sepia">Sepia</option>
+                    <option value="blueprint">Blueprint dark</option>
+                    <option value="midnight">Midnight dark</option>
+                  </select>
+                </label>
+                <span class="theme-preview" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+              </div>
+              <span class="screen-reader" id="theme-note">Colors follow component types. Themes change appearance only.</span>
+              <span id="layout-note">Arranges when components or connections change.</span>
+            </div>
+            <div class="diagram-stage" id="diagram-stage">
+              <svg id="architecture" viewBox="0 0 920 510" role="group" tabindex="0" aria-labelledby="diagram-title diagram-desc">
+                <title id="diagram-title">Architecture diagram</title>
+                <desc id="diagram-desc">Components and relationships will appear as evidence arrives. Select a component or relationship to inspect its evidence.</desc>
+                <defs>
+                  <marker id="arrow-observed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 Z" class="arrow-observed"></path></marker>
+                  <marker id="arrow-proposed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 Z" class="arrow-proposed"></path></marker>
+                  <marker id="arrow-stale" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 Z" class="arrow-stale"></path></marker>
+                </defs>
+                <g id="edge-layer"></g>
+                <g id="edge-label-layer"></g>
+                <g id="node-layer"></g>
+                <g id="effects-layer" aria-hidden="true" pointer-events="none"></g>
+              </svg>
+              <div class="empty-canvas" id="empty-canvas">
+                <div class="empty-map" aria-hidden="true"><i></i><span></span><i></i></div>
+                <h3 id="empty-title">Your architecture starts here.</h3>
+                <p id="empty-description">Waiting for the local service. Safe activity and supported components will appear as your agent works.</p>
+              </div>
+            </div>
+            <div class="drawing-footer">
+              <div class="legend" aria-label="Diagram legend">
+                <span><i class="observed" aria-hidden="true"></i>Code evidence</span>
+                <span><i class="proposed" aria-hidden="true"></i>Proposed / tentative</span>
+                <span><i class="stale" aria-hidden="true"></i>Stale / retracted</span>
+              </div>
+              <span id="graph-count">No components yet</span>
+            </div>
+            <details class="shape-key">
+              <summary>Shape key</summary>
+              <div id="shape-key-items"></div>
+              <p>Shapes describe component types. Display overrides change appearance only.</p>
+            </details>
+            <p class="diagram-note" id="diagram-note">Code classification does not establish runtime connectivity.</p>
+          </section>
+
+          <aside class="live-sidebar" id="live-sidebar" aria-label="Live activity and evidence">
+            <details class="sidebar-hooks" id="sidebar-hooks" open>
+              <summary><span class="sidebar-title"><i class="hook-live-dot" id="sidebar-hook-dot" data-state="waiting" aria-hidden="true"></i>Hooks received</span><span class="sidebar-count" id="sidebar-hook-count">0</span></summary>
+              <p class="sidebar-note" id="sidebar-hook-coverage">Received hooks from all sessions in this project will appear here.</p>
+              <p class="sidebar-empty" id="sidebar-hook-empty">Waiting for hooks. Work in a connected agent to see each receipt here.</p>
+              <ol id="sidebar-hook-list" class="hook-receipts" aria-label="Received hooks across this project, newest first"></ol>
+            </details>
+            <section class="sidebar-history sidebar-theme" id="sidebar-history" data-theme="sketchbook" aria-labelledby="sidebar-change-heading">
+              <div class="sidebar-heading"><h2 id="sidebar-change-heading">Diagram changes</h2><span class="sidebar-count" id="sidebar-change-count">0</span></div>
+              <p class="sidebar-note" id="sidebar-change-note">Newest changes first. Select a shape to inspect it, or a revision to replay.</p>
+              <p class="sidebar-empty" id="sidebar-change-empty">Shape changes will stack here as this session discovers or changes the architecture.</p>
+              <ol class="diagram-changes" id="sidebar-change-list" aria-label="Diagram changes in this session, newest first"></ol>
+            </section>
+            <section class="inspector" aria-labelledby="inspector-heading">
+            <div class="inspector-header"><h2 id="inspector-heading">Evidence inspector</h2><button type="button" id="clear-selection" class="text-button" hidden>Clear</button></div>
+            <div id="inspector-body">
+              <div class="inspector-empty">
+                <span class="inspector-glyph" aria-hidden="true">↗</span>
+                <h3>Every connection has a reason.</h3>
+                <p>Select a component or an arrow to see its classification, confidence, and source references.</p>
+                <p class="inspector-hint">Use Tab to reach diagram items, then Enter to inspect.</p>
+              </div>
+            </div>
+            </section>
+          </aside>
+        </div>
+
+        <div class="playback">
+          <div class="mode-buttons" role="group" aria-label="Architecture view">
+            <button id="live" type="button" aria-pressed="true">Live</button>
+            <button id="replay" type="button" aria-pressed="false" disabled>Replay</button>
+          </div>
+          <label class="scrubber" for="history">
+            <span class="screen-reader">Recent architecture revision</span>
+            <input id="history" type="range" min="0" max="0" value="0" step="1" disabled aria-describedby="replay-note">
+            <output id="history-position" for="history">No history</output>
+          </label>
+          <span id="replay-note">Live follows the latest snapshot.</span>
+        </div>
+      </section>
+
+      <section class="activity-section" aria-labelledby="activity-heading">
+        <div class="activity-heading">
+          <div><h2 id="activity-heading">Activity stream</h2><p id="activity-note">Observable work, independent of classification.</p></div>
+          <span id="activity-count">0 events</span>
+        </div>
+        <p class="activity-empty" id="activity-empty">No activity received. Start work in a connected agent session; its captured events will appear here.</p>
+        <ol id="activity-list" class="activity-list" aria-label="Recent activity, newest first"></ol>
+      </section>
+    </main>
+    <footer><p>Local viewer <span aria-hidden="true">/</span> evidence before inference</p><p id="updated-at">Waiting for a snapshot</p></footer>
+    <div id="announcement" class="screen-reader" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="toast" class="toast" role="status" hidden></div>
+  </div>
+  <dialog id="diagnostics-dialog" class="diagnostics-dialog" aria-labelledby="diagnostics-title" aria-describedby="diagnostics-intro">
+    <div class="diagnostics-header">
+      <h2 id="diagnostics-title">Classification log</h2>
+      <button type="button" id="diagnostics-close" aria-label="Close classification log">Close</button>
+    </div>
+    <p id="diagnostics-intro">See which files were considered and why components were drawn or skipped.</p>
+    <p class="diagnostics-note">This is the live local log, including while replay is selected. Scores from before logging was enabled cannot be recovered.</p>
+    <div class="diagnostics-filters">
+      <label for="diagnostics-search">Find a record
+        <input id="diagnostics-search" type="search" maxlength="200" autocomplete="off" placeholder="File, label, event, or session">
+      </label>
+      <label for="diagnostics-session">Sessions
+        <select id="diagnostics-session"><option value="all">All sessions</option></select>
+      </label>
+      <button type="button" id="diagnostics-refresh">Refresh log</button>
+    </div>
+    <p id="diagnostics-loading" class="diagnostics-note" role="status" hidden>Loading classification records…</p>
+    <p id="diagnostics-error" class="diagnostics-error" role="alert" hidden></p>
+    <p id="diagnostics-count" class="diagnostics-note" role="status" aria-live="polite" aria-atomic="true"></p>
+    <p id="diagnostics-empty" class="diagnostics-empty" hidden></p>
+    <div id="diagnostics-records" class="diagnostics-records" role="region" aria-label="Classification records, newest first" aria-busy="false"></div>
+    <div class="diagnostics-footer">
+      <p id="diagnostics-updated" class="diagnostics-note"></p>
+      <p id="diagnostics-stats" class="diagnostics-note"></p>
+      <p id="diagnostics-log-path" class="diagnostics-log-path" hidden></p>
+    </div>
+  </dialog>
+  <dialog id="connection-dialog" class="connection-dialog" aria-labelledby="connection-dialog-title" aria-describedby="connection-dialog-intro">
+    <div class="connection-dialog-header">
+      <h2 id="connection-dialog-title">How to connect</h2>
+      <button type="button" id="connection-dialog-close" aria-label="Close connection instructions">Close</button>
+    </div>
+    <p id="connection-dialog-intro">Keep the server terminal open. Open a new terminal for the commands below.</p>
+    <p id="connection-project" class="connection-project" hidden></p>
+    <p id="connection-demo" class="notice demo-notice" hidden>Demo project. These instructions refer to the demo’s project.</p>
+    <p id="connection-loading" class="connection-loading" role="status" hidden>Loading connection instructions…</p>
+    <p id="connection-error" class="connection-error" role="alert" hidden></p>
+    <button type="button" id="connection-instructions-retry" hidden>Retry instructions</button>
+    <div id="connection-instructions" aria-busy="false"></div>
+    <ul id="connection-notes" class="connection-notes" hidden></ul>
+    <p id="connection-copy-status" class="connection-copy-status" role="status" aria-live="polite" aria-atomic="true"></p>
+  </dialog>
+</body>
+</html>

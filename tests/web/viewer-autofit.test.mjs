@@ -1,0 +1,524 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import {
+  startViewer, fitViewport, graphBounds, normalizeGraph, normalizeSnapshot,
+  createPresentation, projectPresentation, sanitizedExport,
+} from '../../runtime/web/app.js';
+import { createDocument } from './fake-dom.mjs';
+import { snapshot, graph, node, activity } from './fixtures.mjs';
+
+function chain(length, revision = 1) {
+  return graph(revision, {
+    nodes: Array.from({ length }, (_, index) => node(`node-${index}`, {
+      label: `Component ${index}`, kind: 'service', shape: 'component',
+    })),
+    edges: Array.from({ length: Math.max(0, length - 1) }, (_, index) => ({
+      ...graph().edges[0], id: `edge-${index}`,
+      source: `node-${index}`, target: `node-${index + 1}`,
+    })),
+  });
+}
+
+function presented(value, algorithm = 'hierarchy') {
+  const view = createPresentation();
+  view.algorithm = algorithm;
+  return projectPresentation(normalizeGraph(value), view);
+}
+
+function contains(viewport, bounds, message = 'all diagram bounds are visible') {
+  const epsilon = 1e-7;
+  assert.ok(
+    viewport.x <= bounds.x + epsilon && viewport.y <= bounds.y + epsilon &&
+    viewport.x + viewport.width >= bounds.x + bounds.width - epsilon &&
+    viewport.y + viewport.height >= bounds.y + bounds.height - epsilon,
+    `${message}: ${JSON.stringify({ viewport, bounds })}`,
+  );
+}
+
+function descendants(element) {
+  return element.children.flatMap(child => [child, ...descendants(child)]);
+}
+
+function assertBurstsVisible(h, effects = h.$('effects-layer').children) {
+  for (const effect of effects) {
+    const [x, y] = effect.getAttribute('transform').match(/[-\d.]+/g).map(Number);
+    contains(h.viewport(), { x: x - 128, y: y - 110, width: 256, height: 220 },
+      'the pop outline and travelling particles remain in the viewport');
+  }
+}
+
+async function harness(initial = snapshot(), size = { width: 920, height: 510 }) {
+  const document = createDocument(await readFile(new URL('../../runtime/web/index.html', import.meta.url), 'utf8'));
+  const $ = id => document.getElementById(id);
+  let dimensions = { ...size }, current = initial, nextId = 0, now = 0;
+  const streams = [], timers = new Map(), frames = new Map(), observers = [], listeners = new Map();
+  const keys = ['document', 'window', 'fetch', 'EventSource', 'setTimeout', 'clearTimeout'];
+  const originals = new Map(keys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const canvas = $('architecture');
+  canvas.getBoundingClientRect = () => ({ ...dimensions });
+  $('diagram-stage').getBoundingClientRect = () => ({ ...dimensions });
+  canvas.closest = () => null;
+  const pointers = new Set();
+  canvas.setPointerCapture = id => pointers.add(id);
+  canvas.hasPointerCapture = id => pointers.has(id);
+  canvas.releasePointerCapture = id => pointers.delete(id);
+  const media = {
+    matches: false,
+    listener: null,
+    addEventListener(_type, listener) { this.listener = listener; },
+    removeEventListener() { this.listener = null; },
+    change(matches) { this.matches = matches; this.listener?.(); },
+  };
+  class ResizeObserver {
+    constructor(callback) { this.callback = callback; observers.push(this); }
+    observe(target) { this.target = target; }
+    disconnect() { this.disconnected = true; }
+  }
+  class EventSource {
+    constructor() { this.listeners = new Map(); streams.push(this); }
+    addEventListener(type, callback) { this.listeners.set(type, callback); }
+    emit(type, data) { this.listeners.get(type)?.({ data }); }
+    close() { this.closed = true; }
+  }
+  globalThis.document = document;
+  globalThis.window = {
+    location: { hash: '', pathname: '/', search: '' }, history: {},
+    ResizeObserver, matchMedia: () => media,
+    requestAnimationFrame(callback) { const id = ++nextId; frames.set(id, callback); return id; },
+    cancelAnimationFrame(id) { frames.delete(id); },
+    addEventListener(type, callback) { listeners.set(type, callback); },
+    removeEventListener(type) { listeners.delete(type); },
+  };
+  globalThis.EventSource = EventSource;
+  globalThis.setTimeout = (callback, duration = 0) => { const id = ++nextId; timers.set(id, { callback, at: now + duration }); return id; };
+  globalThis.clearTimeout = id => timers.delete(id);
+  globalThis.fetch = async url => {
+    assert.equal(url, '/api/state');
+    return new Response(JSON.stringify(current));
+  };
+  const viewer = startViewer();
+  try {
+    await viewer.ready;
+    streams[0].emit('open');
+  } catch (error) {
+    viewer.close();
+    for (const [key, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+    throw error;
+  }
+  return {
+    $, media, frames, observers, pointers,
+    get current() { return current; },
+    get dimensions() { return dimensions; },
+    viewport() {
+      const [x, y, width, height] = canvas.getAttribute('viewBox').split(' ').map(Number);
+      return { x, y, width, height };
+    },
+    send(value) { current = value; streams.at(-1).emit('snapshot', JSON.stringify(value)); },
+    advance(duration) {
+      now += duration;
+      for (const [id, timer] of [...timers]) if (timer.at <= now) {
+        timers.delete(id);
+        timer.callback();
+      }
+    },
+    resize(width, height) {
+      dimensions = { width, height };
+      observers[0].callback();
+      listeners.get('resize')?.();
+    },
+    frame(timestamp) {
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(timestamp);
+    },
+    close() {
+      try {
+        viewer.close();
+        assert.equal(frames.size, 0);
+        assert.equal(timers.size, 0);
+        assert.ok(observers.every(observer => observer.disconnected));
+        assert.equal(listeners.has('resize'), false);
+      } finally {
+        for (const [key, descriptor] of originals) {
+          if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+          else delete globalThis[key];
+        }
+      }
+    },
+  };
+}
+
+test('physical viewport fit preserves aspect ratio and shows very tall or wide maps below 50% scale', () => {
+  for (const bounds of [
+    { x: -200, y: -500, width: 900, height: 18000 },
+    { x: -1000, y: 400, width: 25000, height: 300 },
+    { x: -1000000, y: -1000000, width: 2000300, height: 2000300 },
+  ]) {
+    const original = { ...bounds };
+    const size = { width: 640, height: 360 };
+    const fitted = fitViewport(bounds, size);
+    contains(fitted.viewport, bounds);
+    assert.ok(fitted.zoom < .5);
+    assert.ok(Math.abs(fitted.viewport.width / fitted.viewport.height - size.width / size.height) < 1e-10);
+    assert.equal(fitted.zoom, Math.min(size.width / bounds.width, size.height / bounds.height));
+    assert.deepEqual(bounds, original);
+  }
+});
+
+test('an initial long hierarchy fits the real canvas and remains manually zoomable and pannable below 50%', async () => {
+  const initial = snapshot({ graph: chain(80) });
+  const h = await harness(initial, { width: 640, height: 360 });
+  try {
+    const bounds = graphBounds(presented(initial.graph));
+    contains(h.viewport(), bounds);
+    assert.ok(Number.parseFloat(h.$('zoom-level').textContent) < 5);
+    assert.equal(h.$('zoom-out').disabled, false);
+    const before = h.viewport();
+    await h.$('zoom-out').fire('click');
+    assert.ok(h.viewport().height > before.height);
+    await h.$('architecture').fire('pointerdown', {
+      button: 0, pointerId: 1, clientX: 20, clientY: 20,
+    });
+    assert.ok(h.pointers.has(1), 'pointer panning remains available when a large graph is smaller than 100%');
+    await h.$('architecture').fire('pointermove', { pointerId: 1, clientX: 40, clientY: 40 });
+    assert.notEqual(h.viewport().x, before.x);
+    await h.$('fit').fire('click');
+    assert.equal(h.pointers.size, 0);
+    contains(h.viewport(), bounds);
+  } finally { h.close(); }
+});
+
+test('new shapes fit before insertion and balloon animation, while status, hooks, and activity preserve a manual camera', async () => {
+  const h = await harness(snapshot({ graph: chain(3) }), { width: 640, height: 360 });
+  try {
+    h.send(h.current);
+    await h.$('zoom-in').fire('click');
+    await h.$('architecture').fire('keydown', { key: 'ArrowDown' });
+    const manual = h.viewport();
+    const progress = structuredClone(h.current);
+    progress.status.pending = 8;
+    progress.activity = [activity(2)];
+    progress.hookEvents = [{ ...activity(3), receipt: 3 }];
+    progress.graph.nodes[0].activityState = 'running';
+    h.send(progress);
+    h.send(progress);
+    assert.deepEqual(h.viewport(), manual);
+
+    const next = { ...progress, graph: chain(40, 2) };
+    const bounds = graphBounds(presented(next.graph));
+    const layer = h.$('node-layer');
+    const append = layer.append.bind(layer);
+    let inserted = 0;
+    layer.append = (...items) => {
+      contains(h.viewport(), bounds, 'camera fits the next graph before the first new SVG node is inserted');
+      inserted += items.length;
+      append(...items);
+    };
+    h.send(next);
+    assert.equal(inserted, 37);
+    assert.ok(layer.children.some(group => group.visual.classList.contains('is-appearing')));
+    contains(h.viewport(), bounds);
+    assert.ok(h.viewport().height > manual.height);
+  } finally { h.close(); }
+});
+
+test('a shrinking hierarchy shows every removal burst until the last finishes, then fits the remaining graph', async () => {
+  const h = await harness(snapshot({ graph: chain(30) }));
+  try {
+    h.send(h.current);
+    const long = h.viewport();
+    const layer = h.$('effects-layer');
+    const append = layer.append.bind(layer);
+    layer.append = (...items) => {
+      assertBurstsVisible(h, items);
+      append(...items);
+    };
+    h.send({ ...h.current, graph: chain(3, 2) });
+    assert.ok(h.viewport().height < long.height);
+    assert.equal(layer.children.length, 16);
+    assertBurstsVisible(h);
+    const temporary = h.viewport();
+    const final = fitViewport(graphBounds(presented(h.current.graph)), h.dimensions).viewport;
+    assert.ok(temporary.height > final.height);
+    h.send({ ...h.current, status: { ...h.current.status, pending: 3 } });
+    assert.deepEqual(h.viewport(), temporary, 'status snapshots retain the transition camera');
+    const effects = [...layer.children];
+    for (const effect of effects.slice(0, -1)) {
+      await effect.fire('animationend');
+      assert.deepEqual(h.viewport(), temporary, 'individual completions do not produce repeated zoom steps');
+      assertBurstsVisible(h);
+    }
+    await effects.at(-1).fire('animationend');
+    assert.equal(layer.children.length, 0);
+    assert.deepEqual(h.viewport(), final);
+    const fitted = h.viewport();
+    await h.$('zoom-in').fire('click');
+    const stale = structuredClone(h.current);
+    stale.graph.nodes[0].validity = 'stale';
+    h.send(stale);
+    assert.deepEqual(h.viewport(), fitted);
+    await h.$('zoom-out').fire('click');
+    const renamed = structuredClone(h.current);
+    renamed.graph.nodes[0].label = 'Renamed component';
+    h.send(renamed);
+    assert.deepEqual(h.viewport(), fitted);
+  } finally { h.close(); }
+});
+
+test('manual camera choices during removal survive status snapshots and effect cleanup', async () => {
+  const h = await harness(snapshot({ graph: chain(30) }));
+  try {
+    h.send(h.current);
+    h.send({ ...h.current, graph: chain(3, 2) });
+    assertBurstsVisible(h);
+    await h.$('zoom-in').fire('click');
+    await h.$('architecture').fire('keydown', { key: 'ArrowDown' });
+    const manual = h.viewport();
+    h.send({ ...h.current, status: { ...h.current.status, pending: 4 } });
+    assert.deepEqual(h.viewport(), manual);
+    h.advance(400);
+    assert.equal(h.$('effects-layer').children.length, 0);
+    assert.deepEqual(h.viewport(), manual, 'fallback cleanup must not overwrite manual zoom or pan');
+    h.send({ ...h.current, graph: chain(4, 3) });
+    contains(h.viewport(), graphBounds(presented(h.current.graph)));
+    assert.notDeepEqual(h.viewport(), manual, 'the next actual graph change resumes automatic fitting');
+  } finally { h.close(); }
+});
+
+test('resize keeps live bursts visible; fallback completion fits the latest remaining graph to the resized canvas', async () => {
+  const h = await harness(snapshot({ graph: chain(30) }));
+  try {
+    h.send(h.current);
+    h.send({ ...h.current, graph: chain(3, 2) });
+    h.resize(360, 280);
+    assertBurstsVisible(h);
+    const temporary = h.viewport();
+    assert.ok(Math.abs(temporary.width / temporary.height - 360 / 280) < 1e-9);
+    h.advance(200);
+    h.send({ ...h.current, graph: chain(5, 3) });
+    assertBurstsVisible(h);
+    contains(h.viewport(), graphBounds(presented(h.current.graph)));
+    h.advance(179);
+    assert.equal(h.$('effects-layer').children.length, 14, 'the two re-added identities cancel their old pops');
+    h.advance(2);
+    assert.equal(h.$('effects-layer').children.length, 0);
+    assert.deepEqual(h.viewport(), fitViewport(graphBounds(presented(h.current.graph)), h.dimensions).viewport);
+  } finally { h.close(); }
+});
+
+test('replay, session switches, and reduced motion cancel removal framing without delayed camera changes', async () => {
+  for (const action of ['replay', 'session', 'reduced']) {
+    const h = await harness(snapshot({ graph: chain(30) }));
+    try {
+      h.send(h.current);
+      h.send({ ...h.current, graph: chain(3, 2) });
+      assert.equal(h.$('effects-layer').children.length, 16);
+      if (action === 'replay') await h.$('replay').fire('click');
+      else if (action === 'session') h.send({ ...h.current, sessionId: 'session-2', graph: chain(2, 1), history: [] });
+      else h.media.change(true);
+      assert.equal(h.$('effects-layer').children.length, 0);
+      const settled = h.viewport();
+      h.advance(1000);
+      assert.deepEqual(h.viewport(), settled, `${action} cancels every old removal deadline`);
+      if (action !== 'replay') {
+        assert.deepEqual(settled, fitViewport(graphBounds(presented(h.current.graph)), h.dimensions).viewport);
+      }
+    } finally { h.close(); }
+  }
+});
+
+test('removing the last components delays the empty state until their pops finish', async () => {
+  const h = await harness(snapshot({ graph: chain(3) }));
+  try {
+    h.send(h.current);
+    h.send({ ...h.current, graph: chain(0, 2) });
+    assert.equal(h.$('node-layer').children.length, 0);
+    assert.equal(h.$('effects-layer').children.length, 3);
+    assert.equal(h.$('empty-canvas').hidden, true);
+    assertBurstsVisible(h);
+    h.advance(400);
+    assert.equal(h.$('effects-layer').children.length, 0);
+    assert.equal(h.$('empty-canvas').hidden, false);
+    assert.deepEqual(h.viewport(), fitViewport(graphBounds(presented(h.current.graph)), h.dimensions).viewport);
+  } finally { h.close(); }
+});
+
+test('layout selection and manual Arrange always fit, including when automatic arrangement is disabled', async () => {
+  const h = await harness(snapshot({ graph: chain(5) }));
+  try {
+    h.$('auto-arrange').checked = false;
+    await h.$('auto-arrange').fire('change');
+    await h.$('zoom-in').fire('click');
+    await h.$('architecture').fire('keydown', { key: 'ArrowRight' });
+    h.$('layout').value = 'dependency';
+    await h.$('layout').fire('change');
+    const target = presented(h.current.graph, 'dependency');
+    contains(h.viewport(), graphBounds(target), 'target is fitted before layout animation');
+    contains(h.viewport(), graphBounds(presented(h.current.graph)), 'the preceding layout remains visible during movement');
+    assert.equal(h.frames.size, 1);
+    h.frame(0);
+    h.frame(250);
+    contains(h.viewport(), graphBounds(target));
+    assert.deepEqual(h.viewport(), fitViewport(graphBounds(target), h.dimensions).viewport);
+    assert.equal(h.$('auto-arrange').checked, false);
+    const transforms = h.$('node-layer').children.map(group => group.getAttribute('transform'));
+    assert.ok(transforms.every(transform => / 0\)$/.test(transform)), 'dependency selection applies the horizontal layout');
+
+    const fitted = h.viewport();
+    await h.$('zoom-in').fire('click');
+    for (let i = 0; i < 20; i++) await h.$('architecture').fire('keydown', { key: 'ArrowRight' });
+    await h.$('arrange').fire('click');
+    assert.deepEqual(h.viewport(), fitted);
+  } finally { h.close(); }
+});
+
+test('resize fits only changed canvas dimensions and reduced motion still applies the final fit', async () => {
+  const h = await harness(snapshot({ graph: chain(8) }));
+  try {
+    await h.$('zoom-in').fire('click');
+    const manual = h.viewport();
+    h.resize(920, 510);
+    assert.deepEqual(h.viewport(), manual, 'repeated observer notifications do not move the manual camera');
+    h.resize(400, 280);
+    contains(h.viewport(), graphBounds(presented(h.current.graph)));
+    assert.ok(Math.abs(h.viewport().width / h.viewport().height - 400 / 280) < 1e-9);
+    h.media.matches = true;
+    h.$('layout').value = 'dependency';
+    await h.$('layout').fire('change');
+    assert.equal(h.frames.size, 0);
+    contains(h.viewport(), graphBounds(presented(h.current.graph, 'dependency')));
+  } finally { h.close(); }
+});
+
+test('new live updates preserve the replay camera; selecting a new session returns to Live and fits it', async () => {
+  const h = await harness();
+  try {
+    await h.$('node-layer').children[0].fire('click');
+    await h.$('replay').fire('click');
+    await h.$('zoom-in').fire('click');
+    const replay = h.viewport();
+    h.send({ ...h.current, graph: chain(50, 3) });
+    assert.deepEqual(h.viewport(), replay);
+    assert.equal(h.$('revision').textContent, 'Revision 1');
+    h.send({ ...h.current, sessionId: 'session-2', graph: chain(80, 1), history: [] });
+    assert.equal(h.$('live').getAttribute('aria-pressed'), 'true');
+    assert.equal(h.$('session').value, 'session-2');
+    contains(h.viewport(), graphBounds(presented(h.current.graph)));
+    assert.equal(h.$('clear-selection').hidden, true);
+  } finally { h.close(); }
+});
+
+test('hook receipt normalization is bounded, optional, and contains metadata only', () => {
+  assert.equal(normalizeSnapshot(snapshot()).hookEvents, undefined);
+  const hookEvents = Array.from({ length: 240 }, (_, index) => ({
+    ...activity(index), receipt: index, source: 'private source', thinking: 'private reasoning',
+    tool_input: { token: 'private token' }, tool_response: { stdout: 'private contents' },
+    label: `Hook ${index}\u0001`,
+  }));
+  hookEvents[239].receipt = Infinity;
+  const raw = snapshot({ hookEvents });
+  const normalized = normalizeSnapshot(raw);
+  assert.equal(normalized.hookEvents.length, 200);
+  assert.equal(normalized.hookEvents[0].receipt, 40);
+  assert.equal(normalized.hookEvents.at(-1).receipt, 0);
+  assert.equal(normalized.hookEvents.at(-1).label, 'Hook 239');
+  assert.equal(normalized.hookEvents[0].at, Date.parse(activity().at));
+  const exported = sanitizedExport(raw);
+  assert.equal(exported.hookEvents[0].at, new Date(activity().at).toISOString());
+  assert.doesNotMatch(JSON.stringify(exported.hookEvents), /private|tool_input|tool_response|thinking/);
+});
+
+test('sidebar integration keeps every receipt, opens evidence and replay, and recolors without camera or history changes', async () => {
+  const h = await harness(snapshot({
+    graph: chain(2, 2),
+    history: [{ revision: 1, at: 100, graph: chain(1, 1) }],
+    hookEvents: [
+      { ...activity(1), id: 'shared-event', kind: 'tool.started', receipt: 1 },
+      { ...activity(1), id: 'shared-event', kind: 'tool.succeeded', receipt: 2 },
+    ],
+  }));
+  try {
+    assert.deepEqual(h.$('sidebar-hook-list').children.map(row => row.getAttribute('data-receipt')), ['2', '1']);
+    const button = label => descendants(h.$('sidebar-change-list')).find(element => element.getAttribute('aria-label') === label);
+    await button('Inspect current component Component 1').fire('click');
+    assert.match(h.$('inspector-body').textContent, /Component 1/);
+    await button('View diagram at revision 1').fire('click');
+    assert.equal(h.$('revision').textContent, 'Revision 1');
+    assert.match(h.$('sidebar-hook-coverage').textContent, /stays live during replay/);
+    await h.$('zoom-in').fire('click');
+    const manual = h.viewport();
+    const cards = [...h.$('sidebar-change-list').children];
+    h.$('theme').value = 'ocean';
+    await h.$('theme').fire('change');
+    assert.equal(h.$('sidebar-history').dataset.theme, 'ocean');
+    assert.deepEqual(h.viewport(), manual);
+    assert.deepEqual([...h.$('sidebar-change-list').children], cards);
+    await button('Inspect current component Component 1').fire('click');
+    assert.equal(h.$('revision').textContent, 'Revision 2', 'a current component opens live evidence while replay is active');
+    assert.match(h.$('inspector-body').textContent, /Component 1/);
+    const before = [...h.$('sidebar-change-list').children];
+    h.send({ ...h.current, status: { ...h.current.status, pending: 1 } });
+    assert.deepEqual([...h.$('sidebar-change-list').children], before);
+    assert.equal(h.$('sidebar-hook-list').children.length, 2);
+  } finally { h.close(); }
+});
+
+test('explicit node, arrow, and history inspection scrolls only the sidebar; background snapshots never scroll or steal focus', async () => {
+  const h = await harness(snapshot({
+    graph: chain(2, 2),
+    history: [{ revision: 1, at: 100, graph: chain(1, 1) }],
+  }));
+  try {
+    const container = h.$('live-sidebar');
+    const document = container.ownerDocument;
+    const panel = document.createElement('section');
+    panel.append(h.$('inspector-body'));
+    container.append(panel);
+    container.scrollTop = 0;
+    container.clientTop = 1;
+    container.getBoundingClientRect = () => ({ top: 120, height: 400 });
+    panel.getBoundingClientRect = () => ({ top: 120 + container.clientTop + 900 - container.scrollTop, height: 600 });
+    const calls = [];
+    container.scrollTo = options => { calls.push(options); container.scrollTop = options.top; };
+    window.scrollTo = () => assert.fail('inspection must never scroll the page');
+    panel.scrollIntoView = () => assert.fail('scrollIntoView could also scroll ancestor containers or the page');
+
+    const selected = h.$('node-layer').children[0];
+    selected.focus();
+    await selected.fire('click');
+    assert.deepEqual(calls, [{ top: 900, behavior: 'smooth' }]);
+    assert.equal(document.activeElement, selected);
+    assert.match(h.$('inspector-body').textContent, /Component 0/);
+
+    container.scrollTop = 150;
+    const refreshed = structuredClone(h.current);
+    refreshed.status.pending = 1;
+    refreshed.graph.nodes[0].validity = 'stale';
+    h.send(refreshed);
+    assert.equal(calls.length, 1);
+    assert.equal(container.scrollTop, 150, 'background evidence changes leave sidebar browsing undisturbed');
+    assert.equal(document.activeElement, selected);
+
+    h.media.matches = true;
+    const arrow = h.$('edge-label-layer').children[0];
+    arrow.focus();
+    await arrow.fire('click');
+    assert.deepEqual(calls.at(-1), { top: 900, behavior: 'auto' });
+    assert.equal(document.activeElement, arrow);
+    assert.match(h.$('inspector-body').textContent, /Writes relationship/);
+
+    container.scrollTop = 0;
+    const tile = descendants(h.$('sidebar-change-list')).find(element =>
+      element.getAttribute('aria-label') === 'Inspect current component Component 1');
+    tile.focus();
+    await tile.fire('click');
+    assert.equal(calls.length, 3);
+    assert.equal(container.scrollTop, 900);
+    assert.equal(document.activeElement, tile);
+    assert.match(h.$('inspector-body').textContent, /Component 1/);
+  } finally { h.close(); }
+});

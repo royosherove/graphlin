@@ -1,0 +1,18 @@
+{
+  "host": "claude",
+  "platforms": [
+    "darwin",
+    "linux"
+  ],
+  "events": [
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "SessionStart",
+    "Stop"
+  ],
+  "activation": "not_verified",
+  "capture": "bounded_private_ipc",
+  "automaticDaemonStart": false
+}
