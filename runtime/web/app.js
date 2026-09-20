@@ -812,7 +812,51 @@ export function normalizeConnectionInfo(value) {
   };
 }
 
-export function startConnectionDialog({ load = () => request('/api/connection-info') } = {}) {
+export function friendlyProjectName(projectRoot) {
+  return safeText(projectRoot, 4096).replace(/\/+$/, '').split('/').at(-1)?.slice(0, 120) || 'Local project';
+}
+
+export const ORIENTATION_PROMPT = 'Orient yourself in this project: read its main files and explain how the components connect.';
+
+// Observations are not an installation or trust audit. Activity (including
+// pre-tool intent) is not a substitute for the server's hook receipt feed.
+export function onboardingProgress(snapshot, connection = 'connecting') {
+  const demo = snapshot?.mode === 'demo' || snapshot?.status.classifier === 'demo';
+  const hooks = array(snapshot?.hookEvents).some(event => event.receipt > 0);
+  const calls = (snapshot?.status.calls || 0) > 0;
+  const shape = Boolean(snapshot?.graph.nodes.length || array(snapshot?.history).some(frame => frame.graph.nodes.length));
+  const classifier = snapshot?.paused ? 'paused' : snapshot?.status.classifier;
+  const steps = [
+    { id: 'server', state: connection === 'connected' ? 'observed' : 'waiting',
+      label: connection === 'connected' ? 'Server connected' : connection === 'connecting' ? 'Connecting to server' : 'Server connection needs attention' },
+    { id: 'setup', state: 'unverified', label: 'Agent setup / trust: unverified' },
+    { id: 'hooks', state: demo ? 'demo' : hooks ? 'observed' : 'waiting',
+      label: demo ? 'Demo hook receipts' : hooks ? 'Hook delivery observed' : 'Waiting for a hook receipt' },
+    { id: 'classification', state: demo ? 'demo' : calls ? 'observed' : 'waiting',
+      label: demo ? 'Fixture classification' : calls ? 'Classification call observed' : 'Waiting for a classifier call' },
+    { id: 'shape', state: demo ? 'demo' : shape ? 'observed' : 'waiting',
+      label: demo ? 'Demo shapes' : shape ? 'First shape observed in this session' : 'Waiting for the first shape' },
+  ];
+  let next;
+  if (connection === 'auth') next = ['Open a fresh viewer link from the Graphlin server terminal.', 'Reconnect', 'reconnect'];
+  else if (connection !== 'connected') next = [connection === 'connecting'
+    ? 'Keep the Graphlin server terminal open while the viewer connects.'
+    : 'Check that the Graphlin server is running for this project, then reconnect.', 'Reconnect', 'reconnect'];
+  else if (demo) next = ['This is an offline demo. Start a live viewer for your project to connect an agent.', 'How to connect', 'connect'];
+  else if (classifier === 'missing_key') next = ['Run graphlin init in this project’s terminal to save a TypeSafe API key at the masked prompt. Then stop and restart the Graphlin server.', 'How to connect', 'connect'];
+  else if (classifier === 'metadata_only') next = ['Run graphlin init and choose source mode if you consent to sending locally filtered source and public messages to TypeSafe. Then stop and restart the Graphlin server.', 'How to connect', 'connect'];
+  else if (classifier === 'paused') next = ['Resume classification, then ask your agent to read the main project files.', 'Resume classification', 'resume'];
+  else if (['unavailable', 'timeout'].includes(classifier)) next = ['Open the classification log for the reported failure. Check the server’s classifier connection, then let your agent read a file again.', 'View classification log', 'diagnostics'];
+  else if (!hooks) next = [Array.isArray(snapshot?.hookEvents)
+    ? 'Connect your agent to this project and approve its setup prompts. In Codex, review Graphlin in /hooks. Then send the orientation prompt.'
+    : 'Restart the updated Graphlin server to see hook receipts. Session activity alone cannot verify hook delivery.', 'How to connect', 'connect'];
+  else if (snapshot.status.pending > 0) next = ['Evidence is queued for classification. Follow its progress and any skipped or failed reasons in the log.', 'View classification log', 'diagnostics'];
+  else if (!shape) next = ['Send the orientation prompt to your connected agent. If no shape appears, the classification log explains skipped or failed work.', 'View classification log', 'diagnostics'];
+  else next = ['Select a shape or arrow to inspect its evidence. Hook delivery does not verify full host trust; classification does not prove runtime success.', 'View classification log', 'diagnostics'];
+  return { steps, next: { text: next[0], label: next[1], action: next[2] } };
+}
+
+export function startConnectionDialog({ load = () => request('/api/connection-info'), onInfo = () => {} } = {}) {
   const $ = id => document.getElementById(id);
   const dialog = $('connection-dialog');
   const trigger = $('how-to-connect');
@@ -904,6 +948,7 @@ export function startConnectionDialog({ load = () => request('/api/connection-in
       const info = normalizeConnectionInfo(await load());
       if (!opened || disposed || ticket !== epoch) return;
       renderInfo(info, ticket);
+      onInfo(info);
     } catch {
       if (!opened || disposed || ticket !== epoch) return;
       $('connection-error').textContent = 'Connection instructions could not be loaded. Check that the local service is running, then retry.';
@@ -966,6 +1011,7 @@ export function startConnectionDialog({ load = () => request('/api/connection-in
   dialog.addEventListener('cancel', onCancel);
   dialog.addEventListener('close', onNativeClose);
   return {
+    open: openDialog,
     close: closeDialog,
     dispose() {
       disposed = true;
@@ -1008,6 +1054,18 @@ const logProbability = value => probability(value) ? value : null;
 const logBoolean = value => typeof value === 'boolean' ? value : null;
 const logLabel = value => safeText(value, 120).replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll('_', ' ');
 const logReason = value => LOG_REASONS[value] || upperFirst(logLabel(value)) || 'No reason reported';
+
+function diagnosticNextAction(entry) {
+  const reason = entry.reason || entry.diagnostics.code;
+  if (reason === 'metadata_only') return 'To interpret source, review source consent in the Graphlin server setup.';
+  if (['paused_deferred', 'classification_paused'].includes(reason)) return 'Resume classification in the viewer to process waiting evidence.';
+  if (['missing_key', 'missing_api_key', 'classifier_unavailable'].includes(reason)) return 'Check the TypeSafe key and classifier configuration in the Graphlin server terminal.';
+  if (['deadline_exceeded', 'classifier_exception'].includes(reason)) return 'Check the server’s classifier connection, then let your agent read the file again.';
+  if (['stale_result', 'source_changed_during_classification', 'queued_source_superseded'].includes(reason)) return 'Let your agent read the latest file version; this result cannot support the current source.';
+  if (['no_candidates', 'no_approved_candidates', 'no_accepted_classification', 'insufficient_relevance', 'classification_not_drawable'].includes(reason)) return 'Ask your agent to read the main implementation files and their dependencies. A captured event may produce no shape.';
+  if (reason === 'classification_queue_full' || reason === 'capture_queue_full') return 'Let queued work finish, then ask your agent to read the file again.';
+  return '';
+}
 
 function logNumbers(value) {
   if (!record(value)) return {};
@@ -1259,6 +1317,8 @@ export function startDiagnosticsDialog({ load = options => request('/api/diagnos
       summary.append(html('span', [upperFirst(logLabel(entry.status)) || 'Status not reported',
         entry.candidates.length ? `${entry.candidates.length} candidates` : '', entry.sessionId ? `Session ${shortId(entry.sessionId)}` : 'Session not assigned',
       ].filter(Boolean).join(' · '), 'diagnostics-record-meta'));
+      const next = diagnosticNextAction(entry);
+      if (next) summary.append(html('span', next, 'diagnostics-record-meta'));
       element.append(summary);
       const row = { key: entry.key, element, summary, pre: null, controls: [] };
       const expand = () => {
@@ -1366,6 +1426,7 @@ export function startDiagnosticsDialog({ load = options => request('/api/diagnos
   refresh.addEventListener('click', reload); search.addEventListener('input', onFilter); scope.addEventListener('change', onFilter);
   dialog.addEventListener('keydown', onKeyDown); dialog.addEventListener('cancel', onCancel); dialog.addEventListener('close', onNativeClose);
   return {
+    open: openDialog,
     close: closeDialog,
     dispose() {
       disposed = true; closeDialog(); epoch++;
@@ -1385,12 +1446,15 @@ export function startViewer() {
     viewport: null, fitBounds: null, zoom: 1, followFit: true, lastGraphSignature: '', inspectorSignature: '',
     nodeElements: new Map(), edgeElements: new Map(), activityElements: new Map(),
     views: new Map(), viewKey: null, view: null, displayGraph: null,
-    effects: new Map(), motionReady: false, movement: null, closed: false,
+    effects: new Map(), motionReady: false, movement: null, closed: false, projectName: '',
   };
   const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)');
   const sketches = createSketchCache();
   const detailSketches = createSketchCache(sketchDetails);
-  const connectionDialog = startConnectionDialog();
+  const connectionDialog = startConnectionDialog({ onInfo: info => {
+    state.projectName = friendlyProjectName(info.projectRoot);
+    renderStatus();
+  } });
   const diagnosticsDialog = startDiagnosticsDialog({ currentSession: () => state.snapshot?.sessionId });
   const sidebar = createLiveSidebar({
     onInspect(selection, id) {
@@ -1413,6 +1477,7 @@ export function startViewer() {
   let announcementTimer;
   let pointer = null;
   let canvasSize = '';
+  let projectController = null;
 
   function announce(message) {
     clearTimeout(announcementTimer);
@@ -1439,7 +1504,22 @@ export function startViewer() {
       auth: 'Viewer authorization required',
     }[value] || 'Connection unknown';
     $('retry').hidden = value === 'connected' || value === 'connecting';
+    renderOnboarding();
     updateControls();
+  }
+  function renderOnboarding() {
+    const progress = onboardingProgress(state.snapshot, state.connection);
+    for (const step of progress.steps) {
+      const element = $(`onboarding-${step.id}`);
+      element.textContent = step.label;
+      element.dataset.state = step.state;
+    }
+    $('onboarding-next').textContent = progress.next.text;
+    $('onboarding-action').textContent = progress.next.label;
+    $('onboarding-action').dataset.action = progress.next.action;
+    // Preserve a manual text selection while live snapshots arrive.
+    if ($('orientation-prompt').textContent !== ORIENTATION_PROMPT) $('orientation-prompt').textContent = ORIENTATION_PROMPT;
+    $('orientation').hidden = Boolean(state.replayFrame || state.snapshot?.mode === 'demo' || state.snapshot?.mode === 'replay');
   }
   function currentGraph() { return state.replayFrame?.graph || state.snapshot?.graph; }
   function applyTheme() {
@@ -1557,6 +1637,7 @@ export function startViewer() {
   }
   function updateControls() {
     const online = state.connection === 'connected' && Boolean(state.snapshot);
+    $('onboarding-action').disabled = state.connection === 'connecting' || state.busy;
     $('session').disabled = !online || state.busy || !state.snapshot?.sessions.length;
     $('pause').disabled = !online || state.busy;
     $('export').disabled = !online || state.exporting;
@@ -1608,7 +1689,7 @@ export function startViewer() {
     if (!snapshot) return;
     const classifier = snapshot.paused ? 'paused' : snapshot.status.classifier;
     const labels = {
-      ready: ['Classifying evidence', 'Capture continues independently.'],
+      ready: ['Classifier ready', 'Capture continues independently; readiness does not confirm a classification.'],
       metadata_only: ['Metadata only', 'Source interpretation is off; safe activity remains visible.'],
       missing_key: ['Classifier not configured', 'Configure credentials in the local service; capture continues.'],
       paused: ['Classification paused', 'Capture and evidence invalidation continue.'],
@@ -1623,7 +1704,7 @@ export function startViewer() {
     $('coverage-label').title = $('coverage-label').textContent;
     $('queue-label').textContent = `${snapshot.status.pending} pending · ${snapshot.status.calls} classifier calls`;
     $('demo-banner').hidden = snapshot.mode !== 'demo' && snapshot.status.classifier !== 'demo';
-    $('project-label').textContent = snapshot.projectId ? `Project ${shortId(snapshot.projectId)}` : 'Local project';
+    $('project-label').textContent = state.projectName || (snapshot.projectId ? `Project ${shortId(snapshot.projectId)}` : 'Local project');
     $('project-label').title = snapshot.projectId;
     const signature = JSON.stringify(snapshot.sessions);
     if ($('session').dataset.signature !== signature) {
@@ -2221,6 +2302,7 @@ export function startViewer() {
   }
   function render() {
     renderStatus();
+    renderOnboarding();
     renderGraph();
     renderInspector();
     renderHistory();
@@ -2265,6 +2347,8 @@ export function startViewer() {
   async function connect() {
     resetMotionBaseline();
     const attempt = ++state.connectEpoch;
+    projectController?.abort();
+    projectController = null;
     state.stream?.close();
     state.stream = null;
     connection('connecting');
@@ -2295,6 +2379,18 @@ export function startViewer() {
         connection('reconnecting');
         error('The live connection was lost. Displaying the last received snapshot while the viewer reconnects.');
       });
+      // Optional authenticated metadata must not hold up the event stream or
+      // turn an older server's missing endpoint into a connection failure.
+      const controller = new AbortController();
+      projectController = controller;
+      try {
+        const info = normalizeConnectionInfo(await request('/api/connection-info', { signal: controller.signal }));
+        if (!state.closed && attempt === state.connectEpoch) {
+          state.projectName = friendlyProjectName(info.projectRoot);
+          renderStatus();
+        }
+      } catch { /* The project ID remains a usable fallback. */ }
+      finally { if (projectController === controller) projectController = null; }
     } catch (cause) {
       if (attempt !== state.connectEpoch) return;
       const auth = cause.message === 'auth_required' || cause.message === 'invalid_launch';
@@ -2326,6 +2422,34 @@ export function startViewer() {
   }
 
   $('retry').addEventListener('click', connect);
+  const onOnboardingAction = () => {
+    if (state.closed) return;
+    const action = $('onboarding-action').dataset.action;
+    if (action === 'reconnect') return connect();
+    if (action === 'resume') return control('resume');
+    if (action === 'diagnostics') return diagnosticsDialog.open();
+    return connectionDialog.open();
+  };
+  const onCopyOrientation = async () => {
+    try {
+      if (!window.navigator?.clipboard?.writeText) throw new Error('clipboard_unavailable');
+      await window.navigator.clipboard.writeText(ORIENTATION_PROMPT);
+      if (!state.closed) $('orientation-copy-status').textContent = 'Copied. Paste this prompt into your connected agent.';
+    } catch {
+      if (state.closed) return;
+      $('orientation-copy-status').textContent = 'Select the prompt text and copy it manually.';
+      $('orientation-prompt').focus();
+    }
+  };
+  const onToggleActivity = () => {
+    const hidden = !$('activity-content').hidden;
+    $('activity-content').hidden = hidden;
+    $('activity-toggle').textContent = hidden ? 'Show activity log' : 'Hide activity log';
+    $('activity-toggle').setAttribute('aria-expanded', String(!hidden));
+  };
+  $('onboarding-action').addEventListener('click', onOnboardingAction);
+  $('orientation-copy').addEventListener('click', onCopyOrientation);
+  $('activity-toggle').addEventListener('click', onToggleActivity);
   $('pause').addEventListener('click', () => control(state.snapshot?.paused ? 'resume' : 'pause'));
   $('session').addEventListener('change', () => control('session', $('session').value));
   $('export').addEventListener('click', exportJSON);
@@ -2442,6 +2566,11 @@ export function startViewer() {
     ready: connect(),
     close() {
       state.closed = true;
+      projectController?.abort();
+      projectController = null;
+      $('onboarding-action').removeEventListener('click', onOnboardingAction);
+      $('orientation-copy').removeEventListener('click', onCopyOrientation);
+      $('activity-toggle').removeEventListener('click', onToggleActivity);
       connectionDialog.dispose();
       diagnosticsDialog.dispose();
       sidebar.destroy();

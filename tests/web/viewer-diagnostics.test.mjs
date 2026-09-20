@@ -597,3 +597,27 @@ test('the default loader uses only authenticated GET diagnostics; no-session and
     assert.match(h.$('diagnostics-error').textContent, /Reopen a fresh viewer link/);
   } finally { h.close(); }
 });
+
+test('skipped and failed records offer targeted next actions without displaying raw failure content', async () => {
+  const reasons = [
+    ['metadata_only', /review source consent/],
+    ['paused_deferred', /Resume classification/],
+    ['classifier_unavailable', /TypeSafe key/],
+    ['deadline_exceeded', /classifier connection/],
+    ['source_changed_during_classification', /latest file version/],
+    ['no_candidates', /main implementation files/],
+    ['classification_queue_full', /queued work finish/],
+  ];
+  const h = await setup({ load: async () => payload(reasons.map(([reason], index) =>
+    logRecord(index + 1, {
+      stage: 'skip', status: 'skipped', reason,
+      error: 'fixture-raw-secret', payload: { apiKey: 'fixture-private-key' },
+    }))) });
+  try {
+    await h.$('classification-log').fire('click');
+    for (const [, pattern] of reasons) assert.match(h.$('diagnostics-records').textContent, pattern);
+    assert.doesNotMatch(h.$('diagnostics-records').textContent, /fixture-raw-secret|fixture-private-key/);
+    await expand(h.$('diagnostics-records').children[0]);
+    assert.doesNotMatch(h.$('diagnostics-records').textContent, /fixture-raw-secret|fixture-private-key/);
+  } finally { h.close(); }
+});

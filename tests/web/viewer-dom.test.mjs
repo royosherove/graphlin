@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { startViewer } from '../../runtime/web/app.js';
 import { createDocument } from './fake-dom.mjs';
-import { snapshot, graph, activity } from './fixtures.mjs';
+import { snapshot, graph, activity, connectionInfo } from './fixtures.mjs';
 
 test('full-snapshot UI flow renders evidence as text, pins replay, preserves focus, and uses exact controls', async () => {
   const markup = await readFile(new URL('../../runtime/web/index.html', import.meta.url), 'utf8');
@@ -37,6 +37,7 @@ test('full-snapshot UI flow renders evidence as text, pins replay, preserves foc
   globalThis.fetch = async (url, options) => {
     calls.push({ url, ...options });
     if (url === '/api/auth') return new Response('{"ok":true}');
+    if (url === '/api/connection-info') return new Response(JSON.stringify(connectionInfo()));
     if (url === '/api/control') {
       const body = JSON.parse(options.body);
       if (body.action === 'pause') current = { ...current, paused: true };

@@ -125,6 +125,12 @@
                 <div class="empty-map" aria-hidden="true"><i></i><span></span><i></i></div>
                 <h3 id="empty-title">Your architecture starts here.</h3>
                 <p id="empty-description">Waiting for the local service. Safe activity and supported components will appear as your agent works.</p>
+                <div id="orientation" class="orientation">
+                  <p>Ask your connected agent:</p>
+                  <blockquote id="orientation-prompt" tabindex="0">Orient yourself in this project: read its main files and explain how the components connect.</blockquote>
+                  <button id="orientation-copy" type="button">Copy orientation prompt</button>
+                  <p id="orientation-copy-status" role="status" aria-live="polite"></p>
+                </div>
               </div>
             </div>
             <div class="drawing-footer">
@@ -144,6 +150,19 @@
           </section>
 
           <aside class="live-sidebar" id="live-sidebar" aria-label="Live activity and evidence">
+            <section class="onboarding" aria-labelledby="onboarding-title">
+              <h2 id="onboarding-title">Getting your first shape</h2>
+              <ol class="onboarding-progress" aria-label="Observed setup progress">
+                <li id="onboarding-server">Connecting to server</li>
+                <li id="onboarding-setup">Agent setup / trust: unverified</li>
+                <li id="onboarding-hooks">Waiting for a hook receipt</li>
+                <li id="onboarding-classification">Waiting for a classifier call</li>
+                <li id="onboarding-shape">Waiting for the first shape</li>
+              </ol>
+              <p class="sidebar-note">Hooks and calls are project-wide observations. A receipt confirms delivery, not full host trust; a call does not confirm success.</p>
+              <p id="onboarding-next" class="onboarding-next">Keep the Graphlin server terminal open while the viewer connects.</p>
+              <button id="onboarding-action" type="button" disabled>How to connect</button>
+            </section>
             <details class="sidebar-hooks" id="sidebar-hooks" open>
               <summary><span class="sidebar-title"><i class="hook-live-dot" id="sidebar-hook-dot" data-state="waiting" aria-hidden="true"></i>Hooks received</span><span class="sidebar-count" id="sidebar-hook-count">0</span></summary>
               <p class="sidebar-note" id="sidebar-hook-coverage">Received hooks from all sessions in this project will appear here.</p>
@@ -188,9 +207,12 @@
         <div class="activity-heading">
           <div><h2 id="activity-heading">Activity stream</h2><p id="activity-note">Observable work, independent of classification.</p></div>
           <span id="activity-count">0 events</span>
+          <button id="activity-toggle" type="button" aria-expanded="true" aria-controls="activity-content">Hide activity log</button>
         </div>
-        <p class="activity-empty" id="activity-empty">No activity received. Start work in a connected agent session; its captured events will appear here.</p>
-        <ol id="activity-list" class="activity-list" aria-label="Recent activity, newest first"></ol>
+        <div id="activity-content">
+          <p class="activity-empty" id="activity-empty">No activity received. Start work in a connected agent session; its captured events will appear here.</p>
+          <ol id="activity-list" class="activity-list" aria-label="Recent activity, newest first"></ol>
+        </div>
       </section>
     </main>
     <footer><p>Local viewer <span aria-hidden="true">/</span> evidence before inference</p><p id="updated-at">Waiting for a snapshot</p></footer>

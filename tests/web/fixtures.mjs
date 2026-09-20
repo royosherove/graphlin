@@ -1,3 +1,7 @@
+export function connectionInfo(overrides = {}) {
+  return { projectRoot: '/fixture/Notes project', mode: 'live', instructions: [], notes: [], ...overrides };
+}
+
 export function reference(overrides = {}) {
   return {
     artifactId: 'artifact-1', hash: 'a'.repeat(64), generation: 1,

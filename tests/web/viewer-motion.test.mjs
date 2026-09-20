@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { startViewer, graphBounds, graphEdgeRoutes, normalizeGraph, sanitizedExport, SHAPE_NAMES, THEME_NAMES } from '../../runtime/web/app.js';
 import { sketchOutline, sketchDetails, sketchConnection } from '../../runtime/web/sketch.js';
 import { createDocument } from './fake-dom.mjs';
-import { snapshot, graph, node } from './fixtures.mjs';
+import { snapshot, graph, node, connectionInfo } from './fixtures.mjs';
 import { captureDemoStream } from './demo-stream-fixture.mjs';
 
 async function harness(initial = snapshot()) {
@@ -53,6 +53,7 @@ async function harness(initial = snapshot()) {
   globalThis.clearTimeout = id => timers.delete(id);
   globalThis.fetch = async (url, options) => {
     requests.push({ url, options });
+    if (url === '/api/connection-info') return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify(connectionInfo()) };
     if (url === '/api/control') {
       const command = JSON.parse(options.body);
       if (command.action === 'session') current = { ...current, sessionId: command.sessionId };
@@ -250,7 +251,7 @@ test('all eight themes recolor a live view without rebuilding geometry, evidence
     h.send({ ...h.current, theme: 'sunset', graph: { ...h.current.graph, theme: 'ocean' } });
     assert.equal(h.$('drawing').dataset.theme, 'midnight', 'snapshots cannot supply presentation tokens');
     assert.deepEqual(nodes.map(sketchGroup), outlines);
-    assert.equal(h.requests.length, 1, 'theme changes never make service calls');
+    assert.deepEqual(h.requests.map(request => request.url), ['/api/state', '/api/connection-info'], 'theme changes never make service calls');
     assert.deepEqual(initial, unchanged);
     assert.deepEqual(sanitizedExport(h.current), exported, 'presentation cannot enter canonical JSON exports');
   } finally { h.close(); }
@@ -646,7 +647,7 @@ test('shape overrides and arrangements stay in their session/live/replay scopes 
     h.send({ ...h.current, sessionId: 'session-1' });
     assert.equal(nodeGroup(h, 'Notes API').dataset.shape, 'component', 'returning to a session restores its bounded in-memory override');
     assert.equal(h.$('layout').value, 'original');
-    assert.equal(h.requests.some(request => !['/api/state'].includes(request.url)), false, 'presentation controls never write to the service');
+    assert.equal(h.requests.some(request => !['/api/state', '/api/connection-info'].includes(request.url)), false, 'presentation controls never write to the service');
   } finally { h.close(); }
 });
 

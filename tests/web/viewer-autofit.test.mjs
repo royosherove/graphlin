@@ -94,6 +94,7 @@ async function harness(initial = snapshot(), size = { width: 920, height: 510 })
   globalThis.setTimeout = (callback, duration = 0) => { const id = ++nextId; timers.set(id, { callback, at: now + duration }); return id; };
   globalThis.clearTimeout = id => timers.delete(id);
   globalThis.fetch = async url => {
+    if (url === '/api/connection-info') return new Response(JSON.stringify({ projectRoot: '/fixture/Notes project', instructions: [] }));
     assert.equal(url, '/api/state');
     return new Response(JSON.stringify(current));
   };

@@ -192,6 +192,19 @@ h1 { font-size: clamp(27px, 2.3vw, 36px); letter-spacing: -1px; font-weight: 650
 .empty-canvas { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 40px; pointer-events: none; }
 .empty-canvas h3 { font-size: 24px; letter-spacing: -.6px; font-weight: 600; margin: 20px 0 9px; }
 .empty-canvas p { color: var(--muted); max-width: 46ch; font-size: 13px; }
+.orientation { pointer-events: auto; max-width: 46ch; margin-top: 18px; }
+.orientation blockquote { margin: 8px 0 12px; font-size: 13px; line-height: 1.5; user-select: text; }
+.orientation button { font-size: 12px; }
+#orientation-copy-status { min-height: 1.5em; margin-top: 8px; font-size: 11px; }
+.onboarding { padding: 17px; border-bottom: 1px solid var(--line); }
+.onboarding h2 { font-size: 14px; }
+.onboarding-progress { list-style: none; padding: 0; margin: 12px 0; font-size: 12px; }
+.onboarding-progress li { display: flex; align-items: baseline; gap: 8px; margin: 7px 0; }
+.onboarding-progress li::before { content: "○"; color: var(--muted); flex: 0 0 12px; }
+.onboarding-progress li[data-state="observed"]::before { content: "✓"; color: var(--teal); }
+.onboarding-progress li[data-state="unverified"]::before { content: "?"; color: var(--amber); }
+.onboarding-next { font-size: 12px; line-height: 1.5; margin: 12px 0; }
+.onboarding button { font-size: 12px; }
 .empty-map { display: flex; align-items: center; opacity: .8; }
 .empty-map i { width: 41px; height: 30px; border: 1.5px dashed #7999c3; border-radius: 6px; background: var(--paper); }
 .empty-map i:last-child { height: 38px; width: 31px; border-radius: 50% / 14%; }
@@ -373,7 +386,7 @@ h1 { font-size: clamp(27px, 2.3vw, 36px); letter-spacing: -1px; font-weight: 650
 .scrubber output { font-size: 11px; white-space: nowrap; min-width: 60px; color: var(--muted); font-variant-numeric: tabular-nums; }
 #replay-note { font-size: 10px; color: var(--muted); text-align: right; }
 .activity-section { padding-top: 24px; }
-.activity-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+.activity-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 13px; }
 .activity-heading h2 { font-size: 17px; letter-spacing: -.3px; font-weight: 600; }
 .activity-heading p { font-size: 11px; color: var(--muted); margin-top: 3px; }
 #activity-count { color: var(--muted); font-size: 11px; }
