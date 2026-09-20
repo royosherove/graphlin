@@ -31,5 +31,6 @@ jobs:
       # Graphlin has no external dependencies or lockfile.
       - run: npm run validate
       - run: npm test
+        timeout-minutes: 3
       - run: npm run build
       - run: npm run pack:check

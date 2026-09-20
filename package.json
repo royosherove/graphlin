@@ -13,7 +13,7 @@
   "scripts": {
     "start": "node scripts/graphlin.mjs start",
     "demo": "node scripts/graphlin.mjs demo",
-    "test": "node --test",
+    "test": "node --test --test-timeout=30000",
     "build": "node scripts/build-packages.mjs",
     "doctor": "node scripts/graphlin.mjs doctor",
     "eval:jev": "node scripts/evaluate-jev.mjs",

@@ -346,6 +346,10 @@ test('queued source is superseded, fully reread, and rebuilt while missing files
 });
 
 test('the waiting queue is bounded and expired observations drain without remote calls or pending leaks', async t => {
+  // Queue age uses the injected clock below. Freeze the separate active-job
+  // watchdog while filling the queue: filesystem speed on a busy CI runner
+  // must not release the two deliberately gated jobs before these assertions.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   // Explicit reads can discover source names outside the automatic extension list.
   const files = Object.fromEntries(Array.from({ length: 68 }, (_, index) =>
     [`source${index}.txt`, `export function component${index}() { return 1; }\n`]));
