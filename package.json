@@ -2,7 +2,7 @@
   "name": "graphlin",
   "version": "0.1.0",
   "description": "Live architecture and activity diagrams from observable coding-agent work.",
-  "private": true,
+  "private": false,
   "type": "module",
   "engines": {
     "node": ">=22.14.0"

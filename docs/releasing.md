@@ -1,13 +1,12 @@
 # Releasing Graphlin
 
-Graphlin is being prepared for a public, MIT-licensed npm release under the
+Graphlin is a public, MIT-licensed npm package under the
 unscoped name `graphlin`. The CLI is `graphlin`. The release repository must be
 the public `royosherove/graphlin`. Preparing these files does not
 create the repository, reserve the npm name, publish a package, or authorize
 changing repository visibility.
 
-`package.json` intentionally remains `private: true`. Public release requires
-an explicit change to `private: false`, a public repository, and the repository
+Public release requires `package.json` to have `private: false`, a public repository, and the repository
 Actions variable `NPM_PUBLISH_ENABLED=true`. The release guard rejects missing
 settings, other repositories, private repositories, other branches, tags,
 and inconsistent package versions. Keep the variable unset or `false` until

@@ -74,7 +74,7 @@ or diagnosing the viewer. For an explicit setup/install request, guide the user
 to run this in their own project terminal:
 
 ```sh
-npx --yes --package=github:royosherove/graphlin graphlin init
+npx --yes graphlin@latest init
 ```
 
 The guided CLI detects Claude/Codex, installs through native host CLIs, asks for

@@ -8,16 +8,16 @@ A local plugin for live architecture and activity diagrams while a coding agent 
 
 *A close-up from the offline demo. [See the full diagram](images/graphlin-overview.png).*
 
-**Development preview.** Graphlin is not published to npm yet. Use the GitHub
-package command below or a checkout. The repository includes CI, plugin packaging, and a gated npm release
-workflow; see [releasing](releasing.md) for the remaining publication setup.
+**Development preview.** Install from npm with the command below, or use a
+checkout. Releases pass the full CI matrix; see [releasing](releasing.md) for
+the publishing workflow.
 
 ## Guided setup
 
 In your project's terminal:
 
 ```sh
-npx --yes --package=github:royosherove/graphlin graphlin
+npx --yes graphlin@latest
 ```
 
 The first run detects host CLIs. If only one is available it selects that host;
@@ -51,7 +51,7 @@ Source-enabled `init` also saves an environment-provided key for later launches.
 `TYPESAFE_API_KEY` overrides the saved key; an explicitly empty value disables
 the saved key, so unset it to use the saved credential.
 
-To replace an expired or incorrect saved key, run the GitHub package command
+To replace an expired or incorrect saved key, run the npm command
 with `init --replace-key`, or `node scripts/graphlin.mjs init --replace-key`
 from a checkout. Replacement uses the masked terminal prompt; no command-line
 key value is accepted. Restart the viewer to load the new key. Use `doctor`
@@ -61,7 +61,7 @@ Non-interactive commands never wait for Graphlin prompts. Specify a host and
 source choice explicitly, for example:
 
 ```sh
-npx --yes --package=github:royosherove/graphlin graphlin init --host codex --no-source
+npx --yes graphlin@latest init --host codex --no-source
 ```
 
 A pending installation can resume from the bare command using already saved
@@ -85,13 +85,13 @@ The next bare Graphlin run resumes unfinished hosts, including a partially
 completed first installation. Existing keys and Graphlin history remain.
 
 To reopen the viewer with a fresh one-use browser URL, use `graphlin open`
-(or append `open` to the GitHub package command). It starts a detached viewer
+(or append `open` to the npm command). It starts a detached viewer
 if needed. Use `graphlin stop` to stop it.
 
 ## Uninstall
 
 ```sh
-npx --yes --package=github:royosherove/graphlin graphlin uninstall
+npx --yes graphlin@latest uninstall
 ```
 
 This removes Graphlin from the recorded hosts **for all projects**. Use

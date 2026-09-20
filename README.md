@@ -6,7 +6,7 @@ Live architecture diagrams while **Claude Code or Codex** explores and builds yo
 
 ## Get started
 
-**You need:** macOS or Linux, Node.js 22.14+, Git, and Claude Code or Codex CLI.
+**You need:** macOS or Linux, Node.js 22.14+, and Claude Code or Codex CLI.
 Source classification also needs a TypeSafe API key; metadata mode needs no key.
 
 ### 1. Start the viewer
@@ -14,7 +14,7 @@ Source classification also needs a TypeSafe API key; metadata mode needs no key.
 In your project's terminal:
 
 ```sh
-npx --yes --package=github:royosherove/graphlin graphlin
+npx --yes graphlin@latest
 ```
 
 Graphlin asks which host to install, offers **source or metadata** mode for this
@@ -22,7 +22,6 @@ project, and accepts your key at a **masked prompt** if needed. It stores the ke
 privately and builds stable plugins outside the npm cache. The browser opens
 automatically. Keep this terminal running; **Ctrl+C** stops the viewer.
 
-This command installs from GitHub. Graphlin is **not published to npm** yet.
 Source mode permits locally filtered source excerpts, user prompts, and public
 agent messages to be sent to TypeSafe for classification.
 
@@ -52,7 +51,7 @@ Watch the diagram populate as it explores. On later runs, repeat step 1 and
 launch your agent; Graphlin reuses the saved setup. Use the printed agent command
 if you selected a custom data directory.
 
-For setup alone, append `init` to the GitHub command. Append `uninstall` to remove
+For setup alone, append `init` to the command. Append `uninstall` to remove
 Graphlin's host plugins across projects while keeping your saved key and history.
 
 ## Just looking?
@@ -60,7 +59,7 @@ Graphlin's host plugins across projects while keeping your saved key and history
 Try the offline demo—no key or agent required:
 
 ```sh
-npx --yes --package=github:royosherove/graphlin graphlin demo
+npx --yes graphlin@latest demo
 ```
 
 ## More
