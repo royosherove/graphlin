@@ -1,16 +1,23 @@
 # Releasing Graphlin
 
 Graphlin is being prepared for a public, MIT-licensed npm release under the
-unscoped name `graphlin`. The CLI is `graphlin`. The intended repository is
-`royosherove/graphlin`, initially **private**. Preparing these files does not
+unscoped name `graphlin`. The CLI is `graphlin`. The release repository must be
+the public `royosherove/graphlin`. Preparing these files does not
 create the repository, reserve the npm name, publish a package, or authorize
 changing repository visibility.
 
 `package.json` intentionally remains `private: true`. Public release requires
 an explicit change to `private: false`, a public repository, and the repository
 Actions variable `NPM_PUBLISH_ENABLED=true`. The release guard rejects missing
-settings, other repositories, private repositories, and mismatched tags.
-Leave the variable unset throughout private development.
+settings, other repositories, private repositories, other branches, tags,
+and inconsistent package versions. Keep the variable unset or `false` until
+publication is separately authorized and the maintainer has configured the
+`npm` environment secret `NPM_TOKEN`. This preparation neither supplies a
+token nor enables publishing.
+
+After activation, a push or merge to `main` runs the complete CI matrix and
+publishes a new package version only if every check succeeds. An already
+published version is a successful no-op. Tags do not trigger publication.
 
 ## Verify a candidate locally
 
@@ -29,9 +36,16 @@ npm pack --dry-run
 run `npm test` separately for the full test suite.
 
 CI runs validation, the full tests, plugin builds, and npm tarball checks on
-Node.js 22, 24, and 26 on Linux and macOS. As of September 20, 2026, Node 22
-and 24 are supported LTS lines and Node 26 is Current; release jobs use Node 24.
-Update the matrix as Node support changes.
+Node.js 22, 24, and 26 on Linux and macOS: all six combinations are required.
+Release jobs use Node 24 and npm 11.17.0. Update the matrix as Node support changes.
+
+`ci.yml` handles pull requests, pushes to branches other than `main`, and its
+own manual test runs. `release.yml` handles pushes to `main` and calls that
+same `ci.yml` from the same commit, including every matrix check. This avoids
+running a second copy of CI on main. CI still runs while publication is
+disabled or the package is private. All checkouts use the event's exact
+`github.sha`, including the publish checkout; they do not pick up a newer
+main commit after an approval delay.
 
 These development and release npm scripts require a source checkout. Generated
 plugin packages expose only their runnable controls and validation commands.
@@ -71,44 +85,51 @@ These are maintainer actions for when public release is authorized:
    npm provenance does not support private source repositories, even for public
    npm packages; this project's workflow deliberately blocks such publication.
 2. Confirm control or availability of the unscoped npm name `graphlin`.
-   Configure the publishing account and its two-factor authentication using
-   npm's current account flow. No npm name has been reserved by this preparation.
-3. Change `package.json` to `private: false` and keep all four versions equal:
-   `package.json`, `plugin.json`, `.claude-plugin/plugin.json`, and
-   `.codex-plugin/plugin.json`. Run the candidate checks above.
-4. If `graphlin` does not exist on npm yet, bootstrap the real initial version
-   with a separately authorized interactive publication of a reviewed
-   tarball. The documented trusted-publisher setup starts in an existing
-   package's Settings page. Use npm's browser login/2FA flow; never store or
-   share credentials in this repository, command arguments, or workflow logs.
-   The initial interactive publication consumes that version and does not
-   carry this GitHub workflow's provenance. Configure OIDC afterward and use
-   a new version for the first automated release.
-5. In the npm package Settings → Trusted Publisher, choose GitHub Actions and
-   configure these exact values:
+   Configure the publishing account and two-factor authentication. Create a
+   granular token with **Read and write (publish and stage)** package access
+   and **Bypass 2FA** enabled for noninteractive publication. Limit access to
+   the required package where possible and rotate it before expiration.
+   Stage-only and read-only tokens cannot run this workflow's direct
+   `npm publish`. Legacy tokens are no longer supported.
+3. Create the GitHub Actions environment named `npm`. Under deployment
+   restrictions choose **Selected branches and tags**, add a **Branch**
+   rule for exactly `main`, and allow no tags or other branches. Configure
+   required reviewers if releases should wait for approval. Restrict who
+   can change the workflow, environment, and repository variables. Protect
+   `main` with the complete CI checks required before merge; select the
+   actual check names shown by GitHub after the workflows have run.
+4. When ready, the maintainer adds the token directly in GitHub:
+   **Settings → Environments → npm → Environment secrets → Add secret**,
+   name **`NPM_TOKEN`**. Never put the value in chat, source files, command
+   arguments, or logs. Do not create a repository-wide duplicate. The
+   workflow maps this secret to `NODE_AUTH_TOKEN` only in the final publish
+   step; `actions/setup-node` configures the registry authentication reference.
+   No token is passed to CI, guard, build, package smoke, or registry lookup.
+5. In a separately reviewed change, set `package.json` to `private: false`
+   and keep all four versions equal: `package.json`, `plugin.json`,
+   `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json`. Choose a
+   stable version that has never been published and run the candidate checks.
+   The workflow never changes `private`, bumps versions, or edits manifests.
+6. After setup and authorization, set the **repository Actions variable**
+   `NPM_PUBLISH_ENABLED` to the exact string `true`. Keep this variable at
+   repository level so the guard can read it before entering the environment.
+   Do not shadow it with an environment variable. Merge the reviewed release
+   candidate to `main`, or use the manual release procedure below.
 
-   | Field | Value |
-   | --- | --- |
-   | Organization or user | `royosherove` |
-   | Repository | `graphlin` |
-   | Workflow filename | `release.yml` |
-   | Environment name | `npm` |
-   | Allowed actions | Explicitly permit direct `npm publish` |
+The first version can use this same token workflow if the account and token
+permit creating `graphlin`; no OIDC bootstrap publication is required. A
+missing package lookup does not reserve the name or prove publishing rights.
+Keep npm package access compatible with granular tokens; selecting
+“disallow tokens” conflicts with this release plan. Do not configure an npm
+trusted publisher as part of the token setup: npm can prefer OIDC when a
+matching trusted publisher exists.
 
-   Enter only the workflow filename, including `.yml`. Values are case-sensitive.
-   The environment name must match the publish job. New trusted publishers
-   created after September 3, 2026 default to staged publication; this workflow
-   uses direct publication, so that additional allowed action is required.
-   npm does not validate this configuration when it is saved.
-6. Create the GitHub Actions environment `npm`. Configure required reviewers and
-   deployment tag restrictions for stable `v*` tags. Protect the default branch
-   and release tags, and restrict who can change the release workflow and
-   environment settings. Set the repository Actions variable
-   `NPM_PUBLISH_ENABLED` to the exact string `true` after setup is complete.
-7. Once OIDC publishing works, npm recommends package publishing access
-   “Require two-factor authentication and disallow tokens.” Trusted publishing
-   continues to work with that setting. Do not add `NPM_TOKEN` or
-   `NODE_AUTH_TOKEN` secrets to this workflow.
+**Token publishing deadline:** npm's documentation checked September 20,
+2026 says direct publishing with granular access tokens will be removed in
+January 2027. The requested token pipeline works with the current direct
+publish model. Before that deadline, maintainers must explicitly migrate
+to trusted publishing or a staged token publication workflow with maintainer
+approval. No migration is enabled by this preparation.
 
 GitHub pushes, pulls, and authenticated GitHub CLI commands must follow
 `AGENTS.md` and any local instructions it references. Use the authorized
@@ -118,39 +139,101 @@ Local operational configuration and credentials are excluded from npm.
 ## Release an established package
 
 1. Choose a new stable semantic version. Update all four version fields together
-   and run the candidate checks. This workflow does not publish prereleases or
-   build-metadata versions.
-2. Review and commit the candidate. From the authorized publication environment, push the
-   matching tag `v<version>` pointing to that reviewed commit. For example,
-   package version `0.2.0` requires exactly `v0.2.0`.
-3. `release.yml` checks the repository, public visibility, release variable,
-   package metadata, and exact tag/version equality before running the full CI
-   matrix. Publication only proceeds after all checks and any `npm` environment
-   approval. Failed checks do not publish.
-4. The publish job rebuilds and checks the candidate on a GitHub-hosted Ubuntu
-   runner, then calls `npm publish --access public --provenance`. The job alone
-   receives `id-token: write`; it uses no stored npm token and disables package
-   caching. It uses npm 11.17.0, which satisfies npm's documented OIDC minimum
-   of npm 11.5.1 and Node 22.14.0.
-5. Verify the new version and provenance on npm. To stop future automatic
-   releases, unset `NPM_PUBLISH_ENABLED`. An already published version cannot be
-   reused; do not move an existing release tag to hide a failed candidate.
+   **before merging** and run the candidate checks. For example, change all
+   four `0.1.0` versions to `0.2.0`. The workflow does not publish prereleases
+   or build-metadata versions. npm versions are immutable, including after
+   unpublishing; a code change at an existing version cannot replace it.
+2. Review and merge the candidate to `main` (or make an authorized direct push).
+   No tag is required. `release.yml` runs the full reusable CI matrix first.
+   Failed, cancelled, or skipped required checks block guard and publication.
+3. After CI succeeds, the guard requires the exact public repository, a
+   `push` or `workflow_dispatch` event on `refs/heads/main`, the enabled
+   variable, `private: false`, matching stable versions, and validated package
+   metadata and contents. Pull requests, forks, tags, and other branches
+   cannot pass these gates.
+4. After any `npm` environment approval, the publish job repeats the release
+   guard, builds the plugins, and checks the tarball and installed CLI. It
+   then checks public npm registry metadata without credentials:
 
-The workflow builds from the checked-out tag. It does not create a GitHub
-repository, release, tag, or commit, and does not change repository visibility.
-Its `npm publish` operation is an actual public release when all gates permit it.
+   | Registry result | Workflow behavior |
+   | --- | --- |
+   | Exact version exists, even if `latest` differs | Success; skip publishing without needing the token |
+   | Valid package metadata lacks the version | Attempt publication |
+   | Registry confirms package missing with JSON `Not found` and HTTP 404 | Attempt initial publication |
+   | Authentication/rate-limit/server error, timeout, redirect, invalid response, or known unpublished version | Fail; do not publish |
+
+5. For a new version only, the final step requires `NPM_TOKEN` and runs
+   `npm publish --access public --provenance --ignore-scripts` against the
+   public npm registry. Validation has already run explicitly; lifecycle
+   scripts are disabled during the operation receiving the token.
+   Only the publish job receives `id-token: write`, for provenance signing.
+   Registry authentication uses the configured npm token. Package caching
+   and persisted checkout credentials are disabled.
+6. Verify the version and provenance on npm. A registry or publish error is
+   reported as failure, never converted to success or assumed version
+   absence. If another publisher wins a race after the lookup, this run
+   fails; a rerun detects the now-published version and becomes a no-op.
+
+The release concurrency group serializes release runs and does not cancel an
+active run. GitHub may replace an older pending run when newer runs queue;
+do not use this pipeline as a guarantee that every intermediate commit becomes
+a release. Keep the intended version bump in the current main candidate.
+
+For a manual retry, open **Actions → Release npm → Run workflow**, select
+**main**, and run. The workflow must exist on the default branch for manual
+dispatch. Selecting another branch or tag cannot publish. A manual run
+repeats the full CI matrix and every release gate for its selected commit.
+Running the separate **CI** workflow manually only runs checks.
+
+To stop future publication, unset `NPM_PUBLISH_ENABLED` or set it to `false`.
+Also cancel pending or active release runs when stopping an in-progress
+release; changing configuration cannot recall a completed npm publication.
+
+The workflow does not create a GitHub repository, release, tag, or commit,
+and does not change repository visibility. Once explicitly enabled, its
+publish step performs a real public npm release.
+
+## Optional future OIDC migration
+
+Trusted publishing is a separate future change, not a prerequisite for
+`NPM_TOKEN`. Preserve the same CI, main-branch, environment, metadata, and
+registry gates. Configure npm's GitHub trusted publisher for user
+`royosherove`, repository `graphlin`, workflow `release.yml`, and environment
+`npm`, explicitly allowing direct `npm publish`. Then review a workflow
+change removing the required token check and token mapping. Retain the
+publish job's `id-token: write`. Verify the migration before revoking the
+token or disallowing token publication. npm's current OIDC minimum is
+npm 11.5.1 and Node 22.14.0; the pinned release runtime satisfies it.
 
 ## Official references
 
 Verified against official documentation on September 20, 2026:
 
-- [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) — supported
-  runners, CLI requirements, exact publisher fields, allowed actions, OIDC,
-  provenance, and publishing access.
+- [npm access tokens](https://docs.npmjs.com/about-access-tokens/) — granular
+  permissions, stage-only restrictions, and the January 2027 direct-publish
+  token deadline.
+- [npm CI/CD tokens](https://docs.npmjs.com/using-private-packages-in-a-ci-cd-workflow/) —
+  granular write tokens, bypass 2FA, and secret storage.
+- [GitHub npm publication](https://docs.github.com/en/actions/tutorials/publish-packages/publish-nodejs-packages) —
+  `setup-node`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, and provenance.
+- [GitHub environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments) —
+  environment secrets, branch restrictions, and required reviewers.
+- [GitHub reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows) —
+  same-commit local workflow reuse.
+- [GitHub workflow triggers](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow) —
+  branch filters, manual dispatch, and dependency gates.
+- [GitHub concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency) —
+  running and pending workflow behavior.
+- [npm publish](https://docs.npmjs.com/cli/v11/commands/npm-publish/) —
+  immutable name/version combinations and public publication.
+- [npm lifecycle configuration](https://docs.npmjs.com/cli/v11/using-npm/config/#ignore-scripts) —
+  disabling package lifecycle scripts during publication.
+- [npm registry API](https://github.com/npm/registry/blob/main/docs/REGISTRY-API.md) —
+  public package and version metadata.
+- [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) — future
+  migration, CLI requirements, and OIDC authentication precedence.
 - [npm provenance](https://docs.npmjs.com/generating-provenance-statements/) —
   public repository metadata, attestations, and provenance limitations.
 - [npm package.json](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/) —
   the `files` allowlist, automatic README/LICENSE inclusion, `bin`, `private`,
   and `publishConfig`.
-- [Node.js releases](https://nodejs.org/en/about/previous-releases) — supported
-  runtime release lines.

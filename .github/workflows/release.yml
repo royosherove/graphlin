@@ -2,7 +2,8 @@ name: Release npm
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,13 +13,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Run every CI matrix check even while publication is disabled.
+  checks:
+    uses: ./.github/workflows/ci.yml
+
   guard:
+    needs: checks
+    if: >-
+      needs.checks.result == 'success' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.repository == 'royosherove/graphlin' &&
+      github.event.repository.private == false &&
+      vars.NPM_PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
@@ -27,13 +41,13 @@ jobs:
         env:
           NPM_PUBLISH_ENABLED: ${{ vars.NPM_PUBLISH_ENABLED }}
 
-  checks:
-    needs: guard
-    uses: ./.github/workflows/ci.yml
-
   publish:
     needs: [guard, checks]
     if: >-
+      needs.guard.result == 'success' &&
+      needs.checks.result == 'success' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.repository == 'royosherove/graphlin' &&
       github.event.repository.private == false &&
       vars.NPM_PUBLISH_ENABLED == 'true'
@@ -42,22 +56,36 @@ jobs:
     environment: npm
     permissions:
       contents: read
+      # Used for provenance; npm authentication uses NPM_TOKEN below.
       id-token: write
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      # OIDC requires npm >=11.5.1 and Node >=22.14.0.
+      # Keep the publishing CLI reproducible.
       - run: npm install --global npm@11.17.0 --ignore-scripts --no-audit --no-fund
       - run: npm run release:check
         env:
           NPM_PUBLISH_ENABLED: ${{ vars.NPM_PUBLISH_ENABLED }}
       - run: npm run build
       - run: npm run pack:check
-      - name: Publish with npm OIDC and provenance
-        run: npm publish --access public --provenance
+      - name: Check whether this exact version is already published
+        id: registry
+        run: node .github/scripts/check-npm-version.mjs
+      - name: Publish new version with npm token and provenance
+        if: steps.registry.outputs.publish == 'true'
+        shell: bash
+        run: |
+          if [[ -z "${NODE_AUTH_TOKEN}" ]]; then
+            echo "::error::Configure NPM_TOKEN in the npm environment before enabling publication."
+            exit 1
+          fi
+          npm publish --access public --provenance --ignore-scripts --registry=https://registry.npmjs.org/
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

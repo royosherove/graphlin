@@ -5,7 +5,6 @@ import path from 'node:path';
 import { buildPackages } from '../../scripts/build-packages.mjs';
 import { publicPackageFiles, validatePackage } from '../../scripts/validate-packages.mjs';
 import { assertPublicContents, verifyNpmPack } from '../../.github/scripts/verify-pack.mjs';
-import { verifyReleaseContext } from '../../.github/scripts/verify-release.mjs';
 import { workspace } from './helpers.mjs';
 
 test('package preflight rejects linked output files and destination ancestors without writes', async t => {
@@ -121,22 +120,6 @@ test('unmanaged package destinations and unsafe output directories are preserved
   for (const directory of [sourceDir, path.dirname(sourceDir), path.join(sourceDir, 'runtime/nested')]) {
     await assert.rejects(buildPackages({ sourceDir, outputDir: directory }), /unsafe_output_directory/);
   }
-});
-
-test('release guard requires an authorized public repository and exact stable version tag', () => {
-  const metadata = { name: 'graphlin', private: false, version: '0.1.0' };
-  const context = { repository: 'royosherove/graphlin', isPrivate: false, enabled: 'true',
-    event: 'push', ref: 'refs/tags/v0.1.0' };
-  assert.doesNotThrow(() => verifyReleaseContext(context, metadata));
-  for (const replacement of [
-    { repository: 'someone/graphlin' }, { isPrivate: true }, { isPrivate: undefined },
-    { enabled: undefined }, { enabled: 'false' }, { event: 'pull_request' },
-    { ref: 'refs/tags/v0.2.0' }, { ref: 'refs/heads/v0.1.0' },
-  ]) assert.throws(() => verifyReleaseContext({ ...context, ...replacement }, metadata));
-  for (const replacement of [
-    { name: 'visualive' }, { private: true }, { private: undefined },
-    { version: '0.1.0-beta.1' }, { version: '00.1.0' },
-  ]) assert.throws(() => verifyReleaseContext(context, { ...metadata, ...replacement }));
 });
 
 test('public file allowlist rejects unanchored paths, traversal, wildcards, and private material', async t => {

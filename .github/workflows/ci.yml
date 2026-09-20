@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    # main runs this entire workflow through release.yml before publishing.
+    branches: ['**', '!main']
   pull_request:
   workflow_call:
   workflow_dispatch:
@@ -24,6 +25,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
