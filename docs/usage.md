@@ -60,6 +60,13 @@ task's changes; discovery of existing code is not automatically creation.
 Search with `/`, clear with Escape, and turn off **Follow agent** to explore
 without camera movement.
 
+After the source scan, Graphlin automatically discovers application and component
+boundaries for C4. This requires source-transmission consent and a configured
+decision provider. In the live C4 view, choose **Discover architecture** to run
+discovery again. As source edits are observed, Graphlin updates affected boundaries
+incrementally. Architecture documents are optional; unsupported or ambiguous
+boundaries remain unknown.
+
 [View controls and limitations](visualizer-views.md) ·
 [Install or author a visualizer](extension-authoring.md) ·
 [Local read API](model-api.md) · [Replace the decision provider](decision-service.md)

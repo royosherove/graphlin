@@ -19,6 +19,7 @@ import { exportSnapshot } from './export.mjs';
 import { createDiagnostics } from './diagnostics.mjs';
 import { createDashboardInfoProvider } from './dashboard-info.mjs';
 import { createLineageReader } from './lineage.mjs';
+import { ARCHITECTURE_PROFILES } from '../architecture/profile.mjs';
 
 const WEB = new URL('../web/', import.meta.url);
 const assets = new Map([
@@ -164,11 +165,11 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
     // Test/demo services are injected; this module never logs request bodies.
     const service = decisionService ?? createDecisionService({
       provider: decisionProvider ?? createJevProvider({ apiKey }),
-      materializeBundle, buildRelationProposals,
+      materializeBundle, buildRelationProposals, profiles: ARCHITECTURE_PROFILES,
       limits: { eventDeadlineMs: 5000 },
     });
     pipeline = createPipeline({ projectRoot: paths.projectRoot, policy, decisionService: service,
-      classificationDeadlineMs: 5000,
+      classificationDeadlineMs: 5000, missingKey,
       mode, restoredState: await persistence.load(), restoredModel: await modelPersistence.load(),
       onChange: notify, onDiagnostic: diagnostics.record });
     modelAPI = createModelAPI({ projectId: paths.projectId, getSnapshot: pipeline.getModelState,
@@ -218,6 +219,14 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
           return;
         }
         if (!auth.authorized(req)) return json(res, 401, { error: 'authentication_required' });
+        if (req.method === 'GET' && req.url === '/api/architecture') {
+          return json(res, 200, pipeline.getArchitectureStatus());
+        }
+        if (req.method === 'POST' && req.url === '/api/architecture/discover') {
+          const input = await bodyJSON(req);
+          if (Object.keys(input).length) return json(res, 400, { error: 'invalid_input' });
+          return json(res, 202, pipeline.discoverArchitecture());
+        }
         if (req.method === 'GET' && req.url === '/api/about') {
           try { return json(res, 200, await dashboardInfo()); }
           catch { return json(res, 503, { error: 'dashboard_info_unavailable' }); }

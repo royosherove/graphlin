@@ -1,6 +1,6 @@
 {
   "name": "graphlin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Local architecture and activity diagrams from observable coding-agent work.",
   "author": {
     "name": "Graphlin contributors"

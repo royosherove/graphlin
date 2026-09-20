@@ -131,6 +131,7 @@
                 <option value="context">Context</option><option value="applications" selected>Applications / datastores</option>
                 <option value="components">Components</option><option value="code">Code</option>
               </select></label>
+              <button id="architecture-discover" type="button" aria-describedby="architecture-status" hidden>Discover architecture</button>
               <label id="baseline-label" hidden>Baseline <select id="task-baseline"><option value="">Choose checkpoint</option></select></label>
               <button id="baseline-create" type="button" hidden>Set baseline now</button>
               <label>Position <select id="model-position"><option value="">Live</option></select></label>
@@ -142,6 +143,7 @@
                 <button id="analysis-access" type="button">Manage access</button>
               </div>
             </div>
+            <p id="architecture-status" class="architecture-status" role="status" aria-live="polite" hidden></p>
             <p class="view-status" id="view-status" role="status" hidden></p>
             <section class="extension-access" id="extension-access" aria-label="Visualizer data access" hidden>
               <p id="extension-access-description"></p>

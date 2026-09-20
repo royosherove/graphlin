@@ -3,7 +3,7 @@ import { isDeepStrictEqual as equal } from 'node:util';
 import { integer, plain } from '../core/common.mjs';
 import {
   DEFAULT_LIMITS, id, token, label, key, byteSize, relativePath, currentPolicy,
-  references, classification, entityRecord, relationRecord, interpretationRecord, certificate,
+  references, classification, entityRecord, relationRecord, interpretationRecord, interpretationNamespace, certificate,
   activityRecord, lineageRecord, projectSnapshot, time,
 } from './records.mjs';
 import { compareCheckpoint } from './changes.mjs';
@@ -157,6 +157,31 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
     if (!entities.has(relation.source) || !entities.has(relation.target)) return false;
     const accepted = put(relations, relation.id, relation, limits.relations, 'relations');
     if (!accepted) deferred.relations++;
+    return accepted;
+  }
+  function admitInterpretation(record) {
+    const old = interpretations.get(record.id), victims = [];
+    const delta = byteSize(record) - (weights.get(old) ?? 0);
+    let reclaimed = 0;
+    const fits = () => interpretations.size + (old ? 0 : 1) - victims.length <= limits.interpretations &&
+      bytes + historyBytes + delta - reclaimed <= limits.bytes;
+    if (record.namespace === 'graphlin.architecture') {
+      // Make room only when requested. Map order preserves first admission, so
+      // legacy eviction is deterministic and never displaces other boundaries.
+      for (const candidate of interpretations.values()) {
+        if (fits()) break;
+        if (candidate.namespace !== 'graphlin.legacy-role' || candidate.id === record.id) continue;
+        victims.push(candidate.id);
+        reclaimed += weights.get(candidate) ?? 0;
+      }
+    }
+    if (!fits()) { deferred.interpretations++; return false; }
+    for (const victim of victims) {
+      remove(interpretations, victim, 'interpretations');
+      deferred.interpretations++;
+    }
+    const accepted = put(interpretations, record.id, record, limits.interpretations, 'interpretations');
+    if (!accepted) deferred.interpretations++;
     return accepted;
   }
   function appendActivity(event, nextSequence = sequence) {
@@ -534,19 +559,99 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
     }
   }
 
+  function currentInterpretationRefs(refs) {
+    if (!currentRefs(refs)) return false;
+    const effective = currentPolicy(policy);
+    return refs.every(ref => {
+      const artifact = artifacts.get(ref.artifactId), cert = artifact.enumeration;
+      return (!artifact.relativePath || relativePath(artifact.relativePath, effective)) &&
+        (!ref.extractor || ref.extractor === cert?.extractor) &&
+        (!ref.extractorVersion || ref.extractorVersion === cert?.version) &&
+        (!ref.identityVersion || ref.identityVersion === cert?.identityVersion);
+    });
+  }
+  function prepareInterpretation(value) {
+    const record = interpretationRecord(value, limits.refs);
+    if (!record || record.entityIds.some(entityId => !entities.has(entityId))) return null;
+    const current = currentInterpretationRefs(record.sourceRefs) &&
+      record.entityIds.every(entityId => entities.get(entityId).validity === 'current');
+    if (record.support === 'supported' && !current) return null;
+    const storageId = interpretations.get(record.id)?.namespace === record.namespace
+      ? record.id : key('interpretation', projectId, record.namespace, record.id);
+    return { ...record, id: storageId, ...(record.sourceRefs.length && !current
+      ? { validity: 'stale', classification: 'stale' } : {}) };
+  }
+
   function observeInterpretations(values, { event } = {}) {
     if (!Array.isArray(values) || !currentPolicy(policy).readSource) return stats();
+    const before = mutations, oldDeferred = deferred.interpretations;
     for (const value of values.slice(0, limits.interpretations)) {
-      const record = interpretationRecord(value, limits.refs);
-      if (!record || record.entityIds.some(entityId => !entities.has(entityId))) continue;
-      if (record.support === 'supported' && (!currentRefs(record.sourceRefs) ||
-          record.entityIds.some(entityId => entities.get(entityId).validity !== 'current'))) continue;
-      const storageId = key('interpretation', projectId, record.namespace, record.id);
-      const normalized = { ...record, id: storageId, validity: record.sourceRefs.length && !currentRefs(record.sourceRefs) ? 'stale' : record.validity };
-      if (!put(interpretations, storageId, normalized, limits.interpretations, 'interpretations')) deferred.interpretations++;
+      const record = prepareInterpretation(value);
+      if (record) admitInterpretation(record);
     }
-    commit('interpretations.observed', { sessionId: event?.sessionId });
+    if (mutations !== before || oldDeferred !== deferred.interpretations) {
+      commit('interpretations.observed', { sessionId: event?.sessionId });
+    }
     return stats();
+  }
+
+  /**
+   * Replace a namespace, or only records touching the supplied entity/artifact
+   * scope. An explicit empty scope matches nothing; [] withdraws old boundaries.
+   * Batch guards allow up to 256 refs; each stored record still allows 16.
+   * Async callers should supply exact sourceRefs even for an empty answer.
+   * For confirmed missing artifacts, omit present-source refs only after the
+   * caller's serialized epoch/version check; an unguarded clear carries no version.
+   */
+  function replaceInterpretations(namespace, values, options = {}) {
+    const result = (accepted, changed = false, removed = 0, retained = 0) => ({
+      ...stats(), accepted, changed, removed, retained,
+    });
+    if (!interpretationNamespace(namespace) || !Array.isArray(values) || values.length > limits.interpretations ||
+        !plain(options) || !currentPolicy(policy).readSource) return result(false);
+    const scoped = options.affectedEntityIds !== undefined || options.artifactIds !== undefined;
+    const validIds = (values, limit) => Array.isArray(values) && values.length <= limit && values.every(value => id(value));
+    if (!validIds(options.affectedEntityIds ?? [], limits.entities) ||
+        !validIds(options.artifactIds ?? [], limits.artifacts)) return result(false);
+    const affected = new Set(options.affectedEntityIds ?? []), affectedArtifacts = new Set(options.artifactIds ?? []);
+    const matches = record => !scoped || record.entityIds.some(entityId =>
+      affected.has(entityId) || affectedArtifacts.has(entities.get(entityId)?.artifactId)) ||
+      record.sourceRefs.some(ref => affectedArtifacts.has(ref.artifactId));
+    if (options.sourceRefs !== undefined) {
+      const guards = references(options.sourceRefs, 256);
+      if (!guards || !currentInterpretationRefs(guards)) return result(false);
+      const guarded = new Set(guards.map(ref => ref.artifactId));
+      if ([...affectedArtifacts].some(artifactId => !guarded.has(artifactId)) ||
+          [...affected].some(entityId => entities.get(entityId)?.artifactId &&
+            !guarded.has(entities.get(entityId).artifactId))) return result(false);
+    }
+    // Validate the complete bounded answer before treating any omission as a
+    // withdrawal. A malformed or stale answer cannot erase a newer boundary.
+    const incoming = new Map();
+    for (const value of values) {
+      if (!plain(value) || value.namespace !== undefined && value.namespace !== namespace) return result(false);
+      const record = prepareInterpretation({ ...value, namespace });
+      if (!record || record.validity !== 'current' || !matches(record) || incoming.has(record.id) ||
+          record.entityIds.some(entityId => entities.get(entityId).validity !== 'current') ||
+          record.sourceRefs.length && !currentInterpretationRefs(record.sourceRefs)) return result(false);
+      const old = interpretations.get(record.id);
+      if (old && !matches(old)) return result(false);
+      incoming.set(record.id, record);
+    }
+    const before = mutations, oldDeferred = deferred.interpretations;
+    let removed = 0, retained = 0;
+    for (const record of interpretations.values()) {
+      if (record.namespace === namespace && matches(record) && !incoming.has(record.id)) {
+        remove(interpretations, record.id, 'interpretations');
+        removed++;
+      }
+    }
+    for (const record of [...incoming.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
+      if (admitInterpretation(record)) retained++;
+    }
+    const changed = mutations !== before || oldDeferred !== deferred.interpretations;
+    if (changed) commit('interpretations.replaced', { sessionId: options.event?.sessionId });
+    return result(true, changed, removed, retained);
   }
 
   function decisionFreshness(value, sourceRefs, fresh) {
@@ -618,9 +723,7 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
           classification: entity.classification, version: '1', sessionId,
           support: validity !== 'current' ? 'unknown' : entity.classification === 'accepted' ? 'supported' : 'tentative',
         }, limits.refs);
-        if (interpretation && !put(interpretations, interpretation.id, interpretation, limits.interpretations, 'interpretations')) {
-          deferred.interpretations++;
-        }
+        if (interpretation) admitInterpretation(interpretation);
       }
     }
     for (const edge of (Array.isArray(graph.edges) ? graph.edges : []).slice(0, limits.relations)) {
@@ -883,7 +986,7 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
   }
   restore(restoredState);
   return Object.freeze({
-    observeInventory, observeStructure, invalidateArtifacts, observeLegacy, observeInterpretations,
+    observeInventory, observeStructure, invalidateArtifacts, observeLegacy, observeInterpretations, replaceInterpretations,
     recordActivity, setSessions, observeLineage, snapshot, checkpoint, changes, stats,
   });
 }

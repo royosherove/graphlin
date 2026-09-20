@@ -22,6 +22,21 @@ remain usable and the view reports that their responsibilities are unknown.
 Missing interpretation does not trigger a classifier call from the browser.
 The Blocks view does not invent responsibility labels.
 
+**Discover architecture** in C4 asks the local service to discover application
+and component boundaries from current project evidence. It needs the project's
+existing source-transmission consent and a configured classification service;
+it does not request an extension grant or change consent. The status line
+explains missing consent, a missing key, unavailable source, paused
+classification, partial coverage, or a failed analysis.
+Automatic discovery and incremental rechecks are scheduled by the local service.
+
+The browser reads discovery status every two seconds while C4 is open at Live.
+Changing views or entering replay aborts pending status requests and stops
+polling; replay disables the discovery button. Only an explicit button click
+posts a discovery request. Opening C4, switching levels, filtering, and arranging
+do not start analysis from the browser. New supported boundaries arrive through
+the model stream and update the active drawing automatically.
+
 **Set baseline now** creates a named checkpoint through the authenticated host
 API, including the selected session. It is disabled during replay. Selecting a
 retained checkpoint uses the core comparison implementation.
@@ -42,6 +57,21 @@ search while retaining type choices. Filtering arranges and fits the result.
 The inspector's **Open source scope** action and the breadcrumb buttons request
 a bounded source scope. C4 interpretation groups can expand to their supported
 source members.
+
+Application groups start expanded one level, with component groups collapsed
+and independently expandable. Built-in architecture records use canonical
+source anchors. A current, accepted, supported, source-backed
+`graphlin.architecture` interpretation of kind `architecture_membership` links
+exactly two distinct anchors. The renderer identifies their roles from one
+application and one component interpretation, independently of pair order.
+Missing, stale, or ambiguous links do not create a visual parent.
+
+Expanding a component reveals the parsed source subtree beneath its anchor.
+These descendants are a bounded display projection; the viewer does not
+rewrite the model into large unions of membership IDs or evidence references.
+Other extension interpretations retain containment by a unique strict subset
+of recorded members. Equal memberships and multiple possible parent applications
+remain unnested. Source scopes without supported boundaries remain unknown.
 
 Collapsed connections aggregate by source scope, target scope, relation type,
 and validity. Calls and writes remain separate. Internal connections do not
@@ -95,6 +125,8 @@ No launch token is forwarded to a visualizer.
 | `GET /api/model/v1/entities`, `/relations`, `/interpretations`, `/activity`, `/sessions`, `/history` | Revision-bound cursor pages; history supplies checkpoints |
 | `GET /api/model/v1/events` | Snapshot envelopes with the same pages/cursors; optional scope/session |
 | `POST /api/model/v1/checkpoints` | Explicit host action with `label` and optional `sessionId` |
+| `GET /api/architecture` | Built-in architecture discovery status and bounded progress counts |
+| `POST /api/architecture/discover` | Explicit Discover architecture action with `{}`; asynchronous `202` status response |
 | `GET /api/extensions` | Catalog with manifest, digest, current grant, and declared profile descriptors |
 | `POST /api/extensions/grant` | `{id, digest, fields, history, approved, profiles}` |
 | `POST /api/extensions/analysis` | Explicit Run analysis action with `{id, digest, profileId, entityIds, revision}` |
@@ -197,3 +229,12 @@ This explicit check covers the reference views, narrow-screen keyboard use,
 real sandbox frame mounting, profile approval/run, selection, and grant
 revocation during replay. It does not access existing user browser profiles,
 projects, or daemon instances, and is not a privacy certification.
+
+`node tests/web/architecture-browser-check.mjs` uses the same browser environment
+variables to check architecture discovery through the actual daemon. It creates
+temporary source files and uses literal answers from a local fake provider with
+the normal decision service. Boundary records are never seeded. The check covers
+automatic scanning, the authenticated discovery button, an incremental source
+edit delivered through the model stream, nested frame bounds, keyboard controls,
+and replay. Screenshots and a JSON report go to `GRAPHLIN_BROWSER_ARTIFACTS`.
+The generated application's source is parsed but never executed.

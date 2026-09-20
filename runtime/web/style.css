@@ -20,6 +20,8 @@
 .view-context select, .view-context button { max-width: 210px; font-size: 11px; min-height: 28px; padding: 3px 7px; color: var(--ink); background: var(--white); border: 1px solid var(--line); border-radius: 5px; }
 #scope-breadcrumbs { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
 .view-status, .view-coverage { padding: 4px 12px; font-size: 11px; color: var(--muted); }
+.architecture-status { padding: 5px 12px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--line); }
+.view-context #architecture-discover { color: var(--blue); border-color: var(--blue); }
 .extension-access { padding: 12px; border-bottom: 1px solid var(--line); background: var(--paper); font-size: 12px; }
 .extension-access p { max-width: 78ch; margin-bottom: 8px; }
 #extension-fields { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }

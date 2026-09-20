@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { startViewer } from '../../runtime/web/app.js';
 import { createDocument } from './fake-dom.mjs';
 import { snapshot, connectionInfo } from './fixtures.mjs';
-import { model, entity } from './model-fixtures.mjs';
+import { model, entity, ref } from './model-fixtures.mjs';
 
 const settle = async () => { for (let index = 0; index < 30; index++) await Promise.resolve(); };
 async function harness() {
@@ -134,5 +134,47 @@ test('baseline creation includes the selected session and is disabled during che
     assert.equal(h.$('baseline-create').disabled, true);
     await h.$('baseline-create').fire('click'); await settle();
     assert.equal(posts().length, 1);
+  } finally { h.close(); }
+});
+
+test('C4 displays newly supported boundaries from model updates without another discovery request', async () => {
+  const h = await harness();
+  try {
+    await h.choose('graphlin.c4');
+    assert.match(h.$('view-coverage').textContent, /unknown/);
+    await h.send(model({ revision: 2, sequence: 2, interpretations: [{
+      id: 'boundary.live', namespace: 'graphlin.architecture', kind: 'application',
+      label: 'Notes application', entityIds: ['api'], sourceRefs: [ref()],
+      support: 'supported', classification: 'accepted', validity: 'current',
+    }] }));
+    assert.ok(h.$('group-layer').children.some(group => group.getAttribute('aria-label').startsWith('Notes application.')));
+    assert.equal(h.calls.some(([path]) => path === '/api/architecture/discover'), false);
+    assert.equal(h.calls.some(([path]) => path === '/api/extensions/grant'), false);
+  } finally { h.close(); }
+});
+
+test('nested C4 groups sharing a source member expand independently through their stable group IDs', async () => {
+  const h = await harness();
+  try {
+    await h.send(model({ revision: 2, sequence: 2, interpretations: [
+      { id: 'app', namespace: 'example.boundaries', kind: 'application', label: 'Application',
+        entityIds: ['api', 'run', 'store', 'save'], sourceRefs: [ref()],
+        support: 'supported', classification: 'accepted', validity: 'current' },
+      { id: 'component', namespace: 'example.boundaries', kind: 'component', label: 'Component',
+        entityIds: ['api', 'run'], sourceRefs: [ref()],
+        support: 'supported', classification: 'accepted', validity: 'current' },
+    ] }));
+    await h.choose('graphlin.c4');
+    const groups = () => h.$('group-layer').children;
+    const application = () => groups().find(group => group.getAttribute('aria-label').startsWith('Application.'));
+    const component = () => groups().find(group => group.getAttribute('aria-label').startsWith('Component.'));
+    assert.match(application().getAttribute('aria-label'), /Expanded/);
+    assert.match(component().getAttribute('aria-label'), /Collapsed/);
+    await component().querySelector('[aria-label="Expand Component"]').fire('keydown', { key: 'Enter' }); await settle();
+    assert.match(component().getAttribute('aria-label'), /Expanded/);
+    assert.match(application().getAttribute('aria-label'), /Expanded/);
+    assert.ok(h.$('node-layer').children.some(node => node.getAttribute('aria-label').startsWith('run.')));
+    await application().querySelector('[aria-label="Collapse Application"]').fire('click'); await settle();
+    assert.equal(component(), undefined);
   } finally { h.close(); }
 });

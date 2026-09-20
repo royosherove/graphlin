@@ -2246,7 +2246,7 @@ export function startViewer() {
           'aria-expanded': String(!node.collapsed), transform: `translate(${node.width - 33} 10)` });
         toggle.append(svgElement('rect', { width: 24, height: 24, rx: 4 }),
           svgElement('text', { x: 12, y: 18, 'text-anchor': 'middle' }, node.collapsed ? '+' : '−'));
-        const toggleGroup = event => { event.stopPropagation(); platform.toggle(node.entityId, node.collapsed); };
+        const toggleGroup = event => { event.stopPropagation(); platform.toggle(node.id, node.collapsed); };
         toggle.addEventListener('click', toggleGroup);
         toggle.addEventListener('keydown', event => {
           if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleGroup(event); }

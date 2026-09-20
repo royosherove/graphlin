@@ -8,6 +8,8 @@ import {
 } from './core/index.mjs';
 import { safeLabel, safeText, excluded } from './core/privacy.mjs';
 import { createPlatform } from './platform.mjs';
+import { createArchitectureController } from './architecture/controller.mjs';
+import { analyzeArchitecture, ARCHITECTURE_NAMESPACE } from './architecture/analysis.mjs';
 
 const MAX_ACTIVITY = 200;
 const MAX_HOOK_EVENTS = 200;
@@ -93,7 +95,7 @@ function restoreGraph(input, { stale = true } = {}) {
 export function createPipeline({
   projectRoot, policy: policyOptions, decisionService, onChange = () => {},
   onDiagnostic = () => {}, restoredState, restoredModel, mode = 'live', clock = Date.now,
-  classificationDeadlineMs = DEADLINE_MS,
+  classificationDeadlineMs = DEADLINE_MS, missingKey = false,
 } = {}) {
   if (!Number.isSafeInteger(classificationDeadlineMs) ||
       classificationDeadlineMs < DEADLINE_MS || classificationDeadlineMs > 10_000) {
@@ -152,6 +154,9 @@ export function createPipeline({
   let reconciliationTask = null;
   let resumeScheduled = false;
   let lineageId = null;
+  let architecture;
+  let architectureEpoch = 0;
+  const architectureGuards = new WeakMap();
 
   const serialized = (fn) => {
     const operation = serial.then(fn);
@@ -167,8 +172,123 @@ export function createPipeline({
       registerArtifacts(await evidence.reconcile({ refs }));
       return evidence.isCurrent(refs);
     }),
-    onChange: notify,
+    onChange: () => { architecture?.wake(); notify(); },
   });
+  architecture = createArchitectureController({
+    snapshot: () => platform.snapshot(),
+    capture: captureArchitecture,
+    commit: commitArchitecture,
+    analyze: async input => {
+      const guard = {
+        epoch: architectureEpoch, signal: input.signal, policyVersion: policy.version,
+        lineageId: input.model.coverage.lineage?.id ?? modelProjectId,
+      };
+      const result = await analyzeArchitecture({ ...input, service: decisionService, policy });
+      architectureGuards.set(result, guard);
+      return result;
+    },
+    available: architectureUnavailable,
+    ready: () => {
+      const { queued, active } = platform.stats();
+      return queued === 0 && active === 0;
+    },
+    onChange: notify,
+    onDiagnostic: result => trace(null, 'classification', {
+      status: result.status === 'complete' ? 'accepted' : result.status === 'partial' ? 'partial' : 'unavailable',
+      reason: result.status === 'complete' ? 'ok' : result.status === 'partial' ? 'unknown' : 'decision_failure',
+      diagnostics: { calls: result.providerRequests },
+    }),
+    now: clock,
+  });
+
+  function architectureUnavailable() {
+    if (closed) return 'closed';
+    if (!policy.transmitSource) return 'source_consent_required';
+    if (missingKey) return 'missing_key';
+    if (paused) return 'paused';
+    if (mode === 'demo') return 'demo';
+    if (typeof decisionService?.analyze !== 'function' || typeof decisionService?.evaluate !== 'function') {
+      return 'unsupported_service';
+    }
+    return null;
+  }
+
+  async function captureArchitecture(ids) {
+    const artifacts = await serialized(async () => {
+      if (architectureUnavailable()) return [];
+      const refs = ids.slice(0, 64).filter(id => knownArtifacts.has(id)).map(artifactId => ({ artifactId }));
+      const captures = await evidence.reconcile({ refs });
+      registerArtifacts(captures);
+      return captures;
+    });
+    // Parser acceptance uses the same serial queue; waiting inside it deadlocks.
+    await platform.whenIdle();
+    return artifacts;
+  }
+
+  function commitArchitecture(result, context) {
+    return serialized(async () => {
+      const guard = architectureGuards.get(result);
+      architectureGuards.delete(result);
+      const current = () => guard && guard.signal === context.signal && !context.signal.aborted &&
+        guard.epoch === architectureEpoch && guard.policyVersion === policy.version &&
+        guard.lineageId === (lineageId ?? platform.snapshot().coverage.lineage?.id ?? modelProjectId) &&
+        !architectureUnavailable();
+      if (!current() || result.sourceRefs.length > 256 || context.artifacts.length > 64) return false;
+      const expected = new Map();
+      const sameVersion = (a, b) => a && b && a.hash === b.hash &&
+        a.generation === b.generation && a.status === b.status;
+      for (const value of [...context.artifacts, ...result.sourceRefs.map(ref => ({ ...ref, status: 'present' }))]) {
+        if (!knownArtifacts.has(value.artifactId) ||
+            expected.has(value.artifactId) && !sameVersion(expected.get(value.artifactId), value)) return false;
+        expected.set(value.artifactId, value);
+      }
+      if (expected.size > 256) return false;
+      const observed = new Map();
+      const refs = [...expected.keys()].map(artifactId => ({ artifactId }));
+      // Re-read all selected versions, including absence, and any extra
+      // membership support. Retain metadata only across these bounded reads.
+      for (let offset = 0; offset < refs.length; offset += 32) {
+        const captures = await evidence.reconcile({ refs: refs.slice(offset, offset + 32) });
+        registerArtifacts(captures);
+        for (const artifact of captures) observed.set(artifact.id, {
+          hash: artifact.hash, generation: artifact.generation, status: artifact.status,
+          exists: artifact.exists, complete: artifact.complete,
+        });
+        if (!current()) return false;
+      }
+      if ([...expected].some(([id, value]) => !sameVersion(value, observed.get(id)))) return false;
+      const missing = new Set(result.coverage.missingArtifactIds ?? []);
+      const selected = new Set(context.artifacts.map(value => value.artifactId));
+      for (const id of missing) {
+        const value = observed.get(id);
+        if (!selected.has(id) || value?.status !== 'missing' || value.hash !== null ||
+            value.exists !== false || value.complete !== true) return false;
+      }
+      const withdrawn = new Set(result.coverage.withdrawnEntityIds ?? []);
+      const model = platform.snapshot();
+      const entities = new Map(model.entities.map(value => [value.id, value]));
+      if ([...withdrawn].some(id => !missing.has(entities.get(id)?.artifactId))) return false;
+      const affected = result.affectedEntityIds.filter(id => !withdrawn.has(id));
+      let omitted = 0;
+      if (affected.length || result.interpretations.length) {
+        const replacement = platform.model.replaceInterpretations(ARCHITECTURE_NAMESPACE, result.interpretations, {
+          affectedEntityIds: affected, sourceRefs: result.sourceRefs,
+        });
+        if (!replacement.accepted) return false;
+        omitted = Math.max(0, result.interpretations.length - replacement.retained);
+      }
+      if (missing.size) {
+        // Present-source guards cannot prove deletion. The serialized reread
+        // above authorizes this clear, even when deleted anchors were evicted.
+        const cleared = platform.model.replaceInterpretations(ARCHITECTURE_NAMESPACE, [], {
+          affectedEntityIds: [...withdrawn], artifactIds: [...missing],
+        });
+        if (!cleared.accepted) return false;
+      }
+      return omitted ? { accepted: true, omitted } : true;
+    });
+  }
 
   function artifactMetadata(artifact) {
     const relative = artifact.relativePath;
@@ -429,6 +549,7 @@ export function createPipeline({
       }
     }
     platform.observeArtifacts(artifacts, event);
+    if (changed.length) architecture.observe(changed);
     return changed;
   }
 
@@ -1074,6 +1195,7 @@ export function createPipeline({
   function setPaused(value) {
     const wasPaused = paused;
     paused = Boolean(value);
+    if (wasPaused !== paused) architectureEpoch++;
     if (!wasPaused && paused) {
       for (const job of classificationQueue.splice(0)) {
         deferClassification(job.event, job.candidates);
@@ -1086,6 +1208,7 @@ export function createPipeline({
       serialized(flushDeferred).catch(() => { dropped++; })
         .finally(() => { resumeScheduled = false; });
     }
+    architecture.wake();
     notify();
     return getState();
   }
@@ -1095,6 +1218,8 @@ export function createPipeline({
       if (closed || lineage.id === lineageId) return;
       platform.observeLineage(lineage);
       lineageId = lineage.id;
+      architectureEpoch++;
+      architecture.invalidate();
       completedClassifications.clear();
       for (const job of activeClassifications) job.controller.abort();
       for (const job of classificationQueue.splice(0)) {
@@ -1115,21 +1240,26 @@ export function createPipeline({
   }
 
   async function whenIdle() {
-    await serial;
-    await platform.whenIdle();
-    await serial;
-    while (tasks.size || classificationQueue.length) {
-      pumpClassifications();
-      await Promise.allSettled([...tasks]);
+    do {
       await serial;
-    }
-    await platform.whenIdle();
-    await serial;
+      await platform.whenIdle();
+      await serial;
+      while (tasks.size || classificationQueue.length) {
+        pumpClassifications();
+        await Promise.allSettled([...tasks]);
+        await serial;
+      }
+      await platform.whenIdle();
+      await architecture.whenIdle();
+      await serial;
+    } while (tasks.size || classificationQueue.length || platform.stats().queued || platform.stats().active);
   }
 
   async function close() {
     if (closed) return;
     closed = true;
+    architectureEpoch++;
+    const architectureClosed = architecture.close();
     deferredWork.clear();
     for (const job of classificationQueue.splice(0)) {
       skipJob(job, 'pipeline_closed');
@@ -1138,11 +1268,14 @@ export function createPipeline({
     for (const job of activeClassifications) job.controller.abort();
     decisionService?.close?.();
     await platform.close();
+    await architectureClosed;
     await whenIdle();
   }
 
   return {
     ingest, getState, reconcile, observeLineage, setPaused, selectSession, whenIdle, close,
+    getArchitectureStatus: () => architecture.status(),
+    discoverArchitecture: () => architecture.request(),
     getModelState: options => platform.snapshot(options),
     createCheckpoint: options => platform.checkpoint(options),
     model: platform.model,

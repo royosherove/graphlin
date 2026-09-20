@@ -17,6 +17,8 @@ export const validity = value => ['current', 'stale', 'retracted'].includes(valu
 export const classification = value => ['accepted', 'tentative', 'unknown', 'stale', 'pending', 'abstained'].includes(value)
   ? value : 'unknown';
 export const basis = value => ['metadata', 'parsed', 'lexical', 'decision', 'legacy'].includes(value) ? value : 'legacy';
+export const interpretationNamespace = value => typeof value === 'string' &&
+  /^[a-z][a-z0-9_-]*(?:[.:][a-z0-9_-]+)+$/.test(value) && safeText(value, 80) ? value : null;
 export const byteSize = value => Buffer.byteLength(JSON.stringify(value));
 export const key = (prefix, ...parts) => opaque(prefix, ...parts);
 const version = value => typeof value === 'string' && value.length <= 256 &&
@@ -102,8 +104,7 @@ export function relationRecord(value, maxRefs) {
 }
 
 export function interpretationRecord(value, maxRefs) {
-  if (!plain(value) || !id(value.id) || typeof value.namespace !== 'string' ||
-      !/^[a-z][a-z0-9_-]*(?:[.:][a-z0-9_-]+)+$/.test(value.namespace) || !safeText(value.namespace, 80)) return null;
+  if (!plain(value) || !id(value.id) || !interpretationNamespace(value.namespace)) return null;
   const sourceRefs = references(value.sourceRefs ?? [], maxRefs);
   if (!sourceRefs || !Array.isArray(value.entityIds) || value.entityIds.length > 256 ||
       value.entityIds.some(value => !id(value))) return null;

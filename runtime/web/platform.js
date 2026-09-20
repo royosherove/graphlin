@@ -5,13 +5,38 @@ import { createExtensionFrame } from './extension-frame.js';
 import { DATA_FIELDS, extensionId, digest, id as validId } from '../extensions/contracts.mjs';
 import { filterScene } from './scene.js';
 
+const DISCOVERY_STATES = ['idle', 'waiting', 'queued', 'running', 'complete', 'partial', 'unavailable'];
+const DISCOVERY_BLOCKED = ['source_consent_required', 'missing_key', 'no_source', 'paused', 'unsupported_service', 'endpoint_unavailable'];
+const DISCOVERY_REASONS = {
+  source_consent_required: 'Architecture discovery needs source-transmission consent. Enable source mode for this project in Graphlin setup.',
+  missing_key: 'Configure a classification service key in Graphlin setup to discover architecture.',
+  no_source: 'No source evidence is available yet. Let Graphlin inspect project files, then try again.',
+  paused: 'Classification is paused. Resume classification to discover architecture.',
+  analysis_failed: 'Architecture discovery could not finish. Try again; supported boundaries remain available.',
+  unsupported_service: 'The configured classification service does not support architecture discovery.',
+  source_changed: 'Source changed during discovery. Boundaries will be checked against current evidence.',
+  partial_coverage: 'Some evidence is unavailable. The shown boundaries cover only inspected evidence.',
+  none_supported: 'No supported application or component boundaries were found. Source scopes remain available.',
+  endpoint_unavailable: 'Architecture discovery requires a newer local service.',
+  request_failed: 'Could not check architecture discovery. Reconnect to the local service or try again.',
+};
+function discoveryStatus(value) {
+  if (!value || !DISCOVERY_STATES.includes(value.status)) throw new Error('invalid_architecture_status');
+  const result = { status: value.status, reason: typeof value.reason === 'string' ? value.reason : '' };
+  for (const name of ['applications', 'components', 'pending', 'inspected', 'total']) {
+    if (Number.isSafeInteger(value[name]) && value[name] >= 0 && value[name] <= 1_000_000) result[name] = value[name];
+  }
+  return result;
+}
+
 export function createViewPlatform({ document, request, onView, onSelect, onFollow = () => {},
-  createFrame = createExtensionFrame, grantPollMs = 2000 }) {
+  createFrame = createExtensionFrame, grantPollMs = 2000, architecturePollMs = 2000 }) {
   const $ = id => document.getElementById(id);
   let model, active = 'graphlin.code', instance, installed = [], generation = 0, closed = false;
   let projectionController;
   let analysisBusy = false;
   let grantWatch;
+  let architectureWatch, architectureState, architectureProject, architectureBusy = false, suspended = false;
   let selection = {}, canonicalSelection = null, follow = true, query = '', kinds = null, focusEntityId = null;
   const settings = new Map(), listeners = [];
   const ownSettings = () => {
@@ -33,8 +58,81 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
     $('view-retry').hidden = !message;
   }
   function dispose() {
+    stopArchitecture();
     if (grantWatch) { clearTimeout(grantWatch.timer); grantWatch.controller?.abort(); grantWatch = null; }
     instance?.dispose(); instance = null;
+  }
+  const architectureLive = () => !closed && !suspended && model && active === 'graphlin.c4' && !selection.checkpoint;
+  function stopArchitecture() {
+    if (architectureWatch) {
+      clearTimeout(architectureWatch.timer);
+      clearTimeout(architectureWatch.deadline);
+      architectureWatch.controller?.abort();
+      architectureWatch = null;
+    }
+    architectureBusy = false;
+  }
+  function renderArchitecture() {
+    const shown = active === 'graphlin.c4';
+    $('architecture-discover').hidden = !shown;
+    $('architecture-status').hidden = !shown;
+    const state = architectureState;
+    $('architecture-discover').disabled = !architectureLive() || architectureBusy ||
+      ['queued', 'running'].includes(state?.status) || DISCOVERY_BLOCKED.includes(state?.reason);
+    $('architecture-discover').setAttribute('aria-busy', String(architectureBusy));
+    if (!shown) return;
+    if (selection.checkpoint) {
+      $('architecture-status').textContent = 'Recorded architecture. Return to Live to discover current boundaries.';
+      return;
+    }
+    if (!state) { $('architecture-status').textContent = 'Checking architecture discovery…'; return; }
+    const messages = {
+      idle: 'Ready to discover application and component boundaries for this project.',
+      waiting: 'Waiting for source evidence before architecture discovery can continue.',
+      queued: 'Architecture discovery queued.',
+      running: 'Discovering architecture…',
+      complete: 'Architecture discovery complete.',
+      partial: 'Architecture is partly discovered; some boundaries remain unknown.',
+      unavailable: 'Architecture discovery is unavailable. Check project source settings and the classification service.',
+    };
+    const counts = ['applications', 'components'].filter(name => state[name] !== undefined)
+      .map(name => `${state[name]} ${name}`);
+    if (state.inspected !== undefined && state.total !== undefined) counts.push(`${state.inspected} of ${state.total} inspected`);
+    if (state.pending > 0) counts.push(`${state.pending} pending`);
+    $('architecture-status').textContent = [
+      DISCOVERY_REASONS[state.reason] || messages[state.status], counts.join(' · '),
+    ].filter(Boolean).join(' ');
+  }
+  async function refreshArchitecture(watch, manual = false) {
+    const controller = new AbortController();
+    watch.controller = controller;
+    const deadline = watch.deadline = setTimeout(() => controller.abort(), 8000);
+    try {
+      const result = await request(manual ? '/api/architecture/discover' : '/api/architecture',
+        { signal: controller.signal, ...(manual ? { method: 'POST', body: '{}' } : {}) });
+      if (architectureWatch !== watch || !architectureLive()) return;
+      architectureState = discoveryStatus(manual && !DISCOVERY_STATES.includes(result?.status) ? { status: 'queued' } : result);
+    } catch (error) {
+      if (architectureWatch !== watch || !architectureLive()) return;
+      architectureState = { status: 'unavailable', reason: error.status === 404 ? 'endpoint_unavailable' : 'request_failed' };
+    } finally {
+      clearTimeout(deadline);
+      if (architectureWatch === watch && architectureLive()) {
+        architectureBusy = false;
+        renderArchitecture();
+        if (architectureState?.reason !== 'endpoint_unavailable')
+          watch.timer = setTimeout(() => refreshArchitecture(watch), architecturePollMs);
+      }
+    }
+  }
+  function syncArchitecture() {
+    if (!architectureLive()) stopArchitecture();
+    else if (!architectureWatch) {
+      if (architectureProject !== model.projectId) { architectureState = null; architectureProject = model.projectId; }
+      architectureWatch = {};
+      void refreshArchitecture(architectureWatch);
+    }
+    renderArchitecture();
   }
   function watchGrant(row) {
     if (grantWatch?.instance === instance) return;
@@ -83,6 +181,7 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
     for (const option of $('visualizer').children) option.disabled = !model && option.value !== 'graphlin.code';
     $('view-context').hidden = !model;
     $('c4-level-label').hidden = active !== 'graphlin.c4';
+    syncArchitecture();
     $('baseline-label').hidden = active !== 'graphlin.changes';
     $('baseline-create').hidden = active !== 'graphlin.changes';
     $('baseline-create').disabled = Boolean(selection.checkpoint);
@@ -269,6 +368,15 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   listen('visualizer', 'change', () => choose($('visualizer').value));
   listen('view-retry', 'click', () => { dispose(); void client.open(selection); });
   listen('c4-level', 'change', () => { ownSettings().level = $('c4-level').value; void project(false, true); });
+  listen('architecture-discover', 'click', () => {
+    if (!architectureLive() || $('architecture-discover').disabled) return;
+    stopArchitecture();
+    architectureBusy = true;
+    architectureState = { status: 'queued' };
+    architectureWatch = {};
+    renderArchitecture();
+    void refreshArchitecture(architectureWatch, true);
+  });
   listen('task-baseline', 'change', () => { ownSettings().baseline = $('task-baseline').value; void project(false, true); });
   listen('baseline-create', 'click', async () => {
     if (selection.checkpoint) return;
@@ -314,7 +422,7 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   });
   controls();
   return {
-    async start() { if (await client.open(selection)) await catalogue(); },
+    async start() { suspended = false; if (await client.open(selection)) await catalogue(); },
     choose,
     filter(nextQuery, nextKinds) { query = nextQuery; kinds = nextKinds; void project(false, true); },
     selected(id) { canonicalSelection = id; },
@@ -329,7 +437,7 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
       void project(false, true);
     },
     close() { closed = true; generation++; projectionController?.abort(); client.close(); dispose(); listeners.forEach(remove => remove()); },
-    suspend() { generation++; projectionController?.abort(); client.suspend(); dispose(); },
+    suspend() { suspended = true; generation++; projectionController?.abort(); client.suspend(); dispose(); },
     get active() { return active; },
     get model() { return model; },
     get selection() { return selection; },
