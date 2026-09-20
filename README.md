@@ -6,27 +6,25 @@ Live architecture diagrams while **Claude Code or Codex** explores and builds yo
 
 ## Get started
 
-**You need:** macOS or Linux, Node.js 22.14+, Git, Claude Code or Codex CLI,
-and a TypeSafe API key. No npm release or dependency install needed.
+**You need:** macOS or Linux, Node.js 22.14+, Git, and Claude Code or Codex CLI.
+Source classification also needs a TypeSafe API key; metadata mode needs no key.
 
 ### 1. Start the viewer
 
-In your project's terminal, enter your API key at the hidden prompt:
+In your project's terminal:
 
 ```sh
-printf 'TypeSafe API key: '; read -r -s TYPESAFE_API_KEY; export TYPESAFE_API_KEY; printf '\n'
+npx --yes --package=github:royosherove/graphlin graphlin
 ```
 
-Clone Graphlin once, build its plugins, and start it for your current project:
+Graphlin asks which host to install, offers **source or metadata** mode for this
+project, and accepts your key at a **masked prompt** if needed. It stores the key
+privately and builds stable plugins outside the npm cache. The browser opens
+automatically. Keep this terminal running; **Ctrl+C** stops the viewer.
 
-```sh
-git clone https://github.com/royosherove/graphlin.git "$HOME/graphlin" && node "$HOME/graphlin/scripts/build-packages.mjs"
-node "$HOME/graphlin/scripts/graphlin.mjs" start --project "$PWD" --allow-source
-```
-
-Open the printed URL. Keep this terminal running; **Ctrl+C** stops the viewer.
-`--allow-source` permits locally filtered source excerpts, user prompts, and
-public agent messages to be sent to TypeSafe for classification.
+This command installs from GitHub. Graphlin is **not published to npm** yet.
+Source mode permits locally filtered source excerpts, user prompts, and public
+agent messages to be sent to TypeSafe for classification.
 
 ### 2. Start your agent
 
@@ -35,22 +33,27 @@ Open a **second terminal in the same project**. Choose one:
 **Claude Code**
 
 ```sh
-claude --plugin-dir "$HOME/graphlin/dist/claude/graphlin"
+claude
 ```
 
 **Codex**
 
 ```sh
-codex plugin marketplace add "$HOME/graphlin/dist/codex" && codex plugin add graphlin@graphlin-local && codex
+codex
 ```
 
-Approve plugin setup when prompted. In Codex, use **`/hooks`** to review and trust
-Graphlin's hooks. Then ask either agent:
+Accept the host's project trust prompt. In Claude, use **`/plugin`** to confirm
+Graphlin is enabled. In Codex, use **`/hooks`** to review and trust Graphlin's
+hooks. Start a new agent session after installation. Then ask either agent:
 
 > Orient yourself in this project: read its main files and explain how the components connect.
 
-Watch the diagram populate as it explores. On later runs, skip cloning,
-building, and marketplace installation; start the viewer and launch your agent.
+Watch the diagram populate as it explores. On later runs, repeat step 1 and
+launch your agent; Graphlin reuses the saved setup. Use the printed agent command
+if you selected a custom data directory.
+
+For setup alone, append `init` to the GitHub command. Append `uninstall` to remove
+Graphlin's host plugins across projects while keeping your saved key and history.
 
 ## Just looking?
 

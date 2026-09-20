@@ -8,13 +8,98 @@ A local plugin for live architecture and activity diagrams while a coding agent 
 
 *A close-up from the offline demo. [See the full diagram](images/graphlin-overview.png).*
 
-**Development preview.** Graphlin is not published to npm yet. Use this checkout
-to try it. The repository includes CI, plugin packaging, and a gated npm release
+**Development preview.** Graphlin is not published to npm yet. Use the GitHub
+package command below or a checkout. The repository includes CI, plugin packaging, and a gated npm release
 workflow; see [releasing](releasing.md) for the remaining publication setup.
 
-See the [proposed onboarding journey](user-journey.md) for the recommended
-one-time setup and everyday skill workflow. Its proposed `npx` commands are not
-published commands yet.
+## Guided setup
+
+In your project's terminal:
+
+```sh
+npx --yes --package=github:royosherove/graphlin graphlin
+```
+
+The first run detects host CLIs. If only one is available it selects that host;
+otherwise choose **claude**, **codex**, or **both**. Choose **source** to permit locally filtered source excerpts, user
+prompts, and public agent messages to reach TypeSafe, or **metadata** to work
+without source transmission or an API key. Source mode offers a masked key
+prompt when no key is available. Keys never belong in command arguments or chat.
+
+Graphlin registers its local marketplaces and installs through the native host
+CLIs for your user account. It preserves unrelated host configuration. Versioned
+packages live under `~/.local/state/graphlin/plugins/graphlin/<version>`, outside
+the npm cache. The viewer opens automatically and stays in the foreground;
+**Ctrl+C** stops it. `--no-open` suppresses browser opening.
+
+In a second terminal in the same project, run `claude` or `codex`. Accept the
+project trust prompt. Confirm Graphlin is enabled using Claude's `/plugin`;
+in Codex, use `/hooks` to review and trust Graphlin's hooks. Start a new host
+session after installation. If using a custom data directory, copy the printed
+agent command so the hooks inherit the same `GRAPHLIN_DATA_DIR`.
+
+On subsequent runs, the bare command reuses saved setup. To configure without
+starting a viewer, append `init`. A checkout can use
+`node scripts/graphlin.mjs init`. Explicit `start` opens the viewer without
+installing host plugins; omitted policy flags reuse current or saved consent.
+`--no-source` explicitly opts out. A new project without consent is metadata only.
+
+Consent belongs to the canonical project. The key and installed host list are
+shared within the data directory. The key is kept in a private user settings
+file (0600) in a private directory (0700), separate from evidence and exports.
+Source-enabled `init` also saves an environment-provided key for later launches.
+`TYPESAFE_API_KEY` overrides the saved key; an explicitly empty value disables
+the saved key, so unset it to use the saved credential.
+
+To replace an expired or incorrect saved key, run the GitHub package command
+with `init --replace-key`, or `node scripts/graphlin.mjs init --replace-key`
+from a checkout. Replacement uses the masked terminal prompt; no command-line
+key value is accepted. Restart the viewer to load the new key. Use `doctor`
+to inspect setup and classifier state; it does not make a paid key-validation call.
+
+Non-interactive commands never wait for Graphlin prompts. Specify a host and
+source choice explicitly, for example:
+
+```sh
+npx --yes --package=github:royosherove/graphlin graphlin init --host codex --no-source
+```
+
+With `--allow-source`, a key must already be saved or supplied securely through
+the environment. Use the interactive prompt to save a key. Missing CLIs,
+cancelled setup, and failed host commands produce errors; each completed host
+installation is recorded separately so a partial failure is visible. Installing
+a plugin does not prove its hooks are active or its classifier key is valid.
+Graphlin makes no key-validation request during setup.
+
+Setup checks existing marketplace registrations before retrying. A name collision
+with an unrelated `graphlin-local` marketplace is reported without replacing it.
+Version upgrades update every recorded host, even when only one is selected,
+so the shared version stays consistent. A failed upgrade retains the old version
+until all hosts finish. If Codex's marketplace rebind fails after its old
+registration was removed, it is no longer recorded as installed; retry
+`init --host both` to restore it. Existing keys and Graphlin history remain.
+
+To reopen the viewer with a fresh one-use browser URL, use `graphlin open`
+(or append `open` to the GitHub package command). It starts a detached viewer
+if needed. Use `graphlin stop` to stop it.
+
+## Uninstall
+
+```sh
+npx --yes --package=github:royosherove/graphlin graphlin uninstall
+```
+
+This removes Graphlin from the recorded hosts **for all projects**. Use
+`--host claude`, `--host codex`, or `--host both` to choose explicitly, including
+a manually installed Graphlin plugin. The native host CLIs remove only
+`graphlin@graphlin-local`; unrelated plugins and settings remain intact.
+Claude receives `--keep-data`. Keys, Graphlin history, generated packages, and
+marketplace registrations remain for recovery or reinstall.
+
+Uninstall resets source and evidence-persistence consent for the current
+project. It does not change an already running viewer's active policy; stop it
+with `graphlin stop`. Other projects retain their consent. A failed host removal
+is reported and remains in the installation record.
 
 The design uses Jev at two principal stages: **intelligent intake** (semantic normalization, contextual redaction, and candidate extraction) and **architecture decisions**. Focused code snippets go directly to Noul questions such as “does this function implement a database write?”, with optional Score evidence-strength diagnostics. Parsers help select context and resolve references; a library-specific semantic analyzer is not required for every relationship. A shared decision service can also support bounded alignment, grouping, enrichment, and contradiction checks. Local code owns privacy enforcement, evidence validity, precise drawing operations, and rendering.
 
@@ -39,23 +124,23 @@ server. A foreground start can join an existing service; Ctrl+C stops that
 joined service too. Separate projects or data directories have separate
 services.
 
-For your own project, start with metadata only:
+For your own project, explicitly start with metadata only:
 
 ```sh
-node scripts/graphlin.mjs start --project /path/to/your/app
+node scripts/graphlin.mjs start --project /path/to/your/app --no-source
 ```
 
 Source classification requires a TypeSafe key and explicit permission to
 transmit sanitized excerpts:
 
 ```sh
-node --env-file=.env.local scripts/graphlin.mjs start \
-  --project /path/to/your/app --allow-source
+node scripts/graphlin.mjs init --project /path/to/your/app
+node scripts/graphlin.mjs start --project /path/to/your/app
 ```
 
-Put `TYPESAFE_API_KEY=your-key` in `.env.local`. This file is ignored by Git.
-Keep it local. The key is read by the daemon and never sent to the browser.
-The command above loads the key file from your current directory.
+Choose source mode and enter the key at the masked prompt. The key is read by
+the daemon and never sent to the browser or inherited by installer/browser
+subprocesses. Existing secure `TYPESAFE_API_KEY` environments are also supported.
 
 Local filtering excludes credential/environment files, configured exclusions,
 binary/oversized files, and obvious secret values before Jev sees anything.
@@ -110,6 +195,9 @@ window and two private JSONL files; logs remain separate from diagram exports.
 
 ## Plugin packages
 
+Guided setup builds and installs these packages automatically. For development
+or manual recovery:
+
 ```sh
 npm run build
 claude --plugin-dir ./dist/claude/graphlin
@@ -139,7 +227,8 @@ setup also works when Graphlin's installation folder is read-only.
 Keep Graphlin running in its terminal and run the agent in another terminal.
 The Jev key stays with the service; the agent commands do not include it.
 
-Claude Code uses `claude --plugin-dir` to load the built Claude profile.
+After guided installation, simply start `claude` in the project. The manual
+recovery guide can use `claude --plugin-dir` to load the built Claude profile.
 The guide also shows how to resume a session with that profile.
 
 The build includes a local Codex marketplace under `dist/codex`. From this
