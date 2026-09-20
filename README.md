@@ -233,7 +233,8 @@ interfaces, events, configuration, packages, queues, and datastores.
 Select a component to choose among 15 shapes in the inspector. Long names
 wrap to two lines; the inspector retains the full name.
 
-Shapes use deterministic hand-drawn outlines. The **Theme** selector offers
+Shapes and arrows use **Tidy sketch** lines: gentle bends, close double strokes,
+and slightly imperfect corners. The **Theme** selector offers
 Sketchbook, Ocean, Forest, Sunset, Berry, Sepia, Blueprint dark, and Midnight
 dark. Component kinds have coordinated fill colors; evidence labels and line
 patterns remain distinct in every theme. Themes apply to the diagram and its

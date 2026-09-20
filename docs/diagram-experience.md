@@ -160,13 +160,23 @@ and line patterns across all themes, including both dark palettes. Theme
 preferences use the same bounded, per-view memory as layout choices; they
 never enter graph snapshots, classifier context, or exports.
 
-The finite shape catalog supplies deterministic sketch outlines. Seed each
-outline from node ID and shape, keeping control-point jitter within 3 units
-and tightening it at small corners. Position,
+Use **Tidy sketch**, option D in the [line style comparison](line-style-options.html):
+shallow, uneven bends, close double strokes, and slightly imperfect corners.
+Apply this treatment to shape outlines, internal dividers and rims, and
+relationship arrows with open, hand-drawn arrowheads.
+
+The finite shape catalog supplies deterministic sketch outlines seeded from
+node ID and shape. Keep the strokes within a small, bounded distance of their
+canonical geometry and tighten the variation on short details. Position,
 theme, activity, and revision must not alter the outline. Retain canonical
 fills, ports, hit targets, and title clipping. Sketch strokes are decorative,
-noninteractive, and hidden from accessibility APIs. Reuse the same strokes
-for removal animations and avoid generating them on animation frames.
+noninteractive, and hidden from accessibility APIs. Cache node strokes and
+reuse them for removal animations.
+
+Seed arrow strokes from edge identity and derive them from the numeric route.
+Preserve the canonical hit path and attachment points. During layout motion,
+move the visible strokes, arrowheads, hit path, and label together. Status
+updates and theme changes must not redraw the ink randomly.
 
 This is an appearance inspired by hand-drawn diagrams. It does not add the
 Excalidraw editor, its document format, a remote dependency, or a new semantic

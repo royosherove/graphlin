@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { startViewer, graphBounds, graphEdgeRoutes, normalizeGraph, sanitizedExport, SHAPE_NAMES, THEME_NAMES } from '../../runtime/web/app.js';
+import { sketchOutline, sketchDetails, sketchConnection } from '../../runtime/web/sketch.js';
 import { createDocument } from './fake-dom.mjs';
 import { snapshot, graph, node } from './fixtures.mjs';
 import { captureDemoStream } from './demo-stream-fixture.mjs';
@@ -133,7 +134,25 @@ function assertGraphFits(h) {
 }
 
 function sketchGroup(group) { return group.content.children.find(child => child.className === 'node-sketch'); }
+function detailGroup(group) { return group.content.children.find(child => child.classList.contains('node-sketch-details')); }
 function sketchPaths(group) { return group.children.map(path => path.getAttribute('d')); }
+function connectionPaths(group) {
+  return {
+    lines: [group.line, group.secondaryLine].map(path => path.getAttribute('d')),
+    heads: group.heads.map(path => path.getAttribute('d')),
+  };
+}
+function assertConnectionGeometry(h, group, id) {
+  const displayed = normalizeGraph(h.current.graph);
+  const points = positions(h);
+  displayed.nodes.forEach((node, index) => Object.assign(node, points[index]));
+  const route = graphEdgeRoutes(displayed).get(id);
+  assert.equal(group.hit.getAttribute('d'), route.d, 'interaction follows the canonical cubic');
+  assert.deepEqual(connectionPaths(group), sketchConnection(route.points, id), 'both shafts and heads follow the displayed route with a stable identity seed');
+  assert.notEqual(group.line.getAttribute('d'), route.d, 'visible ink does not reuse the canonical hit path');
+  assert.equal(group.leader.getAttribute('d'), route.leader || '');
+  assert.equal(group.control.getAttribute('transform'), `translate(${route.x} ${route.y}) rotate(${route.angle})`);
+}
 
 test('real demo IPC and SSE bursts preserve node DOM identities and deliver three inflate/pop cycles through status snapshots', async t => {
   const { initial, frames } = await captureDemoStream();
@@ -198,7 +217,7 @@ test('all eight themes recolor a live view without rebuilding geometry, evidence
     const content = nodes.map(group => [...group.content.children]);
     const outlines = nodes.map(sketchGroup);
     const edges = [...h.$('edge-layer').children];
-    const paths = edges.map(group => group.line.getAttribute('d'));
+    const paths = edges.map(connectionPaths);
     await nodes[0].fire('click');
     await h.$('zoom-in').fire('click');
     const viewport = h.$('architecture').getAttribute('viewBox');
@@ -212,7 +231,7 @@ test('all eight themes recolor a live view without rebuilding geometry, evidence
       assert.deepEqual([...h.$('node-layer').children], nodes);
       assert.deepEqual([...h.$('edge-layer').children], edges);
       assert.deepEqual(nodes.map(group => [...group.content.children]), content);
-      assert.deepEqual(edges.map(group => group.line.getAttribute('d')), paths);
+      assert.deepEqual(edges.map(connectionPaths), paths);
       assert.deepEqual([...h.$('inspector-body').children], inspector);
       assert.equal(nodes[0].getAttribute('aria-pressed'), 'true');
       assert.equal(h.$('architecture').getAttribute('viewBox'), viewport);
@@ -234,6 +253,121 @@ test('all eight themes recolor a live view without rebuilding geometry, evidence
     assert.equal(h.requests.length, 1, 'theme changes never make service calls');
     assert.deepEqual(initial, unchanged);
     assert.deepEqual(sanitizedExport(h.current), exported, 'presentation cannot enter canonical JSON exports');
+  } finally { h.close(); }
+});
+
+test('rough detail seams replace canonical inner strokes while fills, browser dots, symbols and replay identities survive', async () => {
+  const nodes = Object.keys(SHAPE_NAMES).map(shape => node(shape, { shape, label: shape }));
+  const initial = snapshot({
+    graph: graph(2, { nodes, edges: [] }),
+    history: [{ revision: 1, at: 100, graph: graph(1, { nodes: structuredClone(nodes), edges: [] }) }],
+  });
+  const unchanged = structuredClone(initial);
+  const h = await harness(initial);
+  try {
+    const groups = [...h.$('node-layer').children];
+    const paths = groups.map(group => ({
+      outline: sketchPaths(sketchGroup(group)),
+      details: detailGroup(group) ? sketchPaths(detailGroup(group)) : [],
+    }));
+    const withDetails = new Set(['cylinder', 'browser', 'queue', 'class_box', 'interface_box', 'document', 'folder']);
+    for (const [index, group] of groups.entries()) {
+      const item = nodes[index], details = detailGroup(group);
+      assert.deepEqual(paths[index].outline, sketchOutline(item.shape, item.id));
+      assert.deepEqual(paths[index].details, sketchDetails(item.shape, item.id));
+      assert.equal(Boolean(details), withDetails.has(item.shape), `${item.shape} gets only its own detail seams`);
+      assert.ok(group.content.children.some(child => child.className === 'node-shape'), 'canonical fills remain');
+      const hit = group.children.find(child => child.className === 'node-hit');
+      assert.equal(hit.getAttribute('width'), '190');
+      assert.equal(hit.getAttribute('height'), '104');
+      assert.equal(hit.getAttribute('pointer-events'), 'all');
+      assert.equal(group.content.children.filter(child => child.tagName === 'path' && child.className === 'node-detail').length, 0,
+        'rough seams do not leave a straight path underneath');
+      if (item.shape === 'browser') {
+        const dots = group.content.children.filter(child => child.tagName === 'circle' && child.className === 'node-detail');
+        assert.deepEqual(dots.map(dot => Number(dot.getAttribute('cx'))), [12, 22, 32]);
+      }
+      if (item.shape === 'class_box' || item.shape === 'interface_box') {
+        assert.equal(group.content.children.find(child => child.className === 'shape-symbol').textContent,
+          item.shape === 'class_box' ? 'C' : '«interface»');
+      }
+      if (details) {
+        assert.ok(group.content.children.indexOf(details) < group.content.children.findIndex(child => child.className === 'node-role'));
+        for (const element of [details, ...details.children]) {
+          assert.equal(element.getAttribute('fill'), 'none');
+          assert.equal(element.getAttribute('aria-hidden'), 'true');
+          assert.equal(element.getAttribute('pointer-events'), 'none');
+        }
+      }
+    }
+    for (const [tone, update] of [
+      ['proposed', { classification: 'tentative' }],
+      ['stale', { validity: 'stale' }],
+    ]) {
+      h.send({ ...h.current, graph: { ...h.current.graph, nodes: nodes.map(item => ({ ...item, ...update })) } });
+      for (const [index, group] of groups.entries()) {
+        assert.equal(group.dataset.tone, tone);
+        assert.deepEqual(sketchPaths(sketchGroup(group)), paths[index].outline);
+        assert.deepEqual(detailGroup(group) ? sketchPaths(detailGroup(group)) : [], paths[index].details);
+      }
+    }
+    await h.$('replay').fire('click');
+    assert.equal(h.$('revision').textContent, 'Revision 1');
+    for (const [index, group] of h.$('node-layer').children.entries()) {
+      assert.deepEqual(sketchPaths(sketchGroup(group)), paths[index].outline);
+      assert.deepEqual(detailGroup(group) ? sketchPaths(detailGroup(group)) : [], paths[index].details);
+    }
+    assert.deepEqual(initial, unchanged, 'decorations do not alter canonical evidence or shapes');
+  } finally { h.close(); }
+});
+
+test('rough connections retain canonical hit targets and stable ink across status, focus, repeated snapshots and replay', async () => {
+  const base = graph();
+  const edges = [
+    base.edges[0],
+    { ...base.edges[0], id: 'api-call-db', relation: 'calls', label: 'calls' },
+    { ...base.edges[0], id: 'db-call-api', source: 'database', target: 'api', relation: 'calls', label: 'calls' },
+    { ...base.edges[0], id: 'api-self', target: 'api', relation: 'calls', label: 'calls itself' },
+  ];
+  const h = await harness(snapshot({
+    graph: graph(2, { edges }),
+    history: [{ revision: 1, at: 100, graph: graph(1, { edges: structuredClone(edges) }) }],
+  }));
+  try {
+    const groups = [...h.$('edge-layer').children];
+    const paths = groups.map(connectionPaths);
+    for (const [index, group] of groups.entries()) {
+      assertConnectionGeometry(h, group, edges[index].id);
+      assert.equal(group.line.className, 'edge-line', 'the primary stroke keeps its established class');
+      assert.equal(group.hit.getAttribute('pointer-events'), 'stroke');
+      for (const ink of [group.line, group.secondaryLine, ...group.heads]) {
+        assert.ok(ink.getAttribute('d').length > 0);
+        assert.equal(ink.getAttribute('fill'), 'none');
+        assert.equal(ink.getAttribute('pointer-events'), 'none');
+        assert.equal(ink.getAttribute('aria-hidden'), 'true');
+        assert.equal(ink.getAttribute('marker-end'), null, 'open paths replace solid marker triangles');
+      }
+      await group.control.fire('keydown', { key: 'Enter' });
+      assert.equal(group.dataset.selected, 'true');
+      await group.control.fire('focus');
+      assert.equal(group.classList.contains('is-focused'), true);
+      await group.control.fire('blur');
+      assert.equal(group.classList.contains('is-focused'), false);
+    }
+    for (const update of [{}, { classification: 'tentative' }, { validity: 'stale' }]) {
+      h.send({ ...h.current, graph: { ...h.current.graph, edges: edges.map(edge => ({ ...edge, ...update })) } });
+      assert.deepEqual(h.$('edge-layer').children, groups);
+      assert.deepEqual(groups.map(connectionPaths), paths);
+      assert.equal(groups.at(-1).dataset.selected, 'true', 'status updates preserve keyboard selection');
+      assert.equal(groups[0].dataset.tone, update.validity ? 'stale' : update.classification ? 'proposed' : 'observed');
+    }
+    h.send({ ...h.current, graph: { ...h.current.graph, edges: [...h.current.graph.edges].reverse() } });
+    assert.deepEqual(groups.map(connectionPaths), paths, 'edge list order does not change identity seeds');
+    await h.$('replay').fire('click');
+    assert.equal(h.$('revision').textContent, 'Revision 1');
+    assert.deepEqual(h.$('edge-layer').children.map(connectionPaths), paths);
+    await h.$('live').fire('click');
+    assert.deepEqual(h.$('edge-layer').children.map(connectionPaths), paths);
   } finally { h.close(); }
 });
 
@@ -279,6 +413,7 @@ test('changing themes preserves balloon deadlines and identical inert burst outl
     h.send(changed(h, [...h.current.graph.nodes, node('arrival', { label: 'Arrival', kind: 'class', shape: 'class_box' })], h.current.graph.edges));
     const arrival = nodeGroup(h, 'Arrival');
     const outline = sketchGroup(arrival), paths = sketchPaths(outline);
+    const detailPaths = sketchPaths(detailGroup(arrival));
     h.advance(200);
     h.$('theme').value = 'midnight';
     await h.$('theme').fire('change');
@@ -291,6 +426,8 @@ test('changing themes preserves balloon deadlines and identical inert burst outl
     const burstContent = burst.children[0].children[0];
     const burstSketch = burstContent.children.find(child => child.className === 'node-sketch');
     assert.deepEqual(sketchPaths(burstSketch), paths, 'a removed node uses the same shape and identity');
+    assert.deepEqual(sketchPaths(burstContent.children.find(child => child.classList.contains('node-sketch-details'))), detailPaths,
+      'removal details use the same cached identity as the live shape');
     assert.equal(burst.dataset.kind, 'class');
     assert.equal(burstSketch.getAttribute('fill'), 'none');
     assert.equal(burst.getAttribute('pointer-events'), 'none');
@@ -405,37 +542,39 @@ test('motion is capped and cancelled for hidden tabs, reduced motion, reconnect,
   } finally { h.close(); }
 });
 
-test('Arrange animates nodes, edge hit paths and label buttons together without changing selection; interruption settles immediately', async () => {
+test('Arrange animates nodes, rough shafts, arrowheads, canonical hit paths and labels together; interruption settles immediately', async () => {
   const h = await harness();
   try {
     const nodes = [...h.$('node-layer').children];
     const edge = h.$('edge-layer').children[0];
+    const id = h.current.graph.edges[0].id;
+    const beforeInk = connectionPaths(edge);
     await edge.control.fire('click');
     const before = positions(h);
     h.$('layout').value = 'dependency';
     await h.$('layout').fire('change');
     assert.equal(h.frames.size, 1);
     assert.deepEqual(positions(h), before, 'motion begins from the previous positions');
+    assert.deepEqual(connectionPaths(edge), beforeInk, 'the first frame restores the starting ink and heads');
     h.frame(0);
     h.frame(125);
     const during = positions(h);
     assert.notDeepEqual(during, before);
-    const interpolated = normalizeGraph(h.current.graph);
-    interpolated.nodes.forEach((node, index) => Object.assign(node, during[index]));
-    const route = graphEdgeRoutes(interpolated).get(h.current.graph.edges[0].id);
-    assert.equal(edge.hit.getAttribute('d'), route.d);
-    assert.equal(edge.control.getAttribute('transform'), `translate(${route.x} ${route.y}) rotate(${route.angle})`);
+    assertConnectionGeometry(h, edge, id);
+    assert.notDeepEqual(connectionPaths(edge).heads, beforeInk.heads, 'heads move and turn during interpolation');
     assert.deepEqual([...h.$('node-layer').children], nodes);
     assert.equal(edge.control.getAttribute('aria-pressed'), 'true');
     assert.match(h.$('inspector-body').textContent, /Writes relationship/);
     h.frame(250);
     assert.equal(h.frames.size, 0);
     assert.deepEqual(positions(h), [{ x: 0, y: 0 }, { x: 270, y: 0 }]);
+    assertConnectionGeometry(h, edge, id);
     h.$('layout').value = 'circular';
     await h.$('layout').fire('change');
     assert.equal(h.frames.size, 1);
     h.hide(true);
     assert.equal(h.frames.size, 0, 'visibility change settles positions and cancels frame callbacks');
+    assertConnectionGeometry(h, edge, id);
     const settled = positions(h);
     h.advance(1000);
     assert.deepEqual(positions(h), settled, 'stale fallback cannot move the graph later');
@@ -445,10 +584,13 @@ test('Arrange animates nodes, edge hit paths and label buttons together without 
     h.advance(500);
     assert.equal(h.frames.size, 0, 'timer fallback settles a suspended animation');
     assert.deepEqual(positions(h), [{ x: 0, y: 0 }, { x: 0, y: 184 }]);
+    assertConnectionGeometry(h, edge, id);
+    assert.deepEqual(connectionPaths(edge), beforeInk, 'returning to the same layout redraws identical ink and heads');
     h.media.change(true);
     h.$('layout').value = 'dependency';
     await h.$('layout').fire('change');
     assert.equal(h.frames.size, 0, 'reduced motion applies the final geometry immediately');
+    assertConnectionGeometry(h, edge, id);
   } finally { h.close(); }
 });
 

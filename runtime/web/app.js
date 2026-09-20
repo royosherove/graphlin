@@ -1,5 +1,5 @@
 import { layoutGraph, LAYOUT_ALGORITHMS } from './layout.js';
-import { sketchOutline } from './sketch.js';
+import { sketchOutline, sketchDetails, sketchConnection } from './sketch.js';
 import { createLiveSidebar } from './sidebar.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -571,9 +571,11 @@ function curveRoute(points, normal) {
   let angle = Math.atan2(tangentY, tangentX) * 180 / Math.PI;
   if (angle >= 90) angle -= 180;
   if (angle < -90) angle += 180;
-  const coordinates = points.map(point => `${round(point.x)} ${round(point.y)}`);
+  const cubic = points.map(point => [round(point.x), round(point.y)]);
+  const coordinates = cubic.map(point => point.join(' '));
   return {
     d: `M ${coordinates[0]} C ${coordinates.slice(1).join(' ')}`,
+    points: cubic,
     x, y, angle: round(angle), start, end, midpoint,
     // The control hull contains the complete cubic, including its outer arcs.
     bounds: {
@@ -1387,6 +1389,7 @@ export function startViewer() {
   };
   const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)');
   const sketches = createSketchCache();
+  const detailSketches = createSketchCache(sketchDetails);
   const connectionDialog = startConnectionDialog();
   const diagnosticsDialog = startDiagnosticsDialog({ currentSession: () => state.snapshot?.sessionId });
   const sidebar = createLiveSidebar({
@@ -1636,46 +1639,59 @@ export function startViewer() {
     $('session').value = snapshot.sessionId || '';
   }
   function shape(node) {
+    const details = detailSketches.paths(node.shape, node.id);
+    return [
+      ...canonicalShape(node, details.length === 0),
+      ...(details.length ? [sketchInk(details, 'node-sketch node-sketch-details')] : []),
+    ];
+  }
+  function canonicalShape(node, includeDetails) {
     const w = NODE_WIDTH;
     const h = NODE_HEIGHT;
+    const detail = d => includeDetails ? [svgElement('path', { class: 'node-detail', d })] : [];
     if (node.shape === 'cylinder') return [
       svgElement('path', { class: 'node-shape', d: `M 0 17 C 0 -2 ${w} -2 ${w} 17 L ${w} ${h - 17} C ${w} ${h + 5} 0 ${h + 5} 0 ${h - 17} Z` }),
-      svgElement('path', { class: 'node-detail', d: `M 0 17 C 0 37 ${w} 37 ${w} 17` }),
+      ...detail(`M 0 17 C 0 37 ${w} 37 ${w} 17`),
     ];
     if (node.shape === 'cloud') return [svgElement('path', { class: 'node-shape', d: `M 18 99 C -8 99 -9 53 13 45 C -2 16 34 1 58 13 C 76 -7 132 -5 145 16 C 182 7 202 36 183 57 C 207 73 191 103 169 99 Z` })];
     if (node.shape === 'diamond') return [svgElement('path', { class: 'node-shape', d: `M ${w / 2} -12 L ${w + 14} ${h / 2} L ${w / 2} ${h + 12} L -14 ${h / 2} Z` })];
     const path = d => svgElement('path', { class: 'node-shape', d });
-    const detail = d => svgElement('path', { class: 'node-detail', d });
     const box = () => svgElement('rect', { class: 'node-shape', width: w, height: h, rx: 3 });
-    if (node.shape === 'browser') return [box(), detail(`M 0 23 H ${w}`),
+    if (node.shape === 'browser') return [box(), ...detail(`M 0 23 H ${w}`),
       ...[12, 22, 32].map(cx => svgElement('circle', { class: 'node-detail', cx, cy: 12, r: 2 }))];
     if (node.shape === 'component') return [
       path(`M 10 0 H ${w} V ${h} H 10 Z`),
       svgElement('rect', { class: 'node-shape', x: 0, y: 18, width: 21, height: 17, rx: 1 }),
       svgElement('rect', { class: 'node-shape', x: 0, y: 68, width: 21, height: 17, rx: 1 }),
     ];
-    if (node.shape === 'queue') return [box(), detail(`M 17 0 V ${h} M ${w - 17} 0 V ${h}`),
-      detail('M 40 16 H 150 M 140 11 L 150 16 L 140 21')];
+    if (node.shape === 'queue') return [box(), ...detail(`M 17 0 V ${h} M ${w - 17} 0 V ${h}`),
+      ...detail('M 40 16 H 150 M 140 11 L 150 16 L 140 21')];
     if (node.shape === 'hexagon') return [path(`M 23 0 H ${w - 23} L ${w} ${h / 2} L ${w - 23} ${h} H 23 L 0 ${h / 2} Z`)];
-    if (node.shape === 'class_box') return [box(), detail(`M 0 25 H ${w} M 0 72 H ${w}`),
+    if (node.shape === 'class_box') return [box(), ...detail(`M 0 25 H ${w} M 0 72 H ${w}`),
       svgElement('text', { class: 'shape-symbol', x: w / 2, y: 17, 'text-anchor': 'middle' }, 'C')];
-    if (node.shape === 'interface_box') return [box(), detail(`M 0 25 H ${w}`),
+    if (node.shape === 'interface_box') return [box(), ...detail(`M 0 25 H ${w}`),
       svgElement('text', { class: 'shape-symbol', x: w / 2, y: 17, 'text-anchor': 'middle' }, '«interface»')];
     if (node.shape === 'document') return [path(`M 0 0 H ${w - 23} L ${w} 23 V ${h} H 0 Z`),
-      detail(`M ${w - 23} 0 V 23 H ${w}`)];
+      ...detail(`M ${w - 23} 0 V 23 H ${w}`)];
     if (node.shape === 'parallelogram') return [path(`M 22 0 H ${w} L ${w - 22} ${h} H 0 Z`)];
-    if (node.shape === 'folder') return [path(`M 0 10 H 66 L 78 0 H ${w} V ${h} H 0 Z`), detail(`M 0 24 H ${w}`)];
+    if (node.shape === 'folder') return [path(`M 0 10 H 66 L 78 0 H ${w} V ${h} H 0 Z`), ...detail(`M 0 24 H ${w}`)];
     return [svgElement('rect', { class: 'node-shape', width: w, height: h, rx: node.shape === 'rounded_rect' ? 10 : node.shape === 'group' ? 2 : 5 })];
   }
-  function sketch(node) {
-    const group = svgElement('g', { class: 'node-sketch', fill: 'none', 'aria-hidden': 'true', 'pointer-events': 'none' });
-    // The helper owns only seeded decoration. Canonical fills, ports and hit
-    // geometry stay in the existing shape renderer. A bounded per-viewer cache
-    // reuses the same paths in live nodes, replay and removal decorations.
-    sketches.paths(node.shape, node.id).forEach((d, index) => {
-      group.append(svgElement('path', { d, class: index ? 'sketch-secondary' : 'sketch-primary' }));
+  function inkPath(className, d = '') {
+    return svgElement('path', { class: className, d, fill: 'none', 'aria-hidden': 'true', 'pointer-events': 'none' });
+  }
+  function sketchInk(paths, className) {
+    const group = svgElement('g', { class: className, fill: 'none', 'aria-hidden': 'true', 'pointer-events': 'none' });
+    paths.forEach((d, index) => {
+      group.append(inkPath(index ? 'sketch-secondary' : 'sketch-primary', d));
     });
     return group;
+  }
+  function sketch(node) {
+    // The helper owns only seeded decoration. Canonical fills, ports and hit
+    // geometry stay in the existing shape renderer. Separate bounded caches
+    // reuse outlines and details in live nodes, replay and removal decorations.
+    return sketchInk(sketches.paths(node.shape, node.id), 'node-sketch');
   }
   function renderShapeKey() {
     const items = [];
@@ -1683,7 +1699,8 @@ export function startViewer() {
       const item = html('span', undefined, 'shape-key-item');
       item.dataset.kind = kind;
       const preview = svgElement('svg', { viewBox: '-16 -16 222 136', 'aria-hidden': 'true', focusable: 'false' });
-      preview.append(...shape({ shape: name }), sketch({ shape: name, id: `shape-key-${kind}` }));
+      const node = { shape: name, id: `shape-key-${kind}` };
+      preview.append(...shape(node), sketch(node));
       item.append(preview, html('span', upperFirst(kind)));
       items.push(item);
     }
@@ -1819,7 +1836,9 @@ export function startViewer() {
         group = svgElement('g', { class: 'diagram-edge' });
         group.titleElement = svgElement('title');
         group.hit = svgElement('path', { class: 'edge-hit', 'pointer-events': 'stroke' });
-        group.line = svgElement('path', { class: 'edge-line' });
+        group.line = inkPath('edge-line');
+        group.secondaryLine = inkPath('edge-line-secondary');
+        group.heads = [inkPath('edge-head'), inkPath('edge-head edge-head-secondary')];
         group.leader = svgElement('path', { class: 'edge-label-leader' });
         // The semantic button bounds contain only this small label, not the
         // whole curve. Its center is painted and clickable at every angle.
@@ -1827,7 +1846,7 @@ export function startViewer() {
         group.background = svgElement('rect', { class: 'edge-label-background', rx: 4, 'pointer-events': 'all' });
         group.text = svgElement('text', { class: 'edge-label', x: 0, y: 4, 'text-anchor': 'middle' });
         group.control.append(group.background, group.text);
-        group.append(group.titleElement, group.hit, group.line, group.leader);
+        group.append(group.titleElement, group.hit, group.line, group.secondaryLine, ...group.heads, group.leader);
         group.addEventListener('click', () => select('edge', edge.id));
         group.control.addEventListener('focus', () => group.classList.add('is-focused'));
         group.control.addEventListener('blur', () => group.classList.remove('is-focused'));
@@ -1841,15 +1860,7 @@ export function startViewer() {
       const edgeSignature = JSON.stringify([edge.label, source.label, target.label, summary.tone, route]);
       if (group.renderSignature !== edgeSignature) {
         group.titleElement.textContent = `${source.label} → ${target.label}: ${edge.label}`;
-        group.hit.setAttribute('d', route.d);
-        group.line.setAttribute('d', route.d);
-        group.line.setAttribute('marker-end', `url(#arrow-${summary.tone})`);
-        group.leader.setAttribute('d', route.leader || '');
-        group.control.setAttribute('transform', `translate(${route.x} ${route.y}) rotate(${route.angle})`);
-        group.background.setAttribute('x', -route.labelWidth / 2);
-        group.background.setAttribute('y', -route.labelHeight / 2);
-        group.background.setAttribute('width', route.labelWidth);
-        group.background.setAttribute('height', route.labelHeight);
+        paintEdgeGeometry(group, route, edge.id);
         group.text.textContent = clip(edge.label, 28);
         group.renderSignature = edgeSignature;
       }
@@ -1895,7 +1906,7 @@ export function startViewer() {
       const children = [
         ...shape(node),
         sketch(node),
-        svgElement('text', { class: 'node-role', x: NODE_WIDTH / 2, y: 36, 'text-anchor': 'middle' }, upperFirst(node.kind)),
+        svgElement('text', { class: 'node-role', x: NODE_WIDTH / 2, y: node.shape === 'cylinder' ? 20 : 36, 'text-anchor': 'middle' }, upperFirst(node.kind)),
         titleViewport,
         svgElement('text', { class: 'node-state', x: NODE_WIDTH / 2, y: titleLines.length === 1 ? 85 : 91, 'text-anchor': 'middle' }, clip(summary.label, 26)),
       ];
@@ -1927,6 +1938,20 @@ export function startViewer() {
     $('empty-title').textContent = message[0];
     $('empty-description').textContent = message[1];
   }
+  function paintEdgeGeometry(group, route, id) {
+    const ink = sketchConnection(route.points, id);
+    group.hit.setAttribute('d', route.d);
+    [group.line, group.secondaryLine].forEach((path, index) => path.setAttribute('d', ink.lines[index] || ''));
+    group.heads.forEach((path, index) => path.setAttribute('d', ink.heads[index] || ''));
+    group.leader.setAttribute('d', route.leader || '');
+    group.control.setAttribute('transform', `translate(${route.x} ${route.y}) rotate(${route.angle})`);
+    // A near pair can cross the threshold for moving its label off the curve.
+    // Keep the same compact semantic control throughout the interpolation.
+    group.background.setAttribute('x', -route.labelWidth / 2);
+    group.background.setAttribute('y', -route.labelHeight / 2);
+    group.background.setAttribute('width', route.labelWidth);
+    group.background.setAttribute('height', route.labelHeight);
+  }
   function paintGeometry(graph) {
     for (const node of graph.nodes) {
       state.nodeElements.get(node.id)?.setAttribute('transform', `translate(${node.x} ${node.y})`);
@@ -1934,16 +1959,7 @@ export function startViewer() {
     for (const [id, route] of graphEdgeRoutes(graph)) {
       const group = state.edgeElements.get(id);
       if (!group) continue;
-      group.hit.setAttribute('d', route.d);
-      group.line.setAttribute('d', route.d);
-      group.leader.setAttribute('d', route.leader || '');
-      group.control.setAttribute('transform', `translate(${route.x} ${route.y}) rotate(${route.angle})`);
-      // A near pair can cross the threshold for moving its label off the curve.
-      // Keep the same compact semantic control throughout the interpolation.
-      group.background.setAttribute('x', -route.labelWidth / 2);
-      group.background.setAttribute('y', -route.labelHeight / 2);
-      group.background.setAttribute('width', route.labelWidth);
-      group.background.setAttribute('height', route.labelHeight);
+      paintEdgeGeometry(group, route, id);
     }
   }
   function moveLayout(before, after) {
@@ -2432,6 +2448,7 @@ export function startViewer() {
       resizeObserver?.disconnect();
       resetMotionBaseline();
       sketches.clear();
+      detailSketches.clear();
       state.connectEpoch += 1;
       state.stream?.close();
       state.stream = null;

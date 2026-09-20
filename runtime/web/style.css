@@ -239,10 +239,12 @@ h1 { font-size: clamp(27px, 2.3vw, 36px); letter-spacing: -1px; font-weight: 650
   35% { opacity: .7; }
   100% { transform: translateX(105px) scale(.15); opacity: 0; }
 }
-.node-shape { stroke: var(--node-ink); stroke-width: .4; stroke-opacity: .25; fill: var(--node-fill, var(--role-module)); }
+.node-shape { stroke: none; fill: var(--node-fill, var(--role-module)); }
 .node-sketch { fill: none; stroke: var(--node-ink); stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
-.sketch-primary { stroke-width: 1.5; }
-.sketch-secondary { stroke-width: .85; stroke-opacity: .5; }
+.sketch-primary { stroke-width: 1.9; }
+.sketch-secondary { stroke-width: 1.2; stroke-opacity: .46; }
+.node-sketch-details .sketch-primary { stroke-width: 1.5; }
+.node-sketch-details .sketch-secondary { stroke-width: .95; }
 .node-detail { stroke: var(--node-ink); stroke-width: 1.2; fill: none; }
 .node-title { fill: var(--ink); font: 600 14px var(--body); }
 .node-role { fill: var(--muted); font: 10px var(--body); }
@@ -250,24 +252,29 @@ h1 { font-size: clamp(27px, 2.3vw, 36px); letter-spacing: -1px; font-weight: 650
 .selection-ring { fill: none; stroke: var(--diagram-focus); stroke-width: 1.5; stroke-dasharray: 3 5; opacity: 0; pointer-events: none; }
 .diagram-node[aria-pressed="true"] .selection-ring { opacity: 1; }
 .diagram-node:focus-visible .selection-ring { stroke: var(--diagram-focus); stroke-width: 2.5; stroke-dasharray: none; opacity: 1; }
-.diagram-node[data-tone="proposed"] .node-sketch, .diagram-node[data-tone="proposed"] .node-shape { stroke: var(--amber); stroke-dasharray: 6 4; }
+.diagram-node[data-tone="proposed"] .node-sketch { stroke: var(--amber); stroke-dasharray: 6 4; }
 .diagram-node[data-tone="proposed"] .node-state { fill: var(--amber); }
 .diagram-node[data-tone="proposed"] .node-detail { stroke: var(--amber); }
-.diagram-node[data-tone="stale"] .node-sketch, .diagram-node[data-tone="stale"] .node-shape { stroke: var(--diagram-stale); stroke-dasharray: 2 5; }
+.diagram-node[data-tone="stale"] .node-sketch { stroke: var(--diagram-stale); stroke-dasharray: 2 5; }
 .diagram-node[data-tone="stale"] .node-state { fill: var(--diagram-stale); }
 .diagram-node[data-tone="stale"] .node-detail { stroke: var(--diagram-stale); }
 .node-activity { fill: var(--amber); }
 .node-activity[data-state="failed"] { fill: var(--red); }
-.edge-line { fill: none; stroke: var(--diagram-edge); stroke-width: 1.6; pointer-events: none; }
+.diagram-edge { --edge-ink: var(--diagram-edge); --edge-primary-width: 1.9; --edge-secondary-width: 1.2; }
+.edge-line, .edge-line-secondary, .edge-head { fill: none; stroke: var(--edge-ink); stroke-width: var(--edge-primary-width); stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.edge-line-secondary, .edge-head-secondary { stroke-width: var(--edge-secondary-width); stroke-opacity: .46; }
+.edge-head { stroke-dasharray: none; }
 .edge-hit { fill: none; stroke: transparent; stroke-width: 20; stroke-linecap: round; }
 .edge-label-leader { fill: none; stroke: var(--diagram-stale); stroke-width: 1; pointer-events: none; }
 .edge-label-background { fill: var(--canvas); stroke: var(--line); stroke-width: 1; }
 .edge-label { fill: var(--muted); font: 11px var(--body); pointer-events: none; }
 .edge-control:hover .edge-label-background { fill: var(--white); stroke: var(--diagram-focus); }
 .edge-control:focus-visible .edge-label-background, .edge-control[aria-pressed="true"] .edge-label-background { fill: var(--white); stroke: var(--diagram-focus); stroke-width: 2; }
-.diagram-edge[data-tone="proposed"] .edge-line { stroke: var(--amber); stroke-dasharray: 6 4; }
-.diagram-edge[data-tone="stale"] .edge-line { stroke: var(--diagram-stale); stroke-dasharray: 2 5; }
-.diagram-edge[data-selected="true"] .edge-line, .diagram-edge.is-focused .edge-line { stroke-width: 3.5; stroke: var(--diagram-focus); }
+.diagram-edge[data-tone="proposed"] { --edge-ink: var(--amber); }
+.diagram-edge[data-tone="stale"] { --edge-ink: var(--diagram-stale); }
+.diagram-edge[data-tone="proposed"] .edge-line, .diagram-edge[data-tone="proposed"] .edge-line-secondary { stroke-dasharray: 6 4; }
+.diagram-edge[data-tone="stale"] .edge-line, .diagram-edge[data-tone="stale"] .edge-line-secondary { stroke-dasharray: 2 5; }
+.diagram-edge[data-selected="true"], .diagram-edge.is-focused { --edge-primary-width: 3.5; --edge-secondary-width: 2.2; --edge-ink: var(--diagram-focus); }
 .arrow-observed { fill: var(--diagram-edge); }
 .arrow-proposed { fill: var(--amber); }
 .arrow-stale { fill: var(--diagram-stale); }

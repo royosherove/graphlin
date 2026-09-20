@@ -65,6 +65,58 @@ test('theme controls are named and finite, with diagram-scoped dark mode and red
   assert.match(css, /--body: "Avenir Next", Avenir, "Segoe UI", sans-serif/);
 });
 
+test('Tidy sketch uses CSS ink weights and preserves tone, selection and focus for both shafts and solid open heads', () => {
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(match => ({
+    selectors: match[1].trim().split(',').map(selector => selector.trim()),
+    properties: Object.fromEntries(match[2].split(';').filter(part => part.includes(':')).map(part => {
+      const colon = part.indexOf(':');
+      return [part.slice(0, colon).trim(), part.slice(colon + 1).trim()];
+    })),
+  }));
+  const style = selector => Object.assign({}, ...rules.filter(rule => rule.selectors.includes(selector)).map(rule => rule.properties));
+  const ruleIndex = selector => rules.findIndex(rule => rule.selectors.includes(selector));
+  assert.equal(style('.node-shape').stroke, 'none', 'canonical fills do not add a straight underlying edge');
+  assert.equal(style('.node-shape').fill, 'var(--node-fill, var(--role-module))');
+  assert.equal(style('.sketch-primary')['stroke-width'], '1.9');
+  assert.equal(style('.sketch-secondary')['stroke-width'], '1.2');
+  assert.equal(style('.sketch-secondary')['stroke-opacity'], '.46');
+  assert.ok(Number(style('.node-sketch-details .sketch-primary')['stroke-width']) < 1.9, 'detail seams use gentler ink around labels');
+  assert.equal(style('.diagram-edge')['--edge-ink'], 'var(--diagram-edge)');
+  assert.equal(style('.diagram-edge')['--edge-primary-width'], '1.9');
+  assert.equal(style('.diagram-edge')['--edge-secondary-width'], '1.2');
+  for (const selector of ['.edge-line', '.edge-line-secondary', '.edge-head']) {
+    const ink = style(selector);
+    assert.equal(ink.stroke, 'var(--edge-ink)', `${selector} inherits status and focus color`);
+    assert.equal(ink.fill, 'none');
+    assert.equal(ink['stroke-linecap'], 'round');
+    assert.equal(ink['stroke-linejoin'], 'round');
+    assert.equal(ink['pointer-events'], 'none');
+  }
+  for (const selector of ['.edge-line-secondary', '.edge-head-secondary']) {
+    assert.equal(style(selector)['stroke-opacity'], '.46');
+    assert.equal(style(selector)['stroke-width'], 'var(--edge-secondary-width)');
+  }
+  for (const [tone, color, dash] of [['proposed', 'var(--amber)', '6 4'], ['stale', 'var(--diagram-stale)', '2 5']]) {
+    const edge = `.diagram-edge[data-tone="${tone}"]`;
+    assert.equal(style(edge)['--edge-ink'], color);
+    assert.equal(style(edge)['stroke-dasharray'], undefined, 'dashes are not inherited by heads');
+    for (const shaft of ['.edge-line', '.edge-line-secondary']) {
+      assert.equal(style(`${edge} ${shaft}`)['stroke-dasharray'], dash);
+    }
+    const node = `.diagram-node[data-tone="${tone}"] .node-sketch`;
+    assert.equal(style(node).stroke, color, 'outlines and details share the evidence tone');
+    assert.equal(style(node)['stroke-dasharray'], dash);
+    assert.equal(style(`.diagram-node[data-tone="${tone}"] .node-shape`).stroke, undefined, 'status cannot restore a straight outline');
+    for (const focused of ['.diagram-edge[data-selected="true"]', '.diagram-edge.is-focused']) {
+      assert.equal(style(focused)['--edge-ink'], 'var(--diagram-focus)');
+      assert.equal(style(focused)['--edge-primary-width'], '3.5');
+      assert.equal(style(focused)['--edge-secondary-width'], '2.2');
+      assert.ok(ruleIndex(focused) > ruleIndex(edge), 'focus and selection override status colors for every ink pass');
+    }
+  }
+  assert.equal(style('.edge-head')['stroke-dasharray'], 'none', 'arrowheads stay visible on dashed relationships');
+});
+
 test('the renderer keeps at most 512 recently used outlines and regenerates evicted identities deterministically', () => {
   let calls = 0;
   const cache = createSketchCache((shape, id) => {

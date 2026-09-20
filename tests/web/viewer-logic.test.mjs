@@ -56,10 +56,22 @@ test('edge geometry is finite for forward, reverse, vertical, coincident, and se
     [node('a', { x: 0, y: 0 }), node('b', { x: 0, y: 0 })],
     [node('a'), node('a')],
   ]) {
-    const route = routeEdge(source, target, 20);
-    assert.doesNotMatch(route.d, /NaN|Infinity|undefined/);
-    assert.match(route.d, /^M [-\d. ]+ C [-\d. ]+$/);
-    assert.ok(Number.isFinite(route.x) && Number.isFinite(route.y));
+    for (const lane of [-20, 0, 20]) {
+      const route = routeEdge(source, target, lane);
+      assert.doesNotMatch(route.d, /NaN|Infinity|undefined/);
+      assert.match(route.d, /^M [-\d. ]+ C [-\d. ]+$/);
+      assert.ok(Number.isFinite(route.x) && Number.isFinite(route.y));
+      assert.equal(route.points.length, 4, 'every route supplies a cubic to the sketch renderer');
+      for (const point of route.points) {
+        assert.equal(point.length, 2);
+        assert.ok(point.every(value => typeof value === 'number' && Number.isFinite(value)));
+      }
+      const coordinates = route.points.map(point => point.join(' '));
+      assert.equal(route.d, `M ${coordinates[0]} C ${coordinates.slice(1).join(' ')}`, 'hit geometry and sketch input use the same canonical cubic');
+      const pair = point => [point.x, point.y].map(value => Number(value.toFixed(3)));
+      assert.deepEqual(route.points[0], pair(route.start));
+      assert.deepEqual(route.points[3], pair(route.end));
+    }
   }
 });
 
@@ -110,6 +122,7 @@ test('an isolated relationship is straight and its short-gap label stays clear o
   const route = graphEdgeRoutes(input).get(input.edges[0].id);
   assert.equal(edgeLanes(input.edges).get(input.edges[0].id), 0);
   assert.equal(route.d, 'M 190 52 C 200 52 210 52 220 52', 'a 30px gap has a straight arrow, not a U-shaped arc');
+  assert.deepEqual(route.points, [[190, 52], [200, 52], [210, 52], [220, 52]]);
   assert.ok(route.y + route.labelHeight / 2 < 0, 'the readable label is above both nodes');
   assert.ok(route.labelWidth <= 198 && route.labelHeight === 26, 'the hit region is only a small label background');
   assert.match(route.leader, /^M 205 52 L /);
