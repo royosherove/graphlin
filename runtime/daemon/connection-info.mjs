@@ -112,6 +112,14 @@ async function localMarketplace(root, codexRoot) {
     entry.policy?.installation === 'AVAILABLE' && entry.policy?.authentication === 'ON_INSTALL';
 }
 
+export async function inspectInstalledPackages({ dataDir, version: currentVersion }) {
+  if (!version(currentVersion)) return { claude: false, codex: false };
+  const root = path.join(absolute(dataDir), 'plugins', 'graphlin', currentVersion);
+  const [claude, codex] = await Promise.all(['claude', 'codex'].map(host =>
+    hostPackage(path.join(root, host, 'graphlin'), host, currentVersion)));
+  return { claude, codex };
+}
+
 // Discovery reads only fixed package metadata and checks file availability.
 // It never scans the project, reads state/credentials, or executes commands.
 async function discover(pluginRoot, dataDir) {
@@ -125,9 +133,18 @@ async function discover(pluginRoot, dataDir) {
     // the same user-owned data directory as the running service, not beside
     // installed code. Versioned paths stay stable across projects and restarts.
     const output = path.join(dataDir, 'plugins', 'graphlin', current.version);
+    const claudeRoot = path.join(output, 'claude/graphlin');
+    const codexRoot = path.join(output, 'codex/graphlin');
+    const [claudeReady, codexReady, marketplaceReady] = await Promise.all([
+      hostPackage(claudeRoot, 'claude', current.version),
+      hostPackage(codexRoot, 'codex', current.version),
+      localMarketplace(path.dirname(codexRoot), codexRoot),
+    ]);
     return {
-      available: true, build: path.join(pluginRoot, 'scripts/build-packages.mjs'), output,
-      claude: path.join(output, 'claude/graphlin'),
+      available: true,
+      ...(claudeReady && codexReady && marketplaceReady ? {} : { build: path.join(pluginRoot, 'scripts/build-packages.mjs') }),
+      output,
+      claude: claudeRoot,
       marketplace: path.join(output, 'codex'),
     };
   }

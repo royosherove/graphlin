@@ -22,7 +22,7 @@ export async function publicPackageFiles(root) {
     assert.ok(typeof file === 'string' && file.length > 0 && !file.includes('\\') &&
       !path.posix.isAbsolute(file) && !/[*?[\]{}!\u0000-\u001f]/.test(file) &&
       file.split('/').every(part => part && part !== '.' && part !== '..'), 'invalid_package_file');
-    assert.ok(/^(?:package\.json|LICENSE|README\.md|plugin\.json|mcp\.json|\.mcp\.json|\.claude-plugin\/plugin\.json|\.codex-plugin\/plugin\.json|adapters\/(?:README\.md|(?:claude|codex|kiro)\/(?:hooks|profile)\.json)|skills\/graphlin\/SKILL\.md|runtime\/(?:[a-z0-9-]+\/)*[a-z0-9-]+\.(?:mjs|js|css|html)|schemas\/[a-z0-9-]+\.schema\.json|scripts\/(?:arguments|build-packages|collector|control|daemon|graphlin|validate-packages)\.mjs|scripts\/collect\.sh)$/.test(file),
+    assert.ok(/^(?:package\.json|LICENSE|README\.md|plugin\.json|mcp\.json|\.mcp\.json|\.claude-plugin\/plugin\.json|\.codex-plugin\/plugin\.json|adapters\/(?:README\.md|(?:claude|codex|kiro)\/(?:hooks|profile)\.json)|skills\/graphlin\/SKILL\.md|runtime\/(?:[a-z0-9-]+\/)*[a-z0-9-]+\.(?:mjs|js|css|html)|schemas\/[a-z0-9-]+\.schema\.json|scripts\/(?:arguments|build-packages|collector|control|daemon|graphlin|onboarding|validate-packages)\.mjs|scripts\/collect\.sh)$/.test(file),
     'unexpected_public_package_file');
     let current = root;
     for (const component of file.split('/')) {

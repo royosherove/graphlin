@@ -89,7 +89,7 @@ for (const flood of [false, true]) {
       assert.ok(Date.now() - started < 2500, 'doctor must not wait forever for close after TERM');
       const report = JSON.parse(result.stdout);
       assert.equal(report.daemon.running, false);
-      assert.equal(report.credential, 'not_checked_no_request_sent');
+      assert.ok(['configured_not_verified', 'missing'].includes(report.credential));
       // The third host is absent from this isolated PATH; unavailable probes
       // must also settle without invoking any actual installed host command.
       assert.equal(report.hosts.kiro.version, null);

@@ -5,13 +5,15 @@ import { projectPaths, defaultDataDir, MAX_STATE_BYTES, runtimeError, readPrivat
 import { health } from './lock.mjs';
 import { requestIPC } from './ipc.mjs';
 import { diagnosticArtifactId, readPersistedDiagnostics, DIAGNOSTIC_LIMITS } from './diagnostics.mjs';
+import { readSettings, resolvePolicy } from './settings.mjs';
+import { inspectInstalledPackages } from './connection-info.mjs';
 
 const worker = fileURLToPath(new URL('../../scripts/daemon.mjs', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const safeCodes = new Set(['already_running', 'daemon_busy', 'invalid_project', 'unsupported_platform',
   'unsafe_data_directory', 'policy_restart_required', 'port_restart_required', 'port_in_use',
   'daemon_start_failed', 'daemon_start_timeout', 'shutdown_failed', 'shutdown_pending',
-  'restart_required', 'diagnostics_unavailable', 'invalid_log_filter']);
+  'restart_required', 'diagnostics_unavailable', 'invalid_log_filter', 'unsafe_settings', 'invalid_settings', 'settings_busy']);
 
 export function publicError(error) {
   return safeCodes.has(error?.code) ? error.code : 'runtime_unavailable';
@@ -30,8 +32,9 @@ function validateRuntime() {
   if (Number(process.versions.node.split('.')[0]) < 22) throw runtimeError('unsupported_runtime');
 }
 
-function validateExisting(current, { allowSource = false, persistEvidence = false, displayEvidence = true,
-  mode = 'live', port = 0 }) {
+function validateExisting(current, options) {
+  const { allowSource, persistEvidence, displayEvidence } = resolvePolicy(options, { current: current.policy });
+  const { mode = 'live', port = 0 } = options;
   if (current.mode !== mode || current.policy.transmitSource !== Boolean(allowSource) ||
       current.policy.persistEvidence !== Boolean(persistEvidence) ||
       current.policy.displayEvidence !== Boolean(displayEvidence)) throw runtimeError('policy_restart_required');
@@ -87,7 +90,7 @@ async function stopInstance(paths, instanceId) {
  * instance closes or the caller aborts. Abort never stops a replacement owner.
  */
 export async function runForeground({ projectRoot, dataDir = defaultDataDir(), signal,
-  allowSource = false, persistEvidence = false, displayEvidence = true, mode = 'live', port = 0 } = {}, onReady = () => {}) {
+  allowSource, persistEvidence, displayEvidence, mode = 'live', port = 0 } = {}, onReady = () => {}) {
   validateRuntime();
   if (signal?.aborted) return;
   const paths = await projectPaths(projectRoot, dataDir);
@@ -100,12 +103,16 @@ export async function runForeground({ projectRoot, dataDir = defaultDataDir(), s
     const current = await daemonStatus(paths);
     if (current.running) launch = await existingLaunch(paths, current, options);
     else if (!signal?.aborted) {
+      const settings = mode === 'demo' ? {} : await readSettings(paths);
+      const policy = resolvePolicy(options, { saved: settings.policy });
       await projectPaths(projectRoot, dataDir, { create: true });
       const { startServer } = await import('./server.mjs');
       const demo = mode === 'demo' ? await import('./demo.mjs') : null;
       try {
         server = await startServer({ projectRoot: paths.projectRoot, dataDir: paths.dataDir, mode, port,
-          policy: { transmitSource: allowSource, persistEvidence, displayEvidence },
+          policy: { transmitSource: policy.allowSource, persistEvidence: policy.persistEvidence,
+            displayEvidence: policy.displayEvidence },
+          apiKey: policy.allowSource ? process.env.TYPESAFE_API_KEY ?? settings.apiKey : undefined,
           decisionService: demo?.demoDecisionService() });
       } catch (error) {
         if (['daemon_busy', 'already_running'].includes(error.code)) launch = await waitForExisting(paths, options, signal);
@@ -148,21 +155,24 @@ export async function runForeground({ projectRoot, dataDir = defaultDataDir(), s
 // Detached operation is reserved for an explicit CLI --background request or
 // MCP. The normal interactive CLI uses runForeground instead.
 export async function startDaemon({ projectRoot, dataDir = defaultDataDir(), background = true,
-  allowSource = false, persistEvidence = false, displayEvidence = true, mode = 'live', port = 0 } = {}) {
+  allowSource, persistEvidence, displayEvidence, mode = 'live', port = 0 } = {}) {
   validateRuntime();
   if (background !== true) throw runtimeError('background_required');
   const paths = await projectPaths(projectRoot, dataDir);
   const options = { allowSource, persistEvidence, displayEvidence, mode, port };
   const existing = await daemonStatus({ projectRoot: paths.projectRoot, dataDir: paths.dataDir });
   if (existing.running) return { ...await existingLaunch(paths, existing, options), foreground: false };
+  const settings = mode === 'demo' ? {} : await readSettings(paths);
+  const policy = resolvePolicy(options, { saved: settings.policy });
   await projectPaths(projectRoot, dataDir, { create: true });
   const args = [worker, '--project', paths.projectRoot, '--data-dir', paths.dataDir, '--mode', mode, '--port', String(port)];
-  if (allowSource) args.push('--allow-source');
-  if (persistEvidence) args.push('--persist-evidence');
-  if (!displayEvidence) args.push('--no-display-evidence');
+  if (policy.allowSource) args.push('--allow-source');
+  if (policy.persistEvidence) args.push('--persist-evidence');
+  if (!policy.displayEvidence) args.push('--no-display-evidence');
   const env = { ...process.env };
   // A metadata-only or fixture daemon does not inherit the paid-service key.
-  if (!allowSource || mode !== 'live') delete env.TYPESAFE_API_KEY;
+  if (!policy.allowSource || mode !== 'live') delete env.TYPESAFE_API_KEY;
+  else if (env.TYPESAFE_API_KEY === undefined && settings.apiKey) env.TYPESAFE_API_KEY = settings.apiKey;
   const child = spawn(process.execPath, args, {
     detached: true, stdio: 'ignore', env, cwd: paths.projectRoot,
   });
@@ -223,7 +233,9 @@ export async function diagnosticLogs({ projectRoot, dataDir, file } = {}) {
 
 async function version(command) {
   return new Promise(resolve => {
-    const child = spawn(command, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    const env = { ...process.env };
+    delete env.TYPESAFE_API_KEY;
+    const child = spawn(command, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, env });
     let stdout = '', bytes = 0, finished = false, terminating = false, escalation;
     const deadline = setTimeout(terminate, 1000);
     function finish(value) {
@@ -258,17 +270,49 @@ async function version(command) {
 }
 
 export async function doctor({ projectRoot, dataDir } = {}) {
-  const [status, claude, codex, kiro] = await Promise.all([
+  const [status, claude, codex, kiro, settingsResult] = await Promise.all([
     daemonStatus({ projectRoot, dataDir }), version('claude'), version('codex'), version('kiro'),
+    readSettings({ projectRoot, dataDir }).then(value => ({ value }), () => ({ error: 'unsafe_settings' })),
   ]);
+  const settings = settingsResult.value ?? {};
+  const packages = settings.installation ? await inspectInstalledPackages({
+    dataDir: (await projectPaths(projectRoot, dataDir)).dataDir, version: settings.installation.version,
+  }).catch(() => ({ claude: false, codex: false })) : {};
+  const credential = (process.env.TYPESAFE_API_KEY ?? settings.apiKey) ? 'configured_not_verified' : 'missing';
+  const received = status.running ? status.observations?.hooks ?? {} : {};
+  const hosts = Object.fromEntries(Object.entries({ claude, codex }).map(([host, hostVersion]) => [host, {
+    version: hostVersion,
+    installation: settings.installation?.hosts.includes(host) ? 'recorded' : 'not_recorded',
+    packageFiles: packages[host] ? 'verified' : 'not_verified',
+    activation: received[host] > 0 ? 'hook_observed' : 'not_verified',
+    receivedHooks: received[host] ?? 0,
+  }]));
+  const policy = resolvePolicy({}, { current: status.running ? status.policy : undefined, saved: settings.policy });
+  const nextActions = [];
+  if (settingsResult.error) nextActions.push('Settings could not be safely read. Check permissions on the Graphlin data directory.');
+  if (!settings.installation?.hosts.length) nextActions.push('Run graphlin init in this project to install an agent plugin.');
+  else if (settings.installation.hosts.some(host => !packages[host])) {
+    nextActions.push('Installed package files are missing or invalid. Run graphlin init to repair the installation.');
+  }
+  if (!status.running) nextActions.push('Run graphlin in this project and keep that terminal open.');
+  if (!policy.allowSource) nextActions.push('Architecture classification needs source-sharing consent. Run graphlin init to choose it.');
+  if (policy.allowSource && credential === 'missing') nextActions.push('Run graphlin init to save your TypeSafe key at its hidden prompt.');
+  if (['unavailable', 'timeout'].includes(status.status?.classifier)) {
+    nextActions.push('Run graphlin logs for the classifier failure reason. If authentication failed, run graphlin init --reset-key, then restart Graphlin.');
+  }
+  if (status.running && !Object.values(received).some(count => count > 0)) {
+    nextActions.push('Start Claude Code or Codex with Graphlin installed, review its hook permissions, and ask it to explore this project.');
+  } else if (status.running && !status.observations?.shapes) {
+    nextActions.push('Ask your agent to read the main source files. Use graphlin logs to see why observations have not produced shapes.');
+  }
   return {
     runtime: { node: process.versions.node, supported: Number(process.versions.node.split('.')[0]) >= 22,
       platform: process.platform, privateIPC: process.platform !== 'win32' },
-    hosts: { claude: { version: claude, activation: 'not_verified' },
-      codex: { version: codex, activation: 'not_verified' },
+    hosts: { ...hosts,
       kiro: { version: kiro, activation: 'inactive_experimental' } },
     daemon: status,
-    coverage: status.running ? 'collector_fixtures_only_host_activation_unverified' : 'manual_control_only',
-    credential: 'not_checked_no_request_sent',
+    coverage: Object.values(received).some(count => count > 0) ? 'hook_delivery_observed' : 'host_activation_unverified',
+    credential, settings: settingsResult.error ?? 'readable', nextActions,
+    note: 'No remote credential check was sent. An observed hook confirms delivery, not every host permission or runtime connectivity.',
   };
 }

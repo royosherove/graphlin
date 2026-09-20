@@ -77,7 +77,7 @@ export async function projectPaths(projectRoot, dataDir = defaultDataDir(), { cr
 export async function readPrivateJSON(filename, limit = MAX_STATE_BYTES) {
   let file;
   try {
-    file = await open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    file = await open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const stat = await file.stat();
     if (!stat.isFile() || stat.size > limit || stat.nlink !== 1 ||
       (stat.mode & 0o077) !== 0 || (uid() !== undefined && stat.uid !== uid())) {

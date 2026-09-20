@@ -52,7 +52,7 @@ async function bodyJSON(req) {
 }
 
 export async function startServer({ projectRoot, dataDir, policy: policyOptions,
-  decisionService, mode = 'live', port = 0 } = {}) {
+  decisionService, apiKey: configuredKey, mode = 'live', port = 0 } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw runtimeError('invalid_port');
   if (!['live', 'demo'].includes(mode)) throw runtimeError('invalid_mode');
   const paths = await projectPaths(projectRoot, dataDir, { create: true });
@@ -61,10 +61,12 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
   const whenClosed = new Promise(resolve => { finished = resolve; });
   let web, ipc, pipeline, auth, diagnostics, interval, ping, closing, reconciling = false;
   let drops = 0, intake = 0;
+  const receivedHooks = { claude: 0, codex: 0, kiro: 0 };
   const clients = new Set(), connections = new Set(), ipcConnections = new Set();
   const persistence = createPersistence(paths.state);
   const policy = createPolicy(policyOptions ?? {});
-  const apiKey = !decisionService && policy.transmitSource && mode === 'live' ? process.env.TYPESAFE_API_KEY : undefined;
+  const apiKey = !decisionService && policy.transmitSource && mode === 'live'
+    ? configuredKey ?? process.env.TYPESAFE_API_KEY : undefined;
   const missingKey = !decisionService && policy.transmitSource && mode === 'live' && !apiKey;
   function snapshot(persistent = false) {
     const state = pipeline.getState({ persistent });
@@ -211,6 +213,7 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
         policy: { transmitSource: policy.transmitSource, displayEvidence: policy.displayEvidence,
           persistEvidence: policy.persistEvidence, version: policy.version },
         status: snapshot().status, ...persistence.stats(), captureDropped: drops,
+        observations: { hooks: { ...receivedHooks }, shapes: pipeline.getState().graph.nodes.length },
         logPath: diagnostics.stats().logPath, diagnostics: diagnostics.stats() };
     }
     // Only the exclusive owner may remove a stale socket from a prior process.
@@ -264,6 +267,7 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
           try {
             if (await canonicalProjectRoot(input.payload.cwd) !== paths.projectRoot) throw runtimeError('wrong_project');
             const result = await pipeline.ingest(input.payload, { host: input.host });
+            if (result?.accepted !== false) receivedHooks[input.host]++;
             reply({ ok: result?.accepted !== false });
           } finally { intake--; }
         })().catch(() => { drops++; reply({ ok: false, code: 'invalid_input' }); });

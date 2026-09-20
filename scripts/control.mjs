@@ -8,14 +8,14 @@ const SCHEMA = { type: 'object', properties: { projectRoot: { type: 'string', mi
 const TOOLS = Object.keys(METHODS).map(name => ({
   name,
   description: {
-    start: 'Start Graphlin in the background for an explicit project and return a one-use viewer URL. Metadata only unless source transmission is explicitly allowed.',
+    start: 'Start or reopen Graphlin for an explicit project and return a one-use viewer URL. Reuses saved project consent and credentials; metadata only without consent. Omit policy fields to reuse the current policy. MCP launch runs in the background; use the CLI for foreground operation.',
     stop: 'Stop the Graphlin daemon for this canonical project.',
     status: 'Get safe daemon status; does not activate hooks or call a remote service.',
-    doctor: 'Inspect runtime, installed host versions, and daemon health. Hook activation is never inferred.',
+    doctor: 'Check local configuration, credential presence, host versions, daemon health, and observed hook delivery. Returns next steps; never sends a remote request or exposes a key.',
   }[name],
   inputSchema: name === 'start' ? { ...SCHEMA, properties: { ...SCHEMA.properties,
-    allowSource: { type: 'boolean', default: false }, persistEvidence: { type: 'boolean', default: false },
-    displayEvidence: { type: 'boolean', default: true } } } : SCHEMA,
+    allowSource: { type: 'boolean' }, persistEvidence: { type: 'boolean' },
+    displayEvidence: { type: 'boolean' } } } : SCHEMA,
   annotations: { readOnlyHint: name === 'status' || name === 'doctor',
     destructiveHint: false, openWorldHint: name === 'start' },
 }));

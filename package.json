@@ -85,6 +85,7 @@
     "./runtime/daemon/paths.mjs",
     "./runtime/daemon/persistence.mjs",
     "./runtime/daemon/server.mjs",
+    "./runtime/daemon/settings.mjs",
     "./runtime/jev/fixture.mjs",
     "./runtime/jev/index.mjs",
     "./runtime/jev/questions.mjs",
@@ -107,6 +108,7 @@
     "./scripts/control.mjs",
     "./scripts/daemon.mjs",
     "./scripts/graphlin.mjs",
+    "./scripts/onboarding.mjs",
     "./scripts/validate-packages.mjs"
   ]
 }
