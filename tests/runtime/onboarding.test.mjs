@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { workspace, run as runCLI } from './helpers.mjs';
 import { readSettings, saveSettings } from '../../runtime/daemon/settings.mjs';
 import { projectPaths } from '../../runtime/daemon/paths.mjs';
+import { daemonStatus } from '../../runtime/daemon/manager.mjs';
 import { parseArguments } from '../../scripts/arguments.mjs';
 import { initOnboarding, uninstallOnboarding, needsOnboarding, runHost, terminalPrompt,
   preparePackages, agentInstructions, openViewer, packageVersion } from '../../scripts/onboarding.mjs';
@@ -40,7 +41,7 @@ function harness(overrides = {}) {
           if (args[2] === 'add') marketplaces.set(host, args[3]);
           if (args[2] === 'remove') { marketplaces.delete(host); installed.delete(host); }
         } else if (args[1] === 'list') {
-          const plugins = installed.has(host) ? [{ id: 'graphlin@graphlin-local', scope: 'user' }] : [];
+          const plugins = installed.has(host) ? [{ id: 'graphlin@graphlin-local', pluginId: 'graphlin@graphlin-local', scope: 'user' }] : [];
           return JSON.stringify(host === 'claude' ? plugins : { installed: plugins });
         } else if (['install', 'update', 'add'].includes(args[1])) installed.add(host);
         else if (['uninstall', 'remove'].includes(args[1])) installed.delete(host);
@@ -72,7 +73,10 @@ const host = path.basename(process.argv[1]).replace(/\\.mjs$/, '');
 appendFileSync(process.env.STUB_LOG, JSON.stringify({ host, args,
   keyInherited: Object.hasOwn(process.env, 'TYPESAFE_API_KEY'), cwd: process.cwd() }) + '\\n');
 if (process.env.STUB_HANG === '1') { process.on('SIGTERM', () => {}); setInterval(() => {}, 100); }
-else if (process.env.STUB_FAIL === '1') { console.error('PRIVATE_HOST_OUTPUT_SENTINEL'); process.exit(7); }
+else if (process.env.STUB_FAIL === '1' ||
+  process.env.STUB_FAIL_CODEX_ADD === '1' && host === 'codex' && args[1] === 'add') {
+  console.error('PRIVATE_HOST_OUTPUT_SENTINEL'); process.exit(7);
+}
 else if (args[0] === 'plugin') {
   let state = {}; try { state = JSON.parse(readFileSync(process.env.STUB_STATE, 'utf8')); } catch {}
   state[host] ??= {};
@@ -85,7 +89,7 @@ else if (args[0] === 'plugin') {
       console.log(JSON.stringify(host === 'claude' ? entries : {marketplaces:entries}));
     }
   } else if (args[1] === 'list') {
-    const plugins = state[host].installed ? [{id:'graphlin@graphlin-local',scope:'user'}] : [];
+    const plugins = state[host].installed ? [{id:'graphlin@graphlin-local',pluginId:'graphlin@graphlin-local',scope:'user'}] : [];
     console.log(JSON.stringify(host === 'claude' ? plugins : {installed:plugins}));
   } else if (['install','update','add'].includes(args[1])) state[host].installed = true;
   else if (['uninstall','remove'].includes(args[1])) state[host].installed = false;
@@ -137,7 +141,8 @@ test('guided metadata consent installs both hosts through exact argv and records
   const result = await initOnboarding(setup, { ...h.dependencies, interactive: true,
     prompt: async (_, options) => { assert.equal(options?.secret, undefined); return answers.shift(); } });
   assert.deepEqual(result.policy, metadata);
-  assert.deepEqual(h.patches.map(patch => patch.installation?.hosts).filter(Boolean), [['claude'], ['claude', 'codex']]);
+  assert.deepEqual(h.patches.map(patch => patch.installation?.hosts).filter(Boolean), [[], ['claude'], ['claude', 'codex']]);
+  assert.deepEqual(h.patches[0].installation.pendingHosts, ['claude', 'codex']);
   const install = h.calls.filter(call => call.args[0] === 'plugin' && !call.args.includes('list'));
   assert.deepEqual(install.map(call => [call.host, ...call.args]), [
     ['claude', 'plugin', 'marketplace', 'add', path.join(setup.dataDir, 'plugins/graphlin/0.1.0/claude')],
@@ -198,12 +203,29 @@ test('retry after a partial install reuses registered marketplaces and updates t
   const options = { ...setup, host: 'both', allowSource: false };
   await assert.rejects(initOnboarding(options, h.dependencies), /synthetic_host_failure/);
   assert.deepEqual(h.state().installation.hosts, ['claude']);
+  assert.deepEqual(h.state().installation.pendingHosts, ['codex']);
   failCodex = false;
   h.calls.length = 0;
   await initOnboarding(options, h.dependencies);
   assert.equal(h.calls.some(call => call.args[1] === 'marketplace' && call.args[2] === 'add'), false);
   assert.equal(h.calls.some(call => call.host === 'claude' && call.args[1] === 'update'), true);
   assert.deepEqual(h.state().installation.hosts, ['claude', 'codex']);
+  assert.equal(h.state().installation.pendingHosts, undefined);
+});
+
+test('a partial first installation resumes its remaining host on the next plain invocation', async t => {
+  const setup = await workspace(t);
+  let failCodex = true;
+  const h = harness({ reject: (host, args) => failCodex && host === 'codex' && args[1] === 'add' });
+  await assert.rejects(initOnboarding({ ...setup, host: 'both', allowSource: false }, h.dependencies), /synthetic_host_failure/);
+  assert.deepEqual(h.state().installation, { hosts: ['claude'], version: '0.1.0', pendingHosts: ['codex'] });
+  assert.equal(await needsOnboarding(setup, { readSettings: h.dependencies.settings.readSettings,
+    version: h.dependencies.version, inspect: async () => ({ claude: true, codex: true }) }), true);
+  failCodex = false;
+  h.calls.length = 0;
+  await initOnboarding(setup, h.dependencies);
+  assert.deepEqual(h.state().installation, { hosts: ['claude', 'codex'], version: '0.1.0' });
+  assert.equal(h.calls.some(call => call.host === 'claude' && call.args[0] === 'plugin'), false);
 });
 
 test('version upgrades include every recorded host and partial failure never claims a complete upgrade', async t => {
@@ -218,10 +240,11 @@ test('version upgrades include every recorded host and partial failure never cla
   await assert.rejects(initOnboarding({ ...setup, host: 'claude', allowSource: false }, dependencies), /synthetic_host_failure/);
   assert.equal(h.state().installation.version, '0.1.0');
   assert.deepEqual(h.state().installation.hosts, ['claude'], 'Codex was removed for rebind and never reinstalled');
+  assert.deepEqual(h.state().installation.pendingHosts, ['codex']);
   assert.equal(h.calls.some(call => call.host === 'claude' && call.args[2] === 'remove'), false);
   assert.equal(h.calls.some(call => call.host === 'codex' && call.args[2] === 'remove'), true);
   failCodex = false;
-  await initOnboarding({ ...setup, host: 'both', allowSource: false }, dependencies);
+  await initOnboarding(setup, dependencies);
   assert.deepEqual(h.state().installation, { hosts: ['claude', 'codex'], version: '0.2.0' });
 });
 
@@ -234,7 +257,7 @@ test('same-name unrelated marketplace is not replaced and malformed host output 
   await assert.rejects(initOnboarding({ ...setup, host: 'codex', allowSource: false },
     { ...invalid.dependencies, run: async (_, args) => args.includes('list') ? 'not JSON' : undefined }),
   { code: 'host_metadata_invalid' });
-  assert.equal(invalid.state().installation, undefined);
+  assert.deepEqual(invalid.state().installation, { hosts: [], version: '0.1.0', pendingHosts: ['codex'] });
 });
 
 test('a failed or cancelled install does not claim success for that host', async t => {
@@ -273,6 +296,20 @@ test('successful uninstall resets only current consent and leaves saved key/hist
     apiKey: 'SYNTHETIC_SAVED', policy: metadata, installation: { hosts: [], version: '0.1.0' },
   });
   assert.equal(await readFile(history, 'utf8'), 'synthetic retained history');
+});
+
+test('explicit uninstall preserves other pending hosts and cancels verified absent pending plugins', async t => {
+  const setup = await workspace(t);
+  const h = harness({ state: { policy: metadata,
+    installation: { hosts: ['claude'], version: '0.1.0', pendingHosts: ['codex'] } } });
+  await uninstallOnboarding({ ...setup, host: 'claude' }, h.dependencies);
+  assert.deepEqual(h.state().installation, { hosts: [], version: '0.1.0', pendingHosts: ['codex'] });
+  h.calls.length = 0;
+  const result = await uninstallOnboarding(setup, h.dependencies);
+  assert.deepEqual(h.state().installation, { hosts: [], version: '0.1.0' });
+  assert.deepEqual(result.cancelledPending, ['codex']);
+  assert.deepEqual(result.removed, []);
+  assert.equal(h.calls.some(call => call.args[1] === 'remove'), false);
 });
 
 test('bare command needs setup only when project consent or current installation is missing', async t => {
@@ -434,4 +471,45 @@ test('agent instructions quote paths for copying and disclose hook trust and cus
   assert.match(text, /'\"'\"'/);
   assert.match(text, /\/hooks/);
   assert.match(text, /does not verify hook activation/);
+});
+
+test('guided metadata consent cannot silently rejoin a running source-enabled viewer', async t => {
+  const setup = await workspace(t), stubs = await stubHosts(setup);
+  const args = ['--project', setup.projectRoot, '--data-dir', setup.dataDir];
+  const env = { ...stubs.env, TYPESAFE_API_KEY: '' };
+  const started = await runCLI(process.execPath, [entry, 'start', ...args, '--allow-source', '--background'], { env });
+  assert.equal(started.code, 0, started.stderr);
+  const previous = JSON.parse(started.stdout);
+  const preload = path.join(setup.base, 'synthetic-terminal.mjs');
+  await writeFile(preload, `
+Object.defineProperty(process.stdin, 'isTTY', {value: true});
+Object.defineProperty(process.stderr, 'isTTY', {value: true});
+`);
+  const guided = await runCLI(process.execPath,
+    ['--import', preload, entry, ...args, '--host', 'claude', '--no-open'],
+    { env, input: 'metadata\n' });
+  assert.equal(guided.code, 1, guided.stderr);
+  assert.match(guided.stderr, /policy_restart_required/);
+  assert.equal(guided.stdout, '');
+  assert.equal((await readSettings(setup)).policy.allowSource, false);
+  const current = await daemonStatus(setup);
+  assert.equal(current.instanceId, previous.instanceId);
+  assert.equal(current.policy.transmitSource, true, 'the existing service still requires explicit stop/start');
+});
+
+test('bare CLI resumes a partial first install using saved consent without extra flags or prompts', async t => {
+  const setup = await workspace(t), stubs = await stubHosts(setup);
+  const args = ['--project', setup.projectRoot, '--data-dir', setup.dataDir];
+  const failed = await runCLI(process.execPath, [entry, 'init', ...args, '--host', 'both', '--no-source'],
+    { env: { ...stubs.env, STUB_FAIL_CODEX_ADD: '1' } });
+  assert.equal(failed.code, 1);
+  const first = await readSettings(setup);
+  assert.deepEqual(first.installation.hosts, ['claude']);
+  assert.deepEqual(first.installation.pendingHosts, ['codex']);
+  const resumed = await runCLI(process.execPath, [entry, ...args, '--background', '--no-open'], { env: stubs.env });
+  assert.equal(resumed.code, 0, resumed.stderr);
+  assert.equal(JSON.parse(resumed.stdout).policy.transmitSource, false);
+  const completed = await readSettings(setup);
+  assert.deepEqual(completed.installation.hosts, ['claude', 'codex']);
+  assert.equal(completed.installation.pendingHosts, undefined);
 });

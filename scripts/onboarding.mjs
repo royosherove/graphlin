@@ -271,7 +271,7 @@ export function agentInstructions({ projectRoot, dataDir, hosts = HOSTS }) {
 export async function needsOnboarding(options, { readSettings, version = packageVersion, inspect } = {}) {
   readSettings ??= (await settingsAPI()).readSettings;
   const saved = await readSettings(options);
-  if (!saved.policy || !saved.installation?.hosts?.length ||
+  if (!saved.policy || !saved.installation?.hosts?.length || saved.installation.pendingHosts?.length ||
     saved.installation.version !== await version() ||
     ((options.allowSource ?? saved.policy.allowSource) && !(process.env.TYPESAFE_API_KEY ?? saved.apiKey)) ||
     options.host !== undefined) return true;
@@ -290,25 +290,29 @@ export async function initOnboarding(options, dependencies = {}) {
   const run = dependencies.run ?? runHost;
   const paths = await projectPaths(options.projectRoot, options.dataDir);
   const saved = await readSettings(paths);
+  const previousPending = saved.installation?.pendingHosts ?? [];
+  const resuming = previousPending.length > 0 && options.host === undefined;
   if (options.replaceKey && !interactive) throw fail('terminal_required',
     'Replacing a key requires a terminal: run graphlin init --replace-key and enter it at the masked prompt.');
-  if (!interactive && (!options.host || options.allowSource === undefined)) {
+  if (!interactive && ((!options.host && !resuming) ||
+      (options.allowSource === undefined && !(resuming && saved.policy)))) {
     throw fail('setup_required', 'Setup needs a terminal, or explicit options: graphlin init --host claude|codex|both --no-source (or --allow-source with a saved key or TYPESAFE_API_KEY).');
   }
   const detected = await detectHosts({ run, env, cwd: paths.projectRoot, signal: options.signal });
   write(`Detected host CLIs: ${detected.join(', ') || 'none'}.\n`);
   if (!detected.length) throw fail('missing_host', 'Install Claude Code or Codex CLI and add it to PATH, then run graphlin init again.');
-  const selected = options.host ?? (detected.length === 1 ? detected[0] :
+  const selected = options.host ?? (resuming ? null : detected.length === 1 ? detected[0] :
     await choose('Install for claude, codex, or both? ', ['claude', 'codex', 'both'], prompt));
   const version = await (dependencies.version ?? packageVersion)();
-  const upgrading = Boolean(saved.installation?.hosts?.length && saved.installation.version !== version);
-  const hosts = [...new Set([...(selected === 'both' ? HOSTS : [selected]), ...(upgrading ? saved.installation.hosts : [])])];
+  const upgrading = Boolean((saved.installation?.hosts?.length || previousPending.length) && saved.installation.version !== version);
+  const hosts = [...new Set([...(selected === 'both' ? HOSTS : selected ? [selected] : []),
+    ...previousPending, ...(upgrading ? saved.installation.hosts : [])])];
   if (hosts.some(host => !detected.includes(host))) throw fail('missing_host',
     'A selected host CLI is unavailable. Install it and add it to PATH, then run graphlin init again.');
   write('Graphlin installs its plugin for your user account, across projects. Source consent applies only to this canonical project.\n');
   write(`Project: ${JSON.stringify(paths.projectRoot)}\n`);
   if (upgrading) write('Updating every recorded Graphlin host to keep the installed version consistent.\n');
-  let allowSource = options.allowSource;
+  let allowSource = options.allowSource ?? (resuming ? saved.policy?.allowSource : undefined);
   if (allowSource === undefined) {
     write('Source mode sends locally filtered source excerpts, user prompts, and public agent messages to TypeSafe. Metadata mode sends none of these and needs no key.\n');
     allowSource = await choose('For this project, choose source or metadata: ', ['source', 'metadata'], prompt) === 'source';
@@ -331,27 +335,28 @@ export async function initOnboarding(options, dependencies = {}) {
   if (options.signal?.aborted) throw cancelled();
   const outputDir = await (dependencies.prepare ?? preparePackages)(paths.dataDir, version);
   if (options.signal?.aborted) throw cancelled();
-  await saveSettings(paths, { policy, ...(apiKey ? { apiKey } : {}) });
-  apiKey = undefined;
   const installed = new Set(saved.installation?.hosts ?? []);
+  const pending = new Set(hosts);
+  const installation = () => ({ hosts: [...installed],
+    version: pending.size ? saved.installation?.version ?? version : version,
+    ...(pending.size ? { pendingHosts: [...pending] } : {}) });
+  await saveSettings(paths, { policy, ...(apiKey ? { apiKey } : {}), installation: installation() });
+  apiKey = undefined;
   for (const host of hosts) {
     write(`Installing Graphlin for ${host}…\n`);
     const context = { cwd: paths.projectRoot, env, signal: options.signal };
     await configureMarketplace(host, outputDir, paths, saved, run, context, async () => {
       installed.delete(host);
-      await saveSettings(paths, { installation: { hosts: [...installed],
-        version: saved.installation?.version ?? version } });
-      write(`Rebinding Codex's Graphlin marketplace. If this fails, retry init --host both to restore it.\n`);
+      await saveSettings(paths, { installation: installation() });
+      write(`Rebinding Codex's Graphlin marketplace. An interrupted installation resumes on the next bare graphlin run.\n`);
     });
     const plugins = host === 'claude' ? await hostList(host, 'plugin', run, context) : [];
     const alreadyInstalled = plugins.some(plugin => plugin.id === PLUGIN && plugin.scope === 'user');
     await run(host, ['plugin', host === 'claude' ? alreadyInstalled ? 'update' : 'install' : 'add', PLUGIN,
       ...(host === 'claude' ? ['--scope', 'user'] : [])], context);
     installed.add(host);
-    // Until the last host succeeds, retain the old global version so retries
-    // continue upgrading every recorded host rather than claiming all are new.
-    const recordedVersion = upgrading && host !== hosts.at(-1) ? saved.installation.version : version;
-    await saveSettings(paths, { installation: { hosts: [...installed], version: recordedVersion } });
+    pending.delete(host);
+    await saveSettings(paths, { installation: installation() });
     write(`Graphlin installed for ${host}.\n`);
   }
   write(agentInstructions({ ...paths, hosts }));
@@ -365,21 +370,38 @@ export async function uninstallOnboarding(options, dependencies = {}) {
   const paths = await projectPaths(options.projectRoot, options.dataDir);
   const saved = await readSettings(paths);
   const installed = new Set(saved.installation?.hosts ?? []);
-  const hosts = options.host === 'both' ? HOSTS : options.host ? [options.host] : [...installed];
+  const pending = new Set(saved.installation?.pendingHosts ?? []);
+  const hosts = options.host === 'both' ? HOSTS : options.host ? [options.host] : [...new Set([...installed, ...pending])];
+  const removed = [], cancelledPending = [];
+  const record = async () => saveSettings(paths, { installation: { hosts: [...installed],
+    version: saved.installation?.version ?? await (dependencies.version ?? packageVersion)(),
+    ...(pending.size ? { pendingHosts: [...pending] } : {}) } });
   write('Uninstall removes the selected Graphlin host plugin for all projects. Saved keys, history, plugin packages, and marketplace registrations are kept.\n');
   if (!hosts.length) write('No Graphlin hosts are recorded. If installed manually, select --host claude, codex, or both.\n');
   for (const host of hosts) {
+    const context = { cwd: paths.projectRoot, env: dependencies.env ?? process.env, signal: options.signal };
+    if (pending.has(host) && !installed.has(host)) {
+      const plugins = await hostList(host, 'plugin', run, context);
+      if (!plugins.some(plugin => host === 'claude' ? plugin.id === PLUGIN && plugin.scope === 'user' : plugin.pluginId === PLUGIN)) {
+        pending.delete(host);
+        cancelledPending.push(host);
+        await record();
+        write(`Cancelled pending installation for ${host}; its CLI reported no installed Graphlin plugin.\n`);
+        continue;
+      }
+    }
     await run(host, ['plugin', host === 'claude' ? 'uninstall' : 'remove', PLUGIN,
       ...(host === 'claude' ? ['--scope', 'user', '--keep-data'] : [])],
-    { cwd: paths.projectRoot, env: dependencies.env ?? process.env, signal: options.signal });
+    context);
     installed.delete(host);
-    await saveSettings(paths, { installation: { hosts: [...installed],
-      version: saved.installation?.version ?? await (dependencies.version ?? packageVersion)() } });
+    pending.delete(host);
+    removed.push(host);
+    await record();
     write(`Graphlin removed from ${host}.\n`);
   }
   await saveSettings(paths, { policy: { ...defaults, ...saved.policy, allowSource: false, persistEvidence: false } });
   write('Source and evidence-persistence consent reset for this project. A running viewer keeps its current policy until stopped; use graphlin stop.\n');
-  return { removed: hosts, retainedData: true };
+  return { removed, ...(cancelledPending.length ? { cancelledPending } : {}), retainedData: true };
 }
 
 export async function openViewer(url, { run = runHost, platform = process.platform, ...options } = {}) {

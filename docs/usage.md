@@ -64,6 +64,10 @@ source choice explicitly, for example:
 npx --yes --package=github:royosherove/graphlin graphlin init --host codex --no-source
 ```
 
+A pending installation can resume from the bare command using already saved
+project consent, including without a terminal. New projects still require an
+explicit consent choice.
+
 With `--allow-source`, a key must already be saved or supplied securely through
 the environment. Use the interactive prompt to save a key. Missing CLIs,
 cancelled setup, and failed host commands produce errors; each completed host
@@ -76,8 +80,9 @@ with an unrelated `graphlin-local` marketplace is reported without replacing it.
 Version upgrades update every recorded host, even when only one is selected,
 so the shared version stays consistent. A failed upgrade retains the old version
 until all hosts finish. If Codex's marketplace rebind fails after its old
-registration was removed, it is no longer recorded as installed; retry
-`init --host both` to restore it. Existing keys and Graphlin history remain.
+registration was removed, it is recorded as pending rather than installed.
+The next bare Graphlin run resumes unfinished hosts, including a partially
+completed first installation. Existing keys and Graphlin history remain.
 
 To reopen the viewer with a fresh one-use browser URL, use `graphlin open`
 (or append `open` to the GitHub package command). It starts a detached viewer

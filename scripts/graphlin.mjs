@@ -61,7 +61,8 @@ try {
         else if (options.command === 'uninstall') result = await uninstallOnboarding({ ...options, signal: controller.signal });
         else {
           if (options.guided && await needsOnboarding(options)) {
-            await initOnboarding({ ...options, signal: controller.signal });
+            const setup = await initOnboarding({ ...options, signal: controller.signal });
+            Object.assign(options, setup.policy);
           }
           if (options.command === 'demo') {
             const { createDemoProject } = await import('../runtime/daemon/demo.mjs');
