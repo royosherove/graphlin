@@ -1116,9 +1116,21 @@ restart, stale source-generation counters, late branch-switch decisions,
 replay-time grant revocation, missing profile catalogue entries, and mismatched
 HTTP/meta frame policies. Regression tests preserve these cases.
 
+The first CI run exposed repeated validation while paging a 20,000-entity,
+40,000-relation model. A bounded cache now reuses validated records only when
+all allowed fields still match the current provider input. Every page still
+reads current policy, validates the selected collections, and fingerprints the
+safe projection. Same-revision evidence changes, revocation, duplicate
+identities, and containment cycles remain covered. The complete entity walk
+uses 101 requests and 140,097 record encodings instead of about six million;
+the local measured walk fell from about 15 seconds to 9 seconds. Independent
+review compared cached and uncached behavior across 228 cases with no remaining
+differences, including newly added support fields. No test timeout or CI gate
+was relaxed.
+
 Local release checks:
 
-- `npm test`: **1,048 passed**, no failures, skips, or cancellations.
+- `npm test`: **1,053 passed**, no failures, skips, or cancellations.
 - `npm run check:packages`: validation, all three plugin builds, and exact
   **135-file** tarball verification passed. Offline installation exercises all
   four parser languages, public SDK imports, and matched successful Claude/Codex

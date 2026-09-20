@@ -5,6 +5,7 @@ const PREFIX = '/api/model/v1/';
 const PAGE_LIMIT = 200, MAX_BYTES = 512 * 1024, PAYLOAD_BYTES = MAX_BYTES - 2048;
 const BODY_BYTES = 4096, RETAINED_POSITIONS = 128, MAX_STREAMS = 16, MAX_GRANTS = 32;
 const MAX_ENUMERATIONS = 64, ENUMERATION_BYTES = 64 * 1024;
+const RECORD_CACHE_BYTES = 16 * 1024 * 1024, RECORD_CACHE_ENTRIES = 75_000;
 const CURSOR_TTL = 5 * 60_000, MAX_TTL = 3600;
 const COLLECTIONS = ['entities', 'relations', 'interpretations', 'activity', 'sessions', 'checkpoints'];
 const FIELDS = [...COLLECTIONS, 'coverage'];
@@ -38,23 +39,32 @@ const path = value => typeof value === 'string' && value.length <= 512 && safeTe
   !/[\\:%<>\r\n]/.test(value) && !value.split('/').some(part => !part || part === '.' || part === '..') &&
   !excluded(value, {}) ? value : undefined;
 
+const schemaEntries = new WeakMap();
+function entries(schema) {
+  let result = schemaEntries.get(schema);
+  if (!result) { result = Object.entries(schema); schemaEntries.set(schema, result); }
+  return result;
+}
 function pick(value, schema) {
   if (!plain(value)) return undefined;
   const result = {};
-  for (const [key, project] of Object.entries(schema)) {
-    const selected = project(value[key]);
+  for (const [key, project] of entries(schema)) {
+    const input = value[key];
+    if (input === undefined) continue;
+    const selected = project(input);
     if (selected !== undefined) result[key] = selected;
   }
   return result;
 }
+const REF_SCHEMA = { artifactId: identifier, eventId: identifier, generation: integerField,
+  hash: v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v) ? v : undefined,
+  startLine: integerField, endLine: integerField, sourceClass: word,
+  extractor: identifier, extractorVersion: versionField, identityVersion: versionField };
 function refs(value) {
   if (!Array.isArray(value) || value.length > 16) return undefined;
   const results = [];
   for (const ref of value) {
-    const result = pick(ref, { artifactId: identifier, eventId: identifier, generation: integerField,
-      hash: v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v) ? v : undefined,
-      startLine: integerField, endLine: integerField, sourceClass: word,
-      extractor: identifier, extractorVersion: versionField, identityVersion: versionField });
+    const result = pick(ref, REF_SCHEMA);
     if (!result?.artifactId && !result?.eventId) return undefined;
     for (const key of ['artifactId', 'eventId', 'generation', 'hash', 'startLine', 'endLine', 'sourceClass',
       'extractor', 'extractorVersion', 'identityVersion']) {
@@ -82,14 +92,26 @@ const SCHEMAS = {
   checkpoints: { id: identifier, projectId: identifier, label: text, sessionId: identifier,
     revision: integerField, sequence: integerField, at: time },
 };
+const SUPPORT_FIELDS = ['sourceRefs', 'entityIds', 'artifactIds'];
+const RECORD_FIELDS = Object.fromEntries(Object.entries(SCHEMAS).map(([kind, schema]) =>
+  [kind, [...new Set([...Object.keys(schema), ...SUPPORT_FIELDS])]]));
 function record(value, kind) {
   const result = pick(value, SCHEMAS[kind]);
   if (!result?.id || (kind === 'relations' && (!result.source || !result.target))) return null;
   // Do not truncate a support/member set while claiming that it is complete.
-  for (const field of ['sourceRefs', 'entityIds', 'artifactIds']) {
+  for (const field of SUPPORT_FIELDS) {
     if (value[field] !== undefined && result[field] === undefined) return null;
   }
   return bytes(result) <= 64 * 1024 ? result : null;
+}
+function sameValue(input, projected, schema) {
+  if (input === projected) return true;
+  if (Array.isArray(projected)) return Array.isArray(input) && input.length === projected.length &&
+    projected.every((value, index) => sameValue(input[index], value, schema));
+  // Validation reads explicit schema properties, including inherited/non-enumerable
+  // ones. Newly present reference fields must invalidate an earlier projection.
+  return !!schema && plain(projected) && plain(input) &&
+    entries(schema).every(([key]) => input[key] === projected[key]);
 }
 function enumeration(value) {
   if (!plain(value) || !identifier(value.artifactId) || !identifier(value.scopeId) ||
@@ -251,6 +273,26 @@ export function createModelAPI({ projectId, getSnapshot, getSessions, createChec
   let epoch = secret().slice(0, 22), sequence = 1, closed = false, flushTask;
   let retained = [1];
   const cursorKey = randomBytes(32), grants = new Map(), clients = new Set();
+  const recordCache = new Map();
+  let recordCacheBytes = 0;
+  function clearRecordCache() { recordCache.clear(); recordCacheBytes = 0; }
+  function projectedRecord(value, kind) {
+    const key = typeof value?.id === 'string' ? `${kind}:${value.id}` : null;
+    const cached = key && recordCache.get(key);
+    // Compare every allowed field with CURRENT provider input, including nested
+    // support. Revision alone cannot detect policy redaction or changed evidence.
+    if (cached && plain(value) && RECORD_FIELDS[kind].every(field =>
+      sameValue(value[field], cached.value[field], field === 'sourceRefs' ? REF_SCHEMA : undefined))) return cached.value;
+    if (cached) { recordCache.delete(key); recordCacheBytes -= cached.bytes; }
+    const result = record(value, kind);
+    if (result) {
+      const size = bytes(result);
+      if (recordCache.size < RECORD_CACHE_ENTRIES && recordCacheBytes + size <= RECORD_CACHE_BYTES) {
+        recordCache.set(key, { value: result, bytes: size }); recordCacheBytes += size;
+      }
+    }
+    return result;
+  }
   const viewer = { id: 'viewer', fields: FIELDS, history: true };
   const bounds = () => ({ epoch, oldestSequence: retained[0], latestSequence: sequence });
   const selectionKey = (selection, principal) => digest(JSON.stringify([projectId, selection, principal.id])).slice(0, 24);
@@ -272,7 +314,7 @@ export function createModelAPI({ projectId, getSnapshot, getSessions, createChec
   function removeGrant(hash, reason = 'revoked') {
     const grant = grants.get(hash);
     if (!grant) return;
-    grants.delete(hash); clearTimeout(grant.timer);
+    grants.delete(hash); clearTimeout(grant.timer); clearRecordCache();
     for (const client of clients) if (client.principal.id === grant.id) endClient(client, reason);
   }
   function sweep() {
@@ -348,7 +390,7 @@ export function createModelAPI({ projectId, getSnapshot, getSessions, createChec
       if (values === undefined) values = [];
       if (!Array.isArray(values) || values.length > CAPS[kind]) fail(503, 'model_capacity_exceeded');
       const allowed = principal.fields.includes(kind) && (kind !== 'checkpoints' || principal.history);
-      result[kind] = allowed ? values.map(value => record(value, kind)).filter(Boolean) : [];
+      result[kind] = allowed ? values.map(value => projectedRecord(value, kind)).filter(Boolean) : [];
       omitted[kind] = allowed ? values.length - result[kind].length : 0;
       const seen = new Set();
       for (const value of result[kind]) {
@@ -521,6 +563,7 @@ export function createModelAPI({ projectId, getSnapshot, getSessions, createChec
   }
   function notify() {
     if (closed) return;
+    clearRecordCache();
     if (sequence === Number.MAX_SAFE_INTEGER) {
       epoch = secret().slice(0, 22); sequence = 0; retained = [];
       for (const client of clients) endClient(client, 'reset');
@@ -676,6 +719,7 @@ export function createModelAPI({ projectId, getSnapshot, getSessions, createChec
   function close() {
     if (closed) return;
     closed = true; clearInterval(timer); clearImmediate(flushTask);
+    clearRecordCache();
     for (const client of clients) endClient(client, 'closed');
     for (const grant of grants.values()) clearTimeout(grant.timer);
     grants.clear(); retained = []; cursorKey.fill(0);

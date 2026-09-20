@@ -212,6 +212,15 @@ test('chunked oversized JSON returns a bounded error instead of processing a par
 
 test('20k inventory snapshots and every page stay bounded and all entities remain reachable', async t => {
   const f = await fixture(t);
+  let recordEncodings = 0, pages = 1;
+  const stringify = JSON.stringify, started = performance.now();
+  // A recording mock would retain every full snapshot and encoded string.
+  t.after(() => { JSON.stringify = stringify; });
+  JSON.stringify = function (value, ...args) {
+    if (value && typeof value.id === 'string' &&
+        (Object.hasOwn(value, 'sourceRefs') || Object.hasOwn(value, 'source'))) recordEncodings++;
+    return Reflect.apply(stringify, this, [value, ...args]);
+  };
   f.state.entities = Array.from({ length: 20_000 }, (_, i) => entity(`node-${String(i).padStart(5, '0')}`));
   f.state.relations = Array.from({ length: 40_000 }, (_, i) => ({ id: `edge-${String(i).padStart(5, '0')}`,
     source: 'node-00000', target: 'node-00001', kind: 'calls' }));
@@ -228,6 +237,7 @@ test('20k inventory snapshots and every page stay bounded and all entities remai
   let cursor = snapshot.data.pages.entities.nextCursor;
   while (cursor) {
     const page = await f.request(`entities?cursor=${cursorQuery(cursor)}`);
+    pages++;
     assert.equal(page.status, 200, page.raw.slice(0, 100));
     assert.ok(page.data.items.length <= 200);
     assert.ok(Buffer.byteLength(page.raw) <= 512 * 1024);
@@ -236,6 +246,10 @@ test('20k inventory snapshots and every page stay bounded and all entities remai
     cursor = page.data.page.nextCursor;
   }
   assert.equal(ids.size, 20_000);
+  assert.equal(f.calls.length, pages, 'every page reads the current provider, even with unchanged revision');
+  assert.ok(recordEncodings < 3 * (20_000 + 40_000),
+    `unchanged records must not be reprojected/encoded on every page: ${recordEncodings} encodings`);
+  t.diagnostic(`20k entity walk: ${pages} requests, ${recordEncodings} record encodings, ${(performance.now() - started).toFixed(0)} ms`);
 });
 
 test('byte-limited interpretation pages trim with advancing cursors and visible coverage', async t => {
@@ -290,6 +304,124 @@ test('revision, activity, projection-policy and expiry changes invalidate page c
   assert.equal((await use(before)).status, 409);
   before = await first(); clock += 300_001;
   assert.equal((await use(before)).status, 409);
+});
+
+test('cached records recheck nested evidence, removed and newly added fields without revision or notify', async t => {
+  const f = await fixture(t, { read: (_selection, current) => current });
+  const first = () => f.request('entities?limit=1');
+  const use = value => f.request(`entities?cursor=${cursorQuery(value.data.page.nextCursor)}`);
+  const mutations = [
+    () => { f.state.entities[0].sourceRefs[0].generation++; },
+    () => { f.state.entities[0].sourceRefs[0].hash = 'b'.repeat(64); },
+    () => { f.state.entities[0].createdAtSequence = 1; },
+    () => { delete f.state.entities[0].label; },
+    () => { f.state.relations[0].target = 'beta'; },
+    () => { f.state.interpretations[0].entityIds.push('beta'); },
+    () => { f.state.entities[0].sourceRefs[0].hash = 'invalid'; },
+  ];
+  for (const mutate of mutations) {
+    const baseline = await first();
+    assert.equal(baseline.status, 200);
+    assert.equal((await use(baseline)).status, 200, 'warm the cache');
+    mutate();
+    const changed = await use(baseline);
+    assert.equal(changed.status, 409, changed.raw);
+    assert.equal(changed.data.error, 'stale_cursor');
+  }
+  assert.equal((await f.request('entities/root')).status, 404, 'invalid support cannot reuse its old valid record');
+});
+
+test('cached JSON records enforce support guards even for fields outside their record schema', async t => {
+  const f = await fixture(t);
+  await f.post('checkpoints', { label: 'Guard fixture' });
+  const cases = [
+    ['entities', ['entityIds', 'artifactIds']],
+    ['relations', ['entityIds', 'artifactIds']],
+    ['interpretations', ['artifactIds']],
+    ['sessions', ['sourceRefs', 'entityIds', 'artifactIds']],
+    ['checkpoints', ['sourceRefs', 'entityIds', 'artifactIds']],
+  ];
+  for (const [kind, fields] of cases) for (const field of fields) {
+    const target = f.state[kind][0], id = target.id;
+    const baseline = await f.request('entities?limit=1');
+    target[field] = [];
+    const changed = await f.request(`entities?cursor=${cursorQuery(baseline.data.page.nextCursor)}`);
+    assert.equal(changed.status, 409, `${kind}.${field} must invalidate the cached cursor`);
+    const warm = await f.request('snapshot');
+    assert.ok(!warm.data[kind].some(value => value.id === id), `${kind}.${field} must drop the invalid record`);
+    f.api.notify();
+    const cold = await f.request('snapshot');
+    assert.deepEqual(warm.data[kind], cold.data[kind], 'cache reuse must agree with fresh record validation');
+    assert.deepEqual(warm.data.coverage.projection, cold.data.coverage.projection);
+    delete target[field];
+  }
+});
+
+test('cached refs validate newly inherited and non-enumerable known fields including absent optional metadata', async t => {
+  const f = await fixture(t, { read: (_selection, current) => current });
+  const fields = {
+    artifactId: 'artifact-two', eventId: 'event-extra', generation: 2, hash: 'b'.repeat(64),
+    startLine: 1, endLine: 3, sourceClass: 'source', extractor: 'parser',
+    extractorVersion: 'version-2', identityVersion: 'identity-2',
+  };
+  for (const mode of ['inherited', 'non-enumerable']) for (const [field, valid] of Object.entries(fields)) {
+    for (const value of [valid, 'INVALID REF=RAW_SENTINEL']) {
+      f.state = state();
+      const base = field === 'artifactId' ? { eventId: 'event-base' } : { artifactId: 'artifact-one' };
+      f.state.entities[0].sourceRefs = [{ ...base }];
+      const baseline = await f.request('entities?limit=1');
+      const ref = mode === 'inherited' ? Object.assign(Object.create({ [field]: value }), base) : { ...base };
+      if (mode === 'non-enumerable') Object.defineProperty(ref, field, { value, enumerable: false });
+      f.state.entities[0].sourceRefs = [ref];
+      const changed = await f.request(`entities?cursor=${cursorQuery(baseline.data.page.nextCursor)}`);
+      assert.equal(changed.status, 409, `${mode} ${field} must revalidate without revision or notify`);
+      const warm = await f.request('entities/root');
+      assert.equal(warm.status, value === valid ? 200 : 404);
+      if (value === valid) assert.equal(warm.data.entity.sourceRefs[0][field], value);
+      assert.doesNotMatch(warm.raw, /RAW_SENTINEL/);
+      f.api.notify();
+      const cold = await f.request('entities/root');
+      assert.equal(warm.status, cold.status);
+      assert.deepEqual(warm.data.entity, cold.data.entity);
+    }
+  }
+});
+
+test('cached projection never serializes unsupported raw fields or restores withheld labels for another grant', async t => {
+  const f = await fixture(t, { read: (_selection, current) => current });
+  const first = await f.request('entities?limit=1');
+  const cursor = first.data.page.nextCursor;
+  const raw = { bigint: 1n };
+  raw.cycle = raw;
+  Object.defineProperty(raw, 'toJSON', { get() { throw new Error('RAW_SENTINEL'); } });
+  for (const value of [...f.state.entities, ...f.state.interpretations]) value['extension.raw'] = raw;
+  f.state.storage = raw;
+  const unchanged = await f.request(`entities?cursor=${cursorQuery(cursor)}`);
+  assert.equal(unchanged.status, 200, unchanged.raw);
+  assert.doesNotMatch(unchanged.raw, /RAW_SENTINEL/);
+  f.state.entities[0].label = 'API_KEY=RAW_SENTINEL';
+  const redacted = await f.request('snapshot');
+  assert.equal(redacted.data.entities.find(value => value.id === 'root').label, undefined);
+  assert.doesNotMatch(redacted.raw, /RAW_SENTINEL/);
+  const grant = await f.grant({ fields: ['activity'], history: false });
+  const restricted = await f.request('snapshot', { viewer: false, headers: grant.headers });
+  assert.deepEqual(restricted.data.entities, []);
+  assert.deepEqual(restricted.data.interpretations, []);
+  assert.doesNotMatch(restricted.raw, /RAW_SENTINEL/);
+});
+
+test('cached snapshots still refresh fallback sessions and reject duplicate identities and containment cycles', async t => {
+  let sessions = [{ id: 'session-one', status: 'active' }];
+  const f = await fixture(t, { getSessions: () => sessions });
+  delete f.state.sessions;
+  const first = await f.request('entities?limit=1');
+  sessions = [{ id: 'session-two', status: 'active' }];
+  assert.equal((await f.request(`entities?cursor=${cursorQuery(first.data.page.nextCursor)}`)).status, 409);
+  f.state.relations.push(structuredClone(f.state.relations[0]));
+  assert.equal((await f.request('entities')).data.error, 'duplicate_model_identity');
+  f.state.relations.pop();
+  f.state.entities[0].parentId = 'child';
+  assert.equal((await f.request('entities')).data.error, 'invalid_model_containment');
 });
 
 test('cursors cannot cross principals, collections, parents, scopes or be forged', async t => {
