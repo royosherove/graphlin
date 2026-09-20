@@ -13,7 +13,7 @@ const validBranch = value => safeText(value, 240) && !CONTROLS.test(value) &&
 /** Local ref metadata only. The caller owns reconciliation and model updates. */
 export function createLineageReader({ projectRoot, projectId, execute = execFile } = {}) {
   if (typeof projectRoot !== 'string' || !path.isAbsolute(projectRoot) ||
-      Buffer.byteLength(projectRoot) > 4096 || CONTROLS.test(projectRoot) ||
+      Buffer.byteLength(projectRoot) > 4096 || projectRoot.includes('\0') ||
       typeof projectId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(projectId) ||
       typeof execute !== 'function') throw new TypeError('invalid_lineage_options');
   let cached, expiresAt = 0, pending;
@@ -48,6 +48,7 @@ export function createLineageReader({ projectRoot, projectId, execute = execFile
   }
 
   async function readRefs() {
+    if (CONTROLS.test(projectRoot)) return result('unavailable');
     const branch = await git(BRANCH);
     if (branch.status === 'not_git') return result('not_git');
     if (branch.status !== 'detached' && (branch.status !== 'ok' || !validBranch(branch.text))) return result('unavailable');

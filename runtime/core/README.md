@@ -8,7 +8,11 @@ serialized byte limits that JSON Schema alone does not enforce.
 Evidence is scoped to the canonical worktree root. The original root spelling
 is accepted as an alias, including macOS `/var` versus `/private/var`. Child
 symlinks are all rejected, including links that stay inside the root. The store
-retains bounded path/version metadata, not source text. `missing` retracts
+retains bounded path/version metadata, not source text. Strict metadata consent
+never opens or hashes source files; local-source consent permits parsing without
+remote transmission. Restarted stores advance beyond retained generation
+counters, and lineage changes invalidate references until fresh capture.
+`missing` retracts
 support; `unavailable` and `partial` only make it stale. The coordinator must
 serialize capture and decision acceptance and call `isCurrent` first.
 
@@ -32,11 +36,12 @@ copied context. Relevance and sensitivity are independent questions.
 
 Public messages use `event.id` as `messageId`, a hash of complete public text,
 and `Math.max(1, event.sequence)` as `contentVersion`. Graph references retain
-the full discriminated source reference and `basis: "jev_interpretation"`.
+the full discriminated source reference. Jev keeps the compatible
+`basis: "jev_interpretation"`; other providers use `"decision_interpretation"`.
 Public intent produces proposed claims. Source interpretation produces observed
 claims with unknown activity/authorship; generic tool success never verifies
 runtime behavior. Compilation conservatively enforces the default admission
-floors even if an injected Jev admission policy is looser.
+floors even if an injected provider's admission policy is looser.
 
 Experimental graph-admission floor v1: both nodes and edges require
 `supportProbability >= 0.5` to be drawn. Lower-support judgments are omitted,

@@ -9,8 +9,8 @@ const fingerprint = stat => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.c
 
 export class EvidenceStore {
   #root; #inputRoot; #policy; #records = new Map(); #byId = new Map();
-  #maxTrackedPaths; #reconcileCursor = 0; #lineage = null;
-  constructor({ projectRoot, policy, maxTrackedPaths = LIMITS.trackedPaths } = {}) {
+  #maxTrackedPaths; #reconcileCursor = 0; #lineage = null; #generationFloor;
+  constructor({ projectRoot, policy, maxTrackedPaths = LIMITS.trackedPaths, generationFloor = 0 } = {}) {
     try {
       this.#inputRoot = path.resolve(projectRoot);
       this.#root = realpathSync(projectRoot);
@@ -18,6 +18,7 @@ export class EvidenceStore {
     } catch { fail('INVALID_PROJECT_ROOT'); }
     this.#policy = createPolicy(policy);
     this.#maxTrackedPaths = integer(maxTrackedPaths, 1, 20000) ? maxTrackedPaths : LIMITS.trackedPaths;
+    this.#generationFloor = integer(generationFloor, 0, Number.MAX_SAFE_INTEGER - 1) ? generationFloor : 0;
   }
 
   #locator(input) {
@@ -119,7 +120,7 @@ export class EvidenceStore {
     const previous = this.#records.get(locator.relative);
     const version = hash([this.#lineage, observed.status, observed.hash, observed.stamp]);
     const id = opaque('artifact', this.#root, locator.relative);
-    const generation = previous ? previous.generation + (previous.version !== version ? 1 : 0) : 1;
+    const generation = previous ? previous.generation + (previous.version !== version ? 1 : 0) : this.#generationFloor + 1;
     const artifact = {
       id, path: locator.absolute, relativePath: locator.relative,
       hash: observed.hash, generation, exists: observed.exists, status: observed.status,

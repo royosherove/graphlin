@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isDeepStrictEqual as equal } from 'node:util';
 import { integer, plain } from '../core/common.mjs';
 import {
   DEFAULT_LIMITS, id, token, label, key, byteSize, relativePath, currentPolicy,
@@ -36,7 +37,7 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
   const dependents = new Map(), children = new Map(), incident = new Map(), memberships = new Map(), symbols = new Set();
   const importTargets = new Map(), pendingImports = new Set();
   const weights = new WeakMap();
-  let bytes = 0, historyBytes = 0, revision = 0, sequence = 0;
+  let bytes = 0, historyBytes = 0, revision = 0, sequence = 0, mutations = 0;
   let lineage = null;
   const deferred = { entities: 0, relations: 0, artifacts: 0, imports: 0, interpretations: 0, scopes: 0 };
   let inventoryCoverage = { complete: false, inventoried: 0, deferred: 0, excluded: 0, unsupported: 0, unavailable: 0 };
@@ -87,10 +88,12 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
     if (!old) return;
     bytes -= weights.get(old) ?? 0;
     map.delete(recordId);
+    mutations++;
     if (type) unindex(old, type);
   }
   function put(map, recordId, record, cap, type) {
     const old = map.get(recordId), weight = byteSize(record);
+    if (old && equal(old, record)) return true;
     const delta = weight - (old ? weights.get(old) ?? 0 : 0);
     if ((!old && map.size >= cap) || bytes + historyBytes + delta > limits.bytes) {
       // A byte limit must never preserve a now-invalid current relationship.
@@ -104,6 +107,7 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
     if (old && type) unindex(old, type);
     bytes += delta;
     map.set(recordId, record);
+    mutations++;
     weights.set(record, weight);
     if (type) index(record, type);
     return true;
@@ -139,8 +143,10 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
   function admitEntity(entity, summary = false) {
     // File and root summaries can replace expanded symbols, including when
     // discovered after a tooling-heavy batch has filled the model.
-    while (summary && (!entities.has(entity.id) && entities.size >= limits.entities ||
-      bytes + historyBytes + byteSize(entity) > limits.bytes) && symbols.size) {
+    const old = entities.get(entity.id);
+    const delta = byteSize(entity) - (weights.get(old) ?? 0);
+    while (summary && (!old && entities.size >= limits.entities ||
+      bytes + historyBytes + delta > limits.bytes) && symbols.size) {
       evictEntity(symbols.values().next().value);
     }
     const accepted = put(entities, entity.id, entity, limits.entities, 'entities');
@@ -201,6 +207,7 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
 
   function observeInventory({ entries = [], coverage = {} } = {}) {
     if (!Array.isArray(entries)) return stats();
+    const before = mutations, oldCoverage = inventoryCoverage, oldDeferred = copy(deferred);
     const effectivePolicy = currentPolicy(policy);
     const accepted = [];
     for (const entry of entries.slice(0, limits.artifacts * 2)) {
@@ -234,7 +241,7 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
         ...(id(entry.artifactId) || old?.artifactId ? { artifactId: id(entry.artifactId) ?? old.artifactId } : {}),
       };
       if (!put(files, name, record, limits.artifacts)) { deferred.artifacts++; continue; }
-      scheduleImports(name);
+      if (!equal(old, record)) scheduleImports(name);
       if (!entities.has(scopeId)) admitEntity(metadataEntity(scopeId, name, 'file', parentId), true);
       if (!old) {
         const scope = scopes.get(parentId);
@@ -246,8 +253,8 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
       ...Object.fromEntries(['inventoried', 'deferred', 'excluded', 'unsupported', 'unavailable'].map(field =>
         [field, integer(coverage[field]) ? coverage[field] : field === 'inventoried' ? files.size : 0])),
     };
-    commit('inventory.observed');
     resolveImports();
+    if (mutations !== before || !equal(oldCoverage, inventoryCoverage) || !equal(oldDeferred, deferred)) commit('inventory.observed');
     return stats();
   }
 
@@ -278,6 +285,7 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
 
   function invalidateArtifacts(values = []) {
     if (!Array.isArray(values)) return stats();
+    const before = mutations, oldDeferred = copy(deferred);
     for (const input of values.slice(0, limits.artifacts)) {
       const value = typeof input === 'string' ? { id: input } : input;
       const artifactId = id(value?.id ?? value?.artifactId);
@@ -297,13 +305,16 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
         ...(name ? { relativePath: name } : {}),
         ...(old?.enumeration ? { enumeration: old.enumeration } : {}),
       };
+      // Fresh parsing already establishes this exact capture. Do not add a
+      // redundant authority flag on every periodic source revalidation.
+      if (record.fresh && !old.observed) delete record.observed;
       if (!put(artifacts, artifactId, record, limits.artifacts)) { deferred.artifacts++; continue; }
       if (name && files.has(name)) put(files, name, { ...files.get(name), artifactId }, limits.artifacts);
       if (status !== 'present' || !sameVersion(old, record)) {
         artifactDependents(artifactId, status === 'missing' && value.complete === true ? 'retracted' : 'stale');
       }
     }
-    commit('artifacts.observed');
+    if (mutations !== before || !equal(oldDeferred, deferred)) commit('artifacts.observed');
     return stats();
   }
 
@@ -352,11 +363,13 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
     }
     const file = name ? files.get(name) : null;
     if (name && /\.(?:md|markdown|mdx|rst|adoc|txt)$/i.test(name)) return stats();
+    const before = mutations, oldDeferred = copy(deferred);
     const previous = new Set([...dependents.get(cert.artifactId) ?? []].filter(record =>
       entities.get(record.id) === record && record.artifactId === cert.artifactId).map(record => record.id));
     const artifact = {
       id: cert.artifactId, hash: cert.hash, generation: cert.generation, status: 'present',
-      complete: cert.complete, fresh: true, enumeration: cert, ...(name ? { relativePath: name } : {}),
+      complete: sameVersion(oldArtifact, cert) ? oldArtifact.complete : cert.complete,
+      fresh: true, enumeration: cert, ...(name ? { relativePath: name } : {}),
     };
     if (!put(artifacts, artifact.id, artifact, limits.artifacts)) { deferred.artifacts++; return stats(); }
     if (oldArtifact && !sameVersion(oldArtifact, cert)) artifactDependents(cert.artifactId, 'stale');
@@ -373,10 +386,12 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
       const existing = entities.get(value.id);
       if (existing && existing.artifactId && existing.artifactId !== cert.artifactId) { complete = false; continue; }
       const entity = entityRecord({
-        ...value, parentId: null, basis: cert.capability === 'parsed' ? 'parsed' : 'lexical',
+        ...value, parentId: existing?.parentId === id(value.parentId) ? existing.parentId : null,
+        basis: cert.capability === 'parsed' ? 'parsed' : 'lexical',
         validity: 'current', classification: cert.capability === 'parsed' ? 'accepted' : 'tentative',
         sourceRefs: [sourceRef(cert, value, event)], knownAtSequence: existing?.knownAtSequence ?? sequence + 1,
         createdAtSequence: existing?.createdAtSequence,
+        ownership: existing?.ownership,
         ...(value.id === cert.scopeId && name ? { relativePath: name } : {}),
       }, limits.refs);
       if (!entity) { complete = false; continue; }
@@ -397,9 +412,10 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
       if (!entity || !incoming.has(entityId)) continue;
       const supported = parentId && cert.capability === 'parsed' && validParent(entity, parentId);
       if (!supported && parentId) complete = false;
-      put(entities, entity.id, {
-        ...entity, parentId: supported ? parentId : null, ...(!supported ? { ownership: 'unresolved' } : {}),
-      }, limits.entities, 'entities');
+      const owned = { ...entity, parentId: supported ? parentId : null };
+      if (supported) delete owned.ownership;
+      else owned.ownership = 'unresolved';
+      put(entities, entity.id, owned, limits.entities, 'entities');
     }
     // Disappearance needs matching enumeration semantics. Grammar/identity
     // upgrades make old identities stale, even when the source hash is unchanged.
@@ -439,11 +455,13 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
       }
     }
     observeImports(structure.imports, cert, event, complete);
-    commit('structure.observed', { artifactIds: [cert.artifactId], ...(id(event?.sessionId) ? { sessionId: event.sessionId } : {}) });
     if (name) scheduleImports(name);
     for (const activity of activities.values()) applyCreation(activity);
     resolveImports();
-    return stats();
+    if (mutations !== before || !equal(oldDeferred, deferred)) {
+      commit('structure.observed', { artifactIds: [cert.artifactId], ...(id(event?.sessionId) ? { sessionId: event.sessionId } : {}) });
+    }
+    return { ...stats(), accepted: true };
   }
 
   function observeImports(values, cert, event, complete) {

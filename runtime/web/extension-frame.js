@@ -45,7 +45,6 @@ export function createExtensionFrame({
   }
   function fail(error) { stop(error); onFailure(); }
   function onLoad() {
-    console.warn('Fixture frame loaded');
     if (stopped) return;
     if (loaded) { fail(new Error('extension_navigated')); return; }
     loaded = true;
@@ -60,7 +59,6 @@ export function createExtensionFrame({
       if (Date.now() - windowStart > 1000) { windowStart = Date.now(); messages = 0; }
       if (++messages > 120) throw new Error('extension_message_rate');
       const message = event.data;
-      console.warn('Fixture frame message:', message?.type);
       jsonBytes(message, EXTENSION_LIMITS.projectionBytes, 'extension_message_limit');
       if (!ready) {
         if (!loaded || message?.type !== 'graphlin:ready' || message.apiVersion !== 1 || message.nonce !== nonce)

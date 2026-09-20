@@ -25,6 +25,7 @@ const RELATIONS = ['calls', 'reads', 'writes', 'publishes', 'consumes', 'depends
 const CLASSIFICATIONS = ['pending', 'accepted', 'tentative', 'abstained', 'stale'];
 const EVIDENCE = ['proposed', 'observed', 'verified', 'removed'];
 const VALIDITY = ['current', 'stale', 'retracted'];
+const INTERPRETATION_BASES = ['jev_interpretation', 'decision_interpretation'];
 const ACTIVITY = ['idle', 'pending', 'running', 'failed', 'interrupted', 'unknown'];
 const EVENT_STATES = ['pending', 'succeeded', 'failed', 'interrupted', 'unresolved', 'observed'];
 const CLASSIFIERS = ['ready', 'metadata_only', 'missing_key', 'paused', 'unavailable', 'timeout', 'demo'];
@@ -235,7 +236,7 @@ function normalizeRefs(value, includeExcerpts = true) {
       startLine: count(ref.startLine),
       endLine: count(ref.endLine),
       sourceClass: token(ref.sourceClass, ['source', 'public_intent'], 'unknown'),
-      basis: ref.basis === 'jev_interpretation' ? 'jev_interpretation' : 'unknown',
+      basis: token(ref.basis, INTERPRETATION_BASES, 'unknown'),
     };
     if (record(ref.sourceRef) && ref.sourceRef.type === 'artifact') {
       result.sourceRef = {
@@ -441,10 +442,12 @@ export function claimSummary(claim) {
   if (claim.classification !== 'accepted') {
     return { tone: 'proposed', label: upperFirst(claim.classification), explanation: 'The code interpretation is uncertain or incomplete. Inspect the evidence before relying on this claim.' };
   }
-  if (!refs.length || refs.some(ref => ref.basis !== 'jev_interpretation' || ref.sourceClass === 'unknown')) {
+  if (!refs.length || refs.some(ref => !INTERPRETATION_BASES.includes(ref.basis) || ref.sourceClass === 'unknown')) {
     return { tone: 'proposed', label: 'Provenance incomplete', explanation: 'This snapshot does not provide enough provenance to establish the basis of this claim.' };
   }
-  return { tone: 'observed', label: 'Code evidence', explanation: 'Jev interpreted approved source evidence as supporting this claim. Code or configuration can describe a dependency without proving that it runs or connects successfully.' };
+  const generic = refs.some(ref => ref.basis === 'decision_interpretation');
+  return { tone: 'observed', label: generic ? 'Decision interpretation' : 'Code evidence',
+    explanation: `${generic ? 'A decision provider' : 'Jev'} interpreted approved source evidence as supporting this claim. Code or configuration can describe a dependency without proving that it runs or connects successfully.` };
 }
 
 export function edgeLanes(edges) {
@@ -2446,7 +2449,9 @@ export function startViewer() {
     fact(facts, 'Classification', upperFirst(claim.classification));
     fact(facts, 'Validity', upperFirst(claim.validity));
     fact(facts, 'Evidence state', claim.evidenceState === 'verified' ? 'Verification reported; scope unavailable' : upperFirst(claim.evidenceState));
-    fact(facts, 'Basis', claim.basis ? upperFirst(claim.basis) : claim.sourceRefs.length && claim.sourceRefs.every(ref => ref.basis === 'jev_interpretation') ? 'Jev code interpretation' : 'Provenance incomplete');
+    const interpreted = claim.sourceRefs.length && claim.sourceRefs.every(ref => INTERPRETATION_BASES.includes(ref.basis));
+    const interpretationLabel = claim.sourceRefs.some(ref => ref.basis === 'decision_interpretation') ? 'Decision interpretation' : 'Jev code interpretation';
+    fact(facts, 'Basis', claim.basis ? upperFirst(claim.basis) : interpreted ? interpretationLabel : 'Provenance incomplete');
     fact(facts, 'Runtime', 'Not established by this snapshot');
     if (selected.type === 'node') fact(facts, 'Activity', upperFirst(claim.activityState));
     else {
@@ -2535,7 +2540,8 @@ export function startViewer() {
       const item = html('li', undefined, 'source-reference');
       item.append(
         html('strong', ref.sourceClass === 'public_intent' ? 'Public intent' : ref.sourceClass === 'source' || (claim.basis === 'parsed' && ref.artifactId) ? 'Source artifact' : 'Unknown source class'),
-        html('span', claim.basis ? `Basis: ${upperFirst(claim.basis)}` : ref.basis === 'jev_interpretation' ? 'Basis: Jev interpretation' : 'Basis not supplied'),
+        html('span', claim.basis ? `Basis: ${upperFirst(claim.basis)}` : ref.basis === 'decision_interpretation'
+          ? 'Basis: Decision interpretation' : ref.basis === 'jev_interpretation' ? 'Basis: Jev interpretation' : 'Basis not supplied'),
         html('span', `${ref.sourceClass === 'public_intent' ? 'Message' : 'Artifact'}: ${ref.sourceRef?.messageId || ref.artifactId || 'not supplied'}`),
         html('span', `Version: ${ref.hash || 'not supplied'} · ${ref.sourceClass === 'public_intent' ? 'content version' : 'generation'} ${ref.sourceRef?.contentVersion ?? ref.generation}`),
       );

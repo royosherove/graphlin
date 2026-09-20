@@ -134,7 +134,10 @@
           ]
         },
         "basis": {
-          "const": "jev_interpretation"
+          "enum": [
+            "jev_interpretation",
+            "decision_interpretation"
+          ]
         },
         "sourceRef": {
           "oneOf": [

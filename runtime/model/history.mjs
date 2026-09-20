@@ -1,7 +1,7 @@
 import { integer, plain } from '../core/common.mjs';
 import {
   id, token, label, relativePath, entityRecord, relationRecord, interpretationRecord,
-  certificate, activityRecord, lineageRecord,
+  certificate, activityRecord, lineageRecord, time,
 } from './records.mjs';
 
 const natural = value => integer(value) ? value : undefined;
@@ -9,7 +9,7 @@ const boolean = value => typeof value === 'boolean' ? value : undefined;
 const identity = value => id(value) ?? undefined;
 const parent = value => value === null ? null : identity(value);
 const name = value => relativePath(value) ?? undefined;
-const timestamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : undefined;
+const timestamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? time(value) : undefined;
 const hash = value => value === null || typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : undefined;
 
 function pick(value, fields) {

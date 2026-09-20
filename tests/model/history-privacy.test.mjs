@@ -180,6 +180,7 @@ test('frozen history is validated and allowlisted without importing nested state
   saved.coverage.scopes[0].credentials = 'RAW_SYNTHETIC_EXTRA';
   saved.coverage.artifacts[0].text = 'RAW_SYNTHETIC_EXTRA';
   saved.checkpoints[0].state = { transcript: 'RAW_SYNTHETIC_EXTRA' };
+  saved.sessions.push({ id: 'session', startedAt: 'Jan 1 2020 (RAW_SYNTHETIC_EXTRA)' });
   const restored = create({ policy, restoredState: state });
   assert.doesNotMatch(JSON.stringify(restored.snapshot({ persistent: true })), /RAW_SYNTHETIC_EXTRA/);
   assert.equal(restored.snapshot({ checkpointId: marker.id }).entities.find(value => value.id === 'class-a').validity, 'current');

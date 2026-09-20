@@ -85,9 +85,9 @@ export function createPlatform({
         // acceptance. Recheck here before either admission or cache completion.
         if (!isCurrent(artifact)) { errors.stale++; return; }
         const before = model.stats();
-        model.observeStructure(structure, { event });
+        const observation = model.observeStructure(structure, { event });
         const after = model.stats();
-        if (after.revision === before.revision || after.deferred.entities > before.deferred.entities) {
+        if (!observation.accepted || after.deferred.entities > before.deferred.entities) {
           rememberDeferred(artifact, 'model_capacity');
           return;
         }
@@ -178,8 +178,12 @@ export function createPlatform({
           parsed.delete(input.id);
           continue;
         }
-        if (parsed.get(input.id) === version(artifact) ||
-            processing?.id === input.id && processing.version === version(artifact) && processing.artifact.lineageEpoch === lineageEpoch) continue;
+        if (parsed.get(input.id) === version(artifact)) {
+          deferred.delete(input.id);
+          continue;
+        }
+        if (processing?.id === input.id && processing.version === version(artifact) &&
+            processing.artifact.lineageEpoch === lineageEpoch) continue;
         if (!queue.has(input.id) && queue.size >= QUEUE_LIMIT) {
           if (!deferred.has(input.id)) overflow.push(input.id);
           rememberDeferred(artifact, 'queue_capacity');

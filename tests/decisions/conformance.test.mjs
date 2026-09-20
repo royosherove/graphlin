@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createDecisionService } from '../../runtime/decisions/index.mjs';
 import { jevProvider } from './jev-provider.mjs';
 import { createPipeline } from '../../runtime/pipeline.mjs';
 import {
-  createPolicy, metadataEvent, buildCandidates, compileDecision, emptyGraph,
+  createPolicy, metadataEvent, buildCandidates, compileDecision, emptyGraph, applyPatch,
 } from '../../runtime/core/index.mjs';
 import { validBundle } from '../../runtime/core/candidates.mjs';
 import { candidate, input, makeCore, fakeClock, flush, proposal } from '../jev/helpers.mjs';
@@ -88,6 +88,38 @@ for (const [name, makeProvider] of providers) {
       assert.ok(compileDecision(emptyGraph(), { ...args, decision }));
       assert.equal(compileDecision(emptyGraph(), { ...args, decision: structuredClone(decision) }), null);
       assert.ok(decision.bundle.candidates.every(c => c.sourceClass === (publicIntent ? 'public_intent' : 'source')));
+    }
+  });
+
+  test(`${name}: provider decisions compile and apply with the correct graph reference basis`, async t => {
+    const provider = makeProvider(value => ({
+      ...value, provider: { id: name === 'jev' ? 'recorded' : 'jev' },
+      basis: 'provider_claimed_basis',
+    }));
+    const instance = createDecisionService({ provider });
+    t.after(() => instance.close());
+    for (const publicIntent of [false, true]) {
+      const args = coreInput(publicIntent);
+      const decision = await instance.classify(args);
+      assert.equal(decision.status, 'accepted');
+      assert.equal(decision.provider.id, name, 'provider output cannot override service provenance');
+      const initial = emptyGraph();
+      const patch = compileDecision(initial, { ...args, decision });
+      assert.ok(patch);
+      const graph = applyPatch(initial, patch);
+      assert.ok(graph.nodes.length > 0);
+      assert.ok(graph.edges.length > 0);
+      const basis = name === 'jev' ? 'jev_interpretation' : 'decision_interpretation';
+      for (const item of [...graph.nodes, ...graph.edges]) {
+        assert.equal(item.evidenceState, publicIntent ? 'proposed' : 'observed');
+        assert.ok(item.sourceRefs.every(ref => ref.basis === basis));
+        assert.ok(item.sourceRefs.every(ref => ref.sourceClass === (publicIntent ? 'public_intent' : 'source')));
+        assert.ok(item.sourceRefs.every(ref => decision.bundle.candidates.some(candidate =>
+          candidate.artifactId === ref.artifactId && candidate.hash === ref.hash &&
+          candidate.generation === ref.generation && candidate.startLine === ref.startLine &&
+          candidate.endLine === ref.endLine)));
+      }
+      assert.equal(applyPatch(graph, patch), graph, 'both provenance forms pass graph validation');
     }
   });
 
@@ -229,4 +261,33 @@ test('no provider model or usage is invented when the alternate provider supplie
   assert.equal(result.stages.A.usage, null);
   assert.equal(result.diagnostics.trace.requests[0].usage, null);
   assert.equal(result.diagnostics.usageIncomplete, true);
+});
+
+test('legacy manual decisions remain compatible and alternate providers can update legacy graph references', async t => {
+  const instance = createDecisionService({ provider: createRecordedProvider() });
+  t.after(() => instance.close());
+  const args = coreInput();
+  const decision = await instance.classify(args);
+  const { provider, ...legacy } = decision;
+  assert.equal(provider.id, 'recorded');
+  const initial = emptyGraph();
+  const previous = applyPatch(initial, compileDecision(initial, { ...args, decision: legacy }));
+  assert.ok([...previous.nodes, ...previous.edges].every(item =>
+    item.sourceRefs.every(ref => ref.basis === 'jev_interpretation')));
+  const patch = compileDecision(previous, { ...args, decision });
+  const updated = applyPatch(previous, patch);
+  assert.ok([...updated.nodes, ...updated.edges].every(item =>
+    item.sourceRefs.every(ref => ref.basis === 'decision_interpretation')));
+  assert.deepEqual(updated.nodes.map(node => node.id), previous.nodes.map(node => node.id));
+  assert.deepEqual(updated.edges.map(edge => edge.id), previous.edges.map(edge => edge.id));
+  const invalid = structuredClone(patch);
+  invalid.operations[0].node.sourceRefs[0].basis = 'arbitrary_provider_basis';
+  assert.throws(() => applyPatch(previous, invalid), /INVALID_PATCH/);
+});
+
+test('graph schema admits exactly legacy and provider-independent decision provenance', async () => {
+  const schema = JSON.parse(await readFile(new URL('../../schemas/graph.schema.json', import.meta.url), 'utf8'));
+  assert.deepEqual(schema.$defs.reference.properties.basis, {
+    enum: ['jev_interpretation', 'decision_interpretation'],
+  });
 });

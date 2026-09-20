@@ -31,7 +31,8 @@ function validReference(ref) {
   if (!exactKeys(ref, REF, ['excerpt', 'sourceRef']) || !isId(ref.artifactId) || !isHash(ref.hash) ||
       !integer(ref.generation, 1) || !isId(ref.eventId) || !integer(ref.startLine, 1, 10000000) ||
       !integer(ref.endLine, ref.startLine, 10000000) || ref.endLine - ref.startLine >= LIMITS.snippetLines ||
-      !['source', 'public_intent'].includes(ref.sourceClass) || ref.basis !== 'jev_interpretation' ||
+      !['source', 'public_intent'].includes(ref.sourceClass) ||
+      !['jev_interpretation', 'decision_interpretation'].includes(ref.basis) ||
       (Object.hasOwn(ref, 'excerpt') && !safeText(ref.excerpt, LIMITS.excerptChars))) return false;
   if (ref.sourceClass === 'public_intent' && !ref.sourceRef) return false;
   if (ref.sourceRef) {
@@ -131,11 +132,11 @@ function makePatch(graph, operations, causedBy = []) {
     baseRevision: graph.revision, revision: graph.revision + 1, causedBy, operations,
   });
 }
-function sourceReference(candidate, event, policy) {
+function sourceReference(candidate, event, policy, basis = 'jev_interpretation') {
   const ref = {
     artifactId: candidate.artifactId, hash: candidate.hash, generation: candidate.generation, eventId: event.id,
     startLine: candidate.startLine, endLine: candidate.endLine, sourceClass: candidate.sourceClass,
-    basis: 'jev_interpretation', sourceRef: clone(candidate.sourceRef),
+    basis, sourceRef: clone(candidate.sourceRef),
   };
   if (policy.displayEvidence || policy.persistEvidence) {
     const excerpt = candidate.text.slice(0, LIMITS.excerptChars);
@@ -251,6 +252,10 @@ function compileAuditedDecision(graph, { event, decision, policy }, audit) {
       new Set(decision.edges.map(e => e?.proposalId)).size !== decision.edges.length) return audit.reject(decision, 'duplicate_judgments');
   if (!decision.nodes.every(n => validNodeJudgment(n, candidates)) ||
       !decision.edges.every(e => validEdgeJudgment(e, bundle, candidates))) return audit.reject(decision, 'invalid_judgments');
+  // The service supplies validated provider provenance. Older manual decisions
+  // omit it and keep the legacy basis; answers/candidates cannot select a basis.
+  const providerId = decision.provider?.id;
+  const basis = providerId && providerId !== 'jev' ? 'decision_interpretation' : 'jev_interpretation';
   const existingNodes = new Map(graph.nodes.map(n => [n.id, n]));
   const existingEdges = new Map(graph.edges.map(e => [e.id, e]));
   const admitted = new Map(), operations = [];
@@ -278,7 +283,7 @@ function compileAuditedDecision(graph, { event, decision, policy }, audit) {
     const classification = judgment.classification === 'accepted' && candidate.complete && !event.incomplete &&
       judgment.supportProbability >= 0.85 && judgment.roleProbability >= 0.8 && judgment.roleConfidence >= 0.6 ? 'accepted' : 'tentative';
     const index = projected.nodes.length;
-    const refs = mergeReferences(old?.sourceRefs ?? [], [sourceReference(candidate, event, policy)]);
+    const refs = mergeReferences(old?.sourceRefs ?? [], [sourceReference(candidate, event, policy, basis)]);
     const node = {
       id, label: candidate.label, kind: judgment.role, shape: ROLE_SHAPES[judgment.role],
       x: old?.x ?? 80 + (index % 6) * 220, y: old?.y ?? 80 + Math.floor(index / 6) * 140,
@@ -301,10 +306,10 @@ function compileAuditedDecision(graph, { event, decision, policy }, audit) {
       (ref.generation > c.generation || (old.validity !== 'current' && ref.generation === c.generation))))) {
       report('skipped', 'stale_generation'); continue;
     }
-    const refs = mergeReferences([], evidence.map(c => sourceReference(c, event, policy)));
+    const refs = mergeReferences([], evidence.map(c => sourceReference(c, event, policy, basis)));
     // Every relation retains all dependencies; never silently drop evidence
     // when the reference budget is exceeded.
-    if (refs.length !== new Set(evidence.map(c => refKey(sourceReference(c, event, policy)))).size) {
+    if (refs.length !== new Set(evidence.map(c => refKey(sourceReference(c, event, policy, basis)))).size) {
       report('skipped', 'reference_limit'); continue;
     }
     const classification = judgment.classification === 'accepted' && source.classification === 'accepted' &&

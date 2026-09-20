@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { CATEGORIES, KINDS, ROLES, RELATIONS, isId, opaque, plain } from '../core/common.mjs';
 import { createPolicy, excluded, privateText, safeLabel } from '../core/privacy.mjs';
-import { ACTIVITIES } from '../jev/questions.mjs';
+import { ACTIVITIES } from '../decisions/questions.mjs';
 import { runtimeError, uid } from './paths.mjs';
 
 export const DIAGNOSTIC_LIMITS = Object.freeze({

@@ -102,13 +102,37 @@ export function createPipeline({
   const root = realpathSync(projectRoot);
   const inputRoot = path.resolve(projectRoot);
   const projectId = opaque(root);
+  const modelProjectId = createHash('sha256').update(root).digest('hex');
   const policy = createPolicy(policyOptions ?? {});
-  const evidence = new EvidenceStore({ projectRoot, policy, maxTrackedPaths: 10000 });
+  // Restored claims stay stale until recaptured, and their versions must never
+  // collide with a new daemon's counters. No saved content is trusted here.
+  let generationFloor = 0;
+  const retainGeneration = value => {
+    if (Number.isSafeInteger(value) && value > generationFloor && value < Number.MAX_SAFE_INTEGER) generationFloor = value;
+  };
+  const retainRefs = rows => {
+    for (const row of Array.isArray(rows) ? rows.slice(0, 40000) : []) {
+      for (const ref of Array.isArray(row?.sourceRefs) ? row.sourceRefs.slice(0, 16) : []) retainGeneration(ref.generation);
+    }
+  };
+  if (restoredModel?.projectId === modelProjectId) {
+    const artifacts = restoredModel.coverage?.artifacts;
+    for (const artifact of Array.isArray(artifacts) ? artifacts.slice(0, 10000) : []) retainGeneration(artifact?.generation);
+    for (const rows of [restoredModel.entities, restoredModel.relations, restoredModel.interpretations]) retainRefs(rows);
+  }
+  if (restoredState?.projectId === projectId) {
+    const states = Array.isArray(restoredState.sessionStates) ? restoredState.sessionStates.slice(0, MAX_SESSIONS) : [];
+    for (const session of [restoredState, ...states]) {
+      retainRefs(session?.graph?.nodes); retainRefs(session?.graph?.edges);
+    }
+  }
+  const evidence = new EvidenceStore({ projectRoot, policy, maxTrackedPaths: 10000, generationFloor });
   const sessions = new Map();
   const dedup = new Map();
   const sessionStarts = new Map();
   const hookEvents = [];
   const knownArtifacts = new Map();
+  const lineageWork = new Set();
   const messageVersions = new Map();
   const deferredWork = new Map();
   const classificationQueue = [];
@@ -135,7 +159,7 @@ export function createPipeline({
     return operation;
   };
   const platform = createPlatform({
-    projectRoot: root, projectId: createHash('sha256').update(root).digest('hex'),
+    projectRoot: root, projectId: modelProjectId,
     policy, restoredState: restoredModel, now: clock,
     accept: operation => serialized(operation),
     revalidate: refs => serialized(async () => {
@@ -1011,14 +1035,26 @@ export function createPipeline({
     reconciliationTask = serialized(async () => {
       if (closed) return;
       const expired = expirePending();
+      const beforeModel = platform.model.stats();
       const paths = await discoverPaths();
       const artifacts = [];
       for (let index = 0; index < paths.length; index += 32) {
         artifacts.push(...await evidence.capture(paths.slice(index, index + 32)));
       }
       const known = await evidence.reconcile({ limit: 32 });
-      const changed = registerArtifacts([...artifacts, ...known]);
-      if (!changed.length) { notify(); return; }
+      const observed = [...artifacts, ...known];
+      const changed = registerArtifacts(observed);
+      // Parser revalidation may have already refreshed a file's generation.
+      // Retain canceled classifier work until this dispatch path sees it.
+      for (const artifact of observed) {
+        if (!lineageWork.delete(artifact.id)) continue;
+        if (!changed.some(item => item.id === artifact.id)) changed.push(artifact);
+      }
+      if (!changed.length) {
+        const afterModel = platform.model.stats();
+        if (expired || beforeModel.revision !== afterModel.revision || beforeModel.sequence !== afterModel.sequence) notify();
+        return;
+      }
       const session = selectedSession ? sessions.get(selectedSession) : null;
       if (session) {
         const event = observationEvent(session.id);
@@ -1065,6 +1101,7 @@ export function createPipeline({
         pending--;
         skipJob(job, 'source_changed_during_classification');
       }
+      for (const artifactId of knownArtifacts.keys()) lineageWork.add(artifactId);
       registerArtifacts(evidence.setLineage(lineage.id));
       notify();
     });

@@ -322,3 +322,40 @@ test('lineage is checked again inside serialized acceptance after asynchronous r
   assert.equal(platform.stats().parsed, 1);
   assert.equal(platform.snapshot().entities.filter(value => value.kind === 'function').length, 1);
 });
+
+test('idle inventory scans and source reconciliations do not create model activity or revisions', async t => {
+  let now = 100, calls = 0;
+  const { platform, capture, evidence } = await fixture(t, {
+    now: () => now, extract: input => { calls++; return extractStructure(input); },
+  });
+  platform.observeArtifacts(await capture(await platform.discover()));
+  await platform.whenIdle();
+  const baseline = platform.snapshot();
+  for (let pass = 0; pass < 3; pass++) {
+    now += 6000;
+    platform.observeArtifacts(await capture(await platform.discover()));
+    platform.observeArtifacts(await evidence.reconcile({ limit: 32 }));
+    await platform.whenIdle();
+    assert.deepEqual(platform.snapshot(), baseline);
+  }
+  assert.equal(calls, 1);
+});
+
+test('a retry can finish cache admission when its structure was already applied', async t => {
+  let fail = true;
+  const { platform, capture } = await fixture(t, {
+    accept: operation => {
+      operation();
+      if (fail) { fail = false; throw new Error('AFTER_ACCEPT'); }
+    },
+  });
+  platform.observeArtifacts(await capture(await platform.discover()));
+  await platform.whenIdle();
+  assert.equal(platform.stats().deferred, 1);
+  const revision = platform.snapshot().revision;
+  platform.observeArtifacts(await capture(await platform.discover()));
+  await platform.whenIdle();
+  assert.equal(platform.stats().deferred, 0);
+  assert.equal(platform.stats().parsed, 1);
+  assert.equal(platform.snapshot().revision, revision);
+});

@@ -149,6 +149,16 @@ test('the discovery tail beyond the first 32 paths receives its own candidate bu
     [`${name}.ts`, `export function ${name}() { return 1; }\n`])));
   await project.start();
   await project.pipeline.whenIdle();
+  // Inventory deliberately yields under load. Further discovery receipts resume
+  // its cursor; this test checks coverage, not a wall-clock traversal deadline.
+  for (let round = 0; round < 50 && project.calls.length < names.length; round++) {
+    await project.pipeline.ingest({
+      cwd: project.root, hook_event_name: 'PostToolUse', session_id: 'orientation',
+      tool_name: 'Glob', tool_use_id: `continue-${round}`,
+      tool_input: { pattern: '*.ts' }, tool_response: { filenames: [] },
+    });
+    await project.pipeline.whenIdle();
+  }
   assert.equal(project.calls.length, names.length);
   assert.equal(project.pipeline.getState().graph.nodes.length, names.length);
   assert.ok(project.calls.every(call => new Set(call.input.candidates.map(candidate => candidate.artifactId)).size === 1));

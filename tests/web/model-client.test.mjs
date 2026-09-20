@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createModelClient, modelQuery, hydrateModel, VIEW_MODEL_LIMITS } from '../../runtime/web/model-client.js';
 import { createModelAPI } from '../../runtime/daemon/model-api.mjs';
+import { createProjectModel } from '../../runtime/model/project-model.mjs';
 import { model, entity } from './model-fixtures.mjs';
 const settle = async () => { for (let index = 0; index < 30; index++) await Promise.resolve(); };
 
@@ -106,4 +107,27 @@ test('unsupported model endpoint leaves the legacy viewer usable', async () => {
   assert.equal(await client.open(), false);
   assert.deepEqual(errors, []);
   client.close();
+});
+
+test('session baseline round-trips through the actual checkpoint and session-filtered snapshot API', async () => {
+  const core = createProjectModel({ projectId: 'project.baseline-fixture' });
+  const api = createModelAPI({ projectId: 'project.baseline-fixture', getSnapshot: core.snapshot,
+    createCheckpoint: core.checkpoint });
+  const server = http.createServer((req, res) => { void api.handle(req, res, { viewerAuthorized: true }); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const response = await fetch(`${origin}/api/model/v1/checkpoints`, { method: 'POST',
+      headers: { Origin: origin, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: 'Task baseline', sessionId: 'session.one' }) });
+    assert.equal(response.status, 201);
+    const { checkpoint } = await response.json();
+    assert.equal(checkpoint.sessionId, 'session.one');
+    const live = await (await fetch(`${origin}/api/model/v1/snapshot?session=session.one`)).json();
+    assert.equal(live.checkpoints[0].id, checkpoint.id);
+    const replay = await (await fetch(`${origin}/api/model/v1/snapshot?session=session.one&checkpoint=${checkpoint.id}`)).json();
+    assert.equal(replay.checkpoints[0].id, checkpoint.id);
+    const other = await (await fetch(`${origin}/api/model/v1/snapshot?session=session.two`)).json();
+    assert.equal(other.checkpoints.length, 0);
+  } finally { api.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });

@@ -1,6 +1,6 @@
 # Graphlin visualizer platform: implementation and orchestration plan
 
-Status: M0–M5 implemented; integration review and release verification in progress.
+Status: M0–M5 implemented for 0.2.0; local integration and package gates passed.
 
 Date: 20 September 2026. Baseline: Graphlin 0.1.3, commit `2b398df`.
 
@@ -1091,7 +1091,54 @@ The second review pass identified additional edge cases, incorporated here:
 | M2 replay depended on M4 transport | Record checkpoints in M1; use scoped refresh/frozen checkpoints in M2 |
 | Compatibility and isolation promises exceeded enforceable behavior | Policy-aware matrix and explicit browser recovery tests; no hard iframe CPU-isolation claim |
 
-Coordinator disposition: both independent review passes have been incorporated.
-The plan is ready for M0. Parser selection, numeric limits, exact schemas,
-browser isolation behavior and package layout remain explicit, bounded M0
-decisions rather than assumptions delegated to implementation workers.
+Planning disposition: both independent review passes were incorporated before
+implementation. The resulting implementation and verification record is below.
+
+## 18. Implementation record — 0.2.0
+
+All six milestones were implemented in separate worker lanes and reviewed at
+their integration boundaries. Jev is now an adapter behind the provider-neutral
+decision service. The existing compatibility entry point remains available;
+another provider can supply boolean, choice and score answers without changing
+the collector, model, or views.
+
+| Milestone | Delivered |
+| --- | --- |
+| M0 | Versioned model/scene/message contracts, pinned WASM parser, real sandboxed-frame checks |
+| M1 | Fair source inventory, JS/TS/TSX/Python containment, local-only consent, bounded model, explicit coverage, branch/HEAD reconciliation |
+| M2 | Existing code renderer behind the view lifecycle, canonical selection, grants, failure recovery, bounded page hydration |
+| M3 | Nested Blocks, C4 with explicit typed interpretations and unknown boundaries, recorded task baselines and Changes |
+| M4 | Custom activity timeline, independent session/scope/replay state, resumable scoped snapshots, expiring read-only external grants |
+| M5 | Public SDK exports/types, independent C4 author exercise, install/update/remove/dev/doctor, bundled offline parser and plugin checks |
+
+Review corrected false creation after eviction, changed historical evidence on
+restart, stale source-generation counters, late branch-switch decisions,
+replay-time grant revocation, missing profile catalogue entries, and mismatched
+HTTP/meta frame policies. Regression tests preserve these cases.
+
+Local release checks:
+
+- `npm test`: **1,048 passed**, no failures, skips, or cancellations.
+- `npm run check:packages`: validation, all three plugin builds, and exact
+  **135-file** tarball verification passed. Offline installation exercises all
+  four parser languages, public SDK imports, and matched successful Claude/Codex
+  hooks after deleting the temporary installation and npm cache.
+- A separate headless browser exercised the actual daemon: nested keyboard
+  navigation, search, C4, task changes/replay, a small-viewport timeline,
+  extension approval, response-level sandboxing, selection, explicit analysis,
+  and revocation during replay. No browser errors remained.
+- Live Jev smoke used generated inputs only. One provider-neutral request
+  answered boolean/choice/score questions; its repeated request was a cache hit.
+  Database scenarios used 28 requests: 13 of 14 strict checks passed. The
+  configuration-only case drew no write edge, but its missing-context score
+  was 0.11 against the test's 0.10 cutoff. The cutoff was not changed.
+
+These smoke results are not an accuracy calibration or runtime-connectivity
+proof. Other languages retain file scopes and explicit unsupported coverage.
+C4 stays unknown without supported interpretations. Custom frames do not
+promise hard CPU isolation or recall of data already copied by an approved
+extension. Shared-source snapshots and retained history remain bounded.
+
+The release workflow repeats automated checks on Node 22, 24, and 26 on Linux
+and macOS before publishing. Exact author-facing contracts live in the linked
+decision-service, model-api, extension-authoring, and visualizer-views guides.

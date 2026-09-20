@@ -51,7 +51,10 @@ export function layoutScene(scene) {
         const content = pack(item.id, cursorX + 28, cursorY + 64);
         item.width = Math.max(246, content.width + 56);
         item.height = Math.max(144, content.height + 92);
-      } else { item.width = 190; item.height = 104; }
+      } else {
+        item.width = groups.has(item.id) ? Math.max(190, Math.min(300, item.label.length * 8 + 70)) : 190;
+        item.height = 104;
+      }
       cursorX += item.width + 80; maxX = Math.max(maxX, cursorX - 80);
       rowHeight = Math.max(rowHeight, item.height);
     });

@@ -153,18 +153,23 @@ test('offline demo injects the fixture transport into the real two-stage pipelin
   const projectRoot = await createDemoProject(dataDir), service = demoDecisionService();
   const server = await startServer({ projectRoot, dataDir, policy: { transmitSource: true },
     mode: 'demo', decisionService: service });
-  t.after(() => server.close());
-  const snapshot = await replayDemo(server.pipeline, projectRoot);
-  assert.equal(snapshot.mode, 'demo');
-  assert.ok(snapshot.graph.nodes.length >= 2, JSON.stringify(snapshot.status));
-  assert.ok(snapshot.graph.edges.some(edge => edge.relation === 'writes'));
-  assert.ok(snapshot.status.calls >= 2);
-  assert.equal(service.stats().mode, 'demo');
-  const before = snapshot.graph;
-  // Reconciliation must run without classification being available.
-  server.pipeline.setPaused(true);
-  await writeFile(path.join(projectRoot, 'notes.mjs'), '// removed write fixture\n');
-  await server.pipeline.reconcile();
-  const after = server.pipeline.getState().graph;
-  assert.ok(after.revision > before.revision);
+  try {
+    const snapshot = await replayDemo(server.pipeline, projectRoot);
+    assert.equal(snapshot.mode, 'demo');
+    assert.ok(snapshot.graph.nodes.length >= 2, JSON.stringify(snapshot.status));
+    assert.ok(snapshot.graph.edges.some(edge => edge.relation === 'writes'));
+    assert.ok(snapshot.status.calls >= 2);
+    assert.equal(service.stats().mode, 'demo');
+    const before = snapshot.graph;
+    // Reconciliation must run without classification being available.
+    server.pipeline.setPaused(true);
+    await writeFile(path.join(projectRoot, 'notes.mjs'), '// removed write fixture\n');
+    await server.pipeline.reconcile();
+    const after = server.pipeline.getState().graph;
+    assert.ok(after.revision > before.revision);
+  } finally {
+    // The demo uses another project root inside dataDir. Stop its writer before
+    // workspace() removes that directory in its earlier-registered cleanup.
+    await server.close();
+  }
 });

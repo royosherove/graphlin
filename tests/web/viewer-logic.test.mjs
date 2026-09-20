@@ -205,6 +205,22 @@ test('source interpretation and even a reported verified state never imply runti
   assert.equal(claimSummary(node('api', { validity: 'retracted' })).label, 'Support retracted');
 });
 
+test('alternate decision-provider references retain provenance without a Jev label', () => {
+  const input = snapshot({ graph: graph(2, {
+    nodes: [node('api', { sourceRefs: [reference({ basis: 'decision_interpretation' })] })],
+    edges: [],
+  }) });
+  const claim = normalizeSnapshot(input).graph.nodes[0];
+  assert.equal(claim.sourceRefs[0].basis, 'decision_interpretation');
+  const summary = claimSummary(claim);
+  assert.equal(summary.tone, 'observed');
+  assert.equal(summary.label, 'Decision interpretation');
+  assert.doesNotMatch(summary.explanation, /Jev/);
+  assert.match(summary.explanation, /without proving/);
+  assert.equal(sanitizedExport(input).graph.nodes[0].sourceRefs[0].basis, 'decision_interpretation');
+  assert.equal(claimSummary({ ...claim, validity: 'stale' }).label, 'Evidence stale');
+});
+
 test('history is ordered by revision, resynchronizes current projection, and keeps a pinned revision', () => {
   const raw = snapshot({
     graph: graph(5),

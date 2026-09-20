@@ -208,7 +208,6 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
       }
     } catch (error) {
       if (mine !== generation || closed) return;
-      console.warn('Fixture viewer diagnosis:', error.message);
       if ([401, 403, 404].includes(error.status)) { dispose(); onView({ clear: true }); }
       else if (view.manifest) {
         await choose('graphlin.code');
