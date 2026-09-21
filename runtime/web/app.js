@@ -789,7 +789,7 @@ async function readResponse(response) {
 async function request(path, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
-  const onAbort = () => controller.abort(options.signal?.reason);
+  const onAbort = () => { clearTimeout(timeout); controller.abort(options.signal?.reason); };
   if (options.signal?.aborted) onAbort();
   else options.signal?.addEventListener('abort', onAbort, { once: true });
   try {
@@ -1877,7 +1877,8 @@ export function startViewer() {
   function acceptSnapshot(raw, streamed = false) {
     const snapshot = normalizeSnapshot(raw);
     if (!streamed) resetMotionBaseline();
-    const switched = state.snapshot && (snapshot.sessionId !== state.snapshot.sessionId || snapshot.projectId !== state.snapshot.projectId);
+    const projectChanged = Boolean(state.snapshot && snapshot.projectId !== state.snapshot.projectId);
+    const switched = state.snapshot && (snapshot.sessionId !== state.snapshot.sessionId || projectChanged);
     const eligible = !state.platformActive && state.follow && streamed && state.motionReady && !switched && !state.replayFrame &&
       snapshot.mode !== 'replay' && state.snapshot?.mode !== 'replay' && motionAllowed();
     const changes = liveNodeChanges(state.snapshot?.graph, snapshot.graph, eligible);
@@ -1893,6 +1894,7 @@ export function startViewer() {
       resetView();
       state.nodeTypes = null;
     }
+    if (!state.snapshot || switched) platform.serverSession(snapshot.sessionId, { projectChanged });
     state.snapshot = snapshot;
     state.epoch += 1;
     state.frames = historyFrames(snapshot);
@@ -2696,6 +2698,7 @@ export function startViewer() {
   }
   async function connect() {
     resetMotionBaseline();
+    platform.suspend();
     const attempt = ++state.connectEpoch;
     projectController?.abort();
     projectController = null;

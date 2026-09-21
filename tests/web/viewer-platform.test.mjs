@@ -112,7 +112,10 @@ test('a named baseline is created only by the explicit action and retained repla
     assert.match(h.$('view-coverage').textContent, /Since revision 1/);
     h.$('model-position').value = 'checkpoint.task';
     await h.$('model-position').fire('change'); await settle();
-    assert.ok(h.calls.some(([path]) => path.endsWith('?checkpoint=checkpoint.task')));
+    assert.ok(h.calls.some(([path]) => {
+      const query = new URL(path, 'http://fixture').searchParams;
+      return query.get('checkpoint') === 'checkpoint.task' && query.get('session') === 'session-1';
+    }));
     assert.ok(h.streams.filter(stream => stream.path.startsWith('/api/model/')).every(stream => stream.closed));
   } finally { h.close(); }
 });

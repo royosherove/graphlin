@@ -36,8 +36,8 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   let projectionController;
   let analysisBusy = false;
   let grantWatch;
-  let architectureWatch, architectureState, architectureProject, architectureBusy = false, suspended = false;
-  let selection = {}, canonicalSelection = null, follow = true, query = '', kinds = null, focusEntityId = null;
+  let architectureWatch, architectureState, architectureProject, architectureBusy = false, suspended = true;
+  let selection = {}, serverSessionId, canonicalSelection = null, follow = true, query = '', kinds = null, focusEntityId = null;
   const settings = new Map(), listeners = [];
   const ownSettings = () => {
     if (!settings.has(active)) settings.set(active, { expanded: [], collapsed: [], level: 'applications' });
@@ -285,12 +285,21 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
         const current = installed.find(row => row.id === active);
         if (!current || current.digest !== view.digest) { dispose(); status('The installed version changed. Select it again to review access.'); return; }
         if (JSON.stringify(current.grant) !== JSON.stringify(view.grant)) dispose();
+        const liveSession = selection.session && selection.session === serverSessionId && !selection.checkpoint;
         if (!current.grant?.approved || current.grant.projectId !== model.projectId ||
-          current.grant.digest !== current.digest || (selection.checkpoint && !current.grant.history)) {
+          current.grant.digest !== current.digest ||
+          (!current.grant.history && (selection.checkpoint || (selection.session && !liveSession)))) {
           dispose(); consent(current); status(); return;
         }
-        inputModel = await request(`/api/extensions/data/${encodeURIComponent(active)}${modelQuery(selection)}`, { signal: controller.signal });
+        // A daemon session selector requires history access. For the current
+        // host session, narrow only the already-approved live projection.
+        const filterLiveSession = liveSession && !current.grant.history;
+        const dataSelection = filterLiveSession ? { ...selection, session: undefined } : selection;
+        inputModel = await request(`/api/extensions/data/${encodeURIComponent(active)}${modelQuery(dataSelection)}`, { signal: controller.signal });
         if (mine !== generation || closed) return;
+        if (filterLiveSession) inputModel = { ...inputModel,
+          activity: inputModel.activity.filter(event => event.sessionId === selection.session),
+          sessions: inputModel.sessions.filter(session => session.id === selection.session) };
         if (!instance) instance = createFrame({
           root: $('custom-view'), extension: current, onSelect,
           onFailure: () => { dispose(); onView({ clear: true }); status('Visualizer stopped. Retry view to restart it.'); },
@@ -329,7 +338,8 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
       }
     }
     if (model && model.projectId !== value.projectId) {
-      dispose(); settings.clear(); canonicalSelection = null; selection = {};
+      dispose(); settings.clear(); canonicalSelection = null;
+      selection = { session: selection.session };
       onView({ clear: true });
     }
     model = value;
@@ -422,11 +432,20 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   });
   controls();
   return {
-    async start() { suspended = false; if (await client.open(selection)) await catalogue(); },
+    async start() { suspended = false; await Promise.all([client.open(selection), catalogue()]); },
     choose,
     filter(nextQuery, nextKinds) { query = nextQuery; kinds = nextKinds; void project(false, true); },
     selected(id) { canonicalSelection = id; },
     scope,
+    serverSession(id, { projectChanged = false } = {}) {
+      if (closed) return;
+      serverSessionId = id || undefined;
+      selection = { ...(projectChanged ? {} : selection), session: serverSessionId, checkpoint: undefined };
+      canonicalSelection = null; focusEntityId = null;
+      generation++; projectionController?.abort(); dispose();
+      controls();
+      if (!suspended) void client.open(selection);
+    },
     session(id) { selection.session = id || undefined; generation++; dispose(); void client.open(selection); },
     live() { selection.checkpoint = undefined; generation++; dispose(); void client.open(selection); },
     toggle(id, isCollapsed = true) {

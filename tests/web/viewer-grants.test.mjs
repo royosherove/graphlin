@@ -2,10 +2,96 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createViewPlatform } from '../../runtime/web/platform.js';
+import { createExtensionAPI } from '../../runtime/daemon/extension-api.mjs';
 import { createDocument } from './fake-dom.mjs';
 import { model, entity } from './model-fixtures.mjs';
 
 const settle = async () => { for (let index = 0; index < 30; index++) await Promise.resolve(); };
+
+test('an automatically selected live session uses only approved extension data without requesting history', async () => {
+  const document = createDocument(await readFile(new URL('../../runtime/web/index.html', import.meta.url), 'utf8'));
+  const calls = [], deliveries = [];
+  const full = model({ rawSource: 'synthetic-host-only-content', activity: [
+    { id: 'current', sessionId: 'session.one', kind: 'tool.requested', entityIds: ['api'] },
+    { id: 'other', sessionId: 'session.other', kind: 'tool.requested', entityIds: ['store'] },
+  ], sessions: [{ id: 'session.one' }, { id: 'session.other' }] });
+  const row = { id: 'example.live', digest: 'a'.repeat(64),
+    manifest: { name: 'Live view', graphlinApi: '1', modelSchema: '2', renderer: { kind: 'custom' },
+      capabilities: ['model.read', 'activity.read'] },
+    grant: { projectId: full.projectId, extensionId: 'example.live', digest: 'a'.repeat(64),
+      fields: ['entities', 'activity', 'sessions'], history: false, approved: true } };
+  const api = createExtensionAPI({ projectId: full.projectId, getSnapshot: () => full,
+    registry: { list: async () => [row], getGrant: async () => row.grant } });
+  async function extensionRequest(path) {
+    let status, body;
+    await api.handle({ url: path, method: 'GET', headers: {} }, {
+      setHeader() {}, writeHead(value) { status = value; }, end(value) { body = JSON.parse(value); },
+    }, { viewerAuthorized: true });
+    if (status !== 200) throw Object.assign(new Error(body.error), { status });
+    return body;
+  }
+  const platform = createViewPlatform({
+    document, onView() {}, onSelect() {},
+    async request(path) {
+      calls.push(path);
+      if (path.startsWith('/api/model/v1/snapshot')) return full;
+      return extensionRequest(path);
+    },
+    createFrame() {
+      return { update(input) { deliveries.push(input); return { kind: 'custom', status: 'ready', itemCount: input.model.activity.length }; },
+        dispose() {} };
+    },
+  });
+  try {
+    // The real daemon helper must continue denying historical selectors.
+    await assert.rejects(extensionRequest('/api/extensions/data/example.live?session=session.one'), { status: 403 });
+    platform.serverSession('session.one');
+    await platform.start(); await platform.choose(row.id); await settle();
+    assert.equal(deliveries.length, 1);
+    assert.equal(calls.find(path => path.startsWith('/api/extensions/data/')), '/api/extensions/data/example.live');
+    assert.deepEqual(deliveries[0].model.activity.map(value => value.id), ['current']);
+    assert.deepEqual(deliveries[0].model.sessions.map(value => value.id), ['session.one']);
+    assert.equal(deliveries[0].model.rawSource, undefined);
+    assert.equal(deliveries[0].model.relations.length, 0, 'unapproved fields stay absent');
+    assert.equal(row.grant.history, false);
+    const dataReads = calls.filter(path => path.startsWith('/api/extensions/data/')).length;
+    platform.session('session.other'); await settle();
+    assert.equal(calls.filter(path => path.startsWith('/api/extensions/data/')).length, dataReads,
+      'a manually selected older session still needs a history grant');
+    assert.equal(document.getElementById('extension-access').hidden, false);
+    assert.equal(calls.some(path => path === '/api/extensions/grant'), false);
+  } finally { platform.close(); }
+});
+
+test('an early server session transition cannot cancel initial extension catalogue loading', async () => {
+  const document = createDocument(await readFile(new URL('../../runtime/web/index.html', import.meta.url), 'utf8'));
+  const full = model(), calls = [];
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const row = { id: 'example.fixture', digest: 'a'.repeat(64),
+    manifest: { name: 'Fixture', graphlinApi: '1', modelSchema: '2', renderer: { kind: 'custom' } } };
+  const platform = createViewPlatform({
+    document, onView() {}, onSelect() {},
+    async request(path) {
+      calls.push(path);
+      if (path === '/api/model/v1/snapshot?session=session.one') { await held; return full; }
+      if (path.startsWith('/api/model/v1/snapshot')) return full;
+      if (path === '/api/extensions') return { extensions: [row] };
+      assert.fail(path);
+    },
+  });
+  try {
+    platform.serverSession('session.one');
+    const starting = platform.start();
+    await settle();
+    platform.serverSession('session.two');
+    await settle();
+    release(); await starting; await settle();
+    assert.equal(platform.selection.session, 'session.two');
+    assert.equal(document.getElementById('visualizer').children.some(option => option.value === row.id), true);
+    assert.equal(calls.filter(path => path === '/api/extensions').length, 1);
+  } finally { release(); platform.close(); }
+});
 
 test('installed view receives only the daemon projection after approval, and revocation clears/disposes it', async () => {
   const markup = await readFile(new URL('../../runtime/web/index.html', import.meta.url), 'utf8');
