@@ -1,7 +1,7 @@
 import { freeze } from '../core/common.mjs';
 
 export const ARCHITECTURE_NAMESPACE = 'graphlin.architecture';
-export const ARCHITECTURE_VERSION = 'source-boundaries-v4';
+export const ARCHITECTURE_VERSION = 'source-boundaries-v5';
 export const ROLE_PROFILE_ID = 'graphlin.architecture.roles';
 export const MEMBERSHIP_PROFILE_ID = 'graphlin.architecture.membership';
 
@@ -9,7 +9,10 @@ const boolean = (question, focus, yes, no) => ({
   type: 'boolean', instructions: { question, focus },
   criteria: { true: yes, false: no }, requiredMetrics: ['probability'],
 });
-const rules = 'Use only visible source. Names, directories, documentation, imports alone, and co-occurrence '
+const rules = 'Evidence entries are separate contiguous fragments of the same source file, in source order. '
+  + 'Module is a generic context label, not an architectural judgment. Entries can omit intervening lines; '
+  + 'never assume adjacency or invent missing bodies. Use only visible source. '
+  + 'Names, directories, documentation, imports alone, and co-occurrence '
   + 'do not establish an architectural boundary. An application has visible executable bootstrap or '
   + 'composition of a user-facing program, server or worker. A component has a coherent responsibility '
   + 'and an implemented interface; an incidental helper, constant, type or external dependency is not '

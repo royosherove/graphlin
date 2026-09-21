@@ -188,6 +188,75 @@ export function buildCandidates({ event, artifacts = [], publicText = null, poli
   return freeze(result);
 }
 
+/**
+ * Module context for source architecture, independent of lexical entity ranking.
+ * Keep separate, exact line spans: two opening fragments and ten closing ones
+ * when the file exceeds the existing candidate budget. Oversized lines and
+ * locally withheld or blank fragments count as omissions; they are never
+ * concatenated. JSON/UTF-8 bytes share the character budget to bound A/B wire size.
+ */
+export function buildModuleCandidates({ event, artifact, policy } = {}) {
+  policy = createPolicy(policy);
+  if (!policy.transmitSource || !plain(event) || !isId(event.id) ||
+      ['tool.requested', 'capture.gap'].includes(event.kind) ||
+      artifact?.status !== 'present' || artifact.exists !== true || artifact.complete !== true ||
+      !isId(artifact.id) || !isHash(artifact.hash) || !integer(artifact.generation, 1) ||
+      excluded(artifact.relativePath, policy) || !safeText(artifact.text, LIMITS.fileBytes) ||
+      Buffer.byteLength(artifact.text) > LIMITS.fileBytes || hash(artifact.text) !== artifact.hash) {
+    return freeze({ candidates: [], omitted: 0 });
+  }
+  const head = [], tail = [], lines = artifact.text.split('\n');
+  let current = [], startLine = 1, chars = 0, encodedBytes = 2, available = 0, omitted = 0;
+  function emit() {
+    const text = current.join('\n');
+    if (text.trim()) {
+      if (!safeText(text)) omitted++;
+      else {
+        const fragment = { text, startLine, endLine: startLine + current.length - 1 };
+        available++;
+        if (head.length < 2) head.push(fragment);
+        else {
+          tail.push(fragment);
+          if (tail.length > LIMITS.candidates - 2) tail.shift();
+        }
+      }
+    } else if (current.length) omitted++; // Blank spans must not displace executable context.
+    current = []; chars = 0; encodedBytes = 2;
+  }
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    const lineBytes = Buffer.byteLength(JSON.stringify(line)) - 2;
+    if (line.length > LIMITS.snippetChars || lineBytes + 2 > LIMITS.snippetChars) {
+      emit(); omitted++; continue;
+    }
+    // Keep a final newline with its preceding line instead of silently losing
+    // it as an empty fragment after a full 24-line or 1800-character window.
+    const finalNewline = Number(index === lines.length - 2 && lines[index + 1] === '');
+    if (current.length + 1 + finalNewline > LIMITS.snippetLines ||
+        chars + line.length + (current.length ? 1 : 0) + finalNewline > LIMITS.snippetChars ||
+        encodedBytes + lineBytes + (current.length ? 2 : 0) + finalNewline * 2 > LIMITS.snippetChars) emit();
+    if (!current.length) startLine = index + 1;
+    chars += line.length + (current.length ? 1 : 0);
+    encodedBytes += lineBytes + (current.length ? 2 : 0);
+    current.push(line);
+  }
+  emit();
+  const fragments = [...head, ...tail];
+  omitted += available - fragments.length;
+  const sourceRef = { type: 'artifact', artifactId: artifact.id, hash: artifact.hash, generation: artifact.generation };
+  const candidates = fragments.map(fragment => {
+    const fields = {
+      artifactId: artifact.id, hash: artifact.hash, generation: artifact.generation,
+      label: 'Module', labelOrigin: { type: 'generic', label: 'Module' }, ...fragment,
+      sourceClass: 'source', complete: omitted === 0,
+      entityKey: opaque('entity', artifact.id, 'module-context', fragment.startLine, fragment.endLine), sourceRef,
+    };
+    const digest = candidateDigest(fields, policy);
+    return { id: opaque('candidate', digest), ...fields, digest };
+  });
+  return freeze({ candidates, omitted });
+}
+
 function readSet(candidates) {
   const refs = new Map();
   for (const candidate of candidates) {

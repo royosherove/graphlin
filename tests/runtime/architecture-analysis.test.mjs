@@ -300,6 +300,45 @@ test('bounded source work exposes deferred IDs and empty affected scope makes no
   assert.ok(result.coverage.deferredArtifactIds.every(id => !result.sourceRefs.some(ref => ref.artifactId === id)));
 });
 
+test('architecture sends all 12 approved spans of a 283-line application, including its final bootstrap', async t => {
+  const source = [
+    "import { createRoot } from 'react-dom/client';", 'function App() {',
+    ...Array.from({ length: 278 }, (_, index) => `  // synthetic module context ${index}`),
+    '  return <main>Generated application</main>;', '}',
+    "createRoot(document.getElementById('root')).render(<App />);",
+  ].join('\n');
+  const app = await fixture(t, { files: { 'main.tsx': source }, rolesByPath: { 'main.tsx': 'application' } });
+  const result = await analyzeArchitecture(app.input());
+  assert.equal(result.status, 'complete');
+  assert.equal(result.coverage.omittedCandidates, 0);
+  assert.deepEqual(result.interpretations.map(value => value.kind), ['application']);
+  assert.equal(app.calls.source[0].candidates.length, 12);
+  assert.equal(app.provider.calls.length, 2, 'one bounded intake and one role request');
+  const approved = app.provider.calls[1].request.state.evidence;
+  assert.equal(approved.length, 12);
+  assert.equal(approved.map(value => value.code).join('\n'), source);
+  assert.match(approved.at(-1).code, /createRoot.*render/);
+  assert.doesNotMatch(JSON.stringify(result), /Generated application|createRoot/);
+});
+
+test('architecture reports the omitted middle of a longer module instead of silently keeping eight candidates', async t => {
+  const source = [
+    'export function syntheticApplication() {',
+    ...Array.from({ length: 24 * 16 - 3 }, (_, index) => `  // synthetic module context ${index}`),
+    '  return 1;', '}',
+  ].join('\n');
+  const app = await fixture(t, { files: { 'main.js': source } });
+  const result = await analyzeArchitecture(app.input());
+  assert.equal(result.status, 'partial');
+  assert.equal(result.coverage.omittedCandidates, 4);
+  assert.equal(result.coverage.complete, false);
+  const candidates = app.calls.source[0].candidates;
+  assert.equal(candidates.length, 12);
+  assert.equal(candidates[0].startLine, 1);
+  assert.equal(candidates.at(-1).endLine, 24 * 16);
+  assert.equal(app.provider.calls[1].request.state.evidence.length, 12);
+});
+
 test('model revision, lineage or policy changes discard all results and replacement scope', async t => {
   for (const change of ['revision', 'lineage', 'policy']) {
     let input;

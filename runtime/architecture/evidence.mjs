@@ -1,12 +1,12 @@
 import { isDeepStrictEqual } from 'node:util';
 import { LIMITS, hash, isHash, isId, integer, opaque } from '../core/common.mjs';
 import { createPolicy, metadataEvent, safeLabel, safeText } from '../core/privacy.mjs';
-import { buildCandidates } from '../core/candidates.mjs';
+import { buildModuleCandidates } from '../core/candidates.mjs';
 import { id, references, relativePath } from '../model/records.mjs';
 import { ARCHITECTURE_NAMESPACE } from './profile.mjs';
 
 export const ARCHITECTURE_LIMITS = Object.freeze({
-  artifacts: 6, candidatesPerArtifact: 8, membershipChecks: 6,
+  artifacts: 6, candidatesPerArtifact: LIMITS.candidates, membershipChecks: 6,
   sourceRefs: 16, guardRefs: 128, sourceBytes: 512 * 1024,
 });
 export const requireValue = value => { if (!value) throw new Error('architecture_input_invalid'); };
@@ -87,9 +87,8 @@ export function candidatesForCapture(capture, index, event, policy) {
     || !relativePath(capture.relativePath, policy) || current.relativePath !== capture.relativePath
     || typeof capture.text !== 'string' || Buffer.byteLength(capture.text) > LIMITS.fileBytes
     || !safeText(capture.text, LIMITS.fileBytes) || hash(capture.text) !== capture.hash) return null;
-  const candidates = buildCandidates({ event, artifacts: [capture], policy });
-  return { anchor, candidates: candidates.slice(0, ARCHITECTURE_LIMITS.candidatesPerArtifact),
-    omitted: Math.max(0, candidates.length - ARCHITECTURE_LIMITS.candidatesPerArtifact),
+  const { candidates, omitted } = buildModuleCandidates({ event, artifact: capture, policy });
+  return { anchor, candidates, omitted,
     sourceRef: { artifactId: capture.id, hash: capture.hash, generation: capture.generation } };
 }
 export function unionRefs(...groups) {
