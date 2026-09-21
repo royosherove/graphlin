@@ -139,6 +139,14 @@ and epoch govern SSE ordering independently of the model's observation sequence;
 coalesced snapshots may skip transport positions. Scope/replay changes cancel
 obsolete work. Selecting a checkpoint closes the live model subscription.
 
+The first consistent page is displayed immediately with partial coverage while
+the remaining pages load. A view chosen during startup opens when that page
+arrives. The live stream connects during hydration; newer updates cancel older
+page requests. Hydration itself does not move the camera as new agent activity.
+Once a view has hydrated, it remains visible for up to one second while the next
+live snapshot loads. If updates keep interrupting hydration, the latest consistent
+first page is then shown with partial coverage. New updates do not reset that wait.
+
 Hydration retains at most 2,048 entities, 4,096 relations, 512 interpretations,
 2,048 activities, 100 sessions, and 100 checkpoints, within a 6 MiB budget.
 The API's individual response limit remains 512 KiB. Coverage records retained

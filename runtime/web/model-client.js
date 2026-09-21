@@ -1,6 +1,7 @@
 import { id, integer, jsonBytes } from '../extensions/contracts.mjs';
 
 const COLLECTIONS = ['entities', 'relations', 'interpretations', 'activity', 'sessions', 'checkpoints'];
+const MAX_LIVE_WAIT_MS = 1000;
 export const VIEW_MODEL_LIMITS = Object.freeze({
   entities: 2048, relations: 4096, interpretations: 512, activity: 2048, sessions: 100, checkpoints: 100,
 });
@@ -88,7 +89,9 @@ export async function hydrateModel(raw, { request, selection = {}, signal,
 
 export function createModelClient({ request, onSnapshot, onError = () => {}, Stream = globalThis.EventSource }) {
   let epoch = 0, update = 0, stream, controller, hydration, closed = false, selection = {}, latest = null, received = null;
-  function stop() { update++; controller?.abort(); hydration?.abort(); stream?.close(); stream = null; }
+  let previewing = false, previewTimer, pendingPreview;
+  function clearPreview() { clearTimeout(previewTimer); previewTimer = undefined; pendingPreview = null; }
+  function stop() { update++; clearPreview(); controller?.abort(); hydration?.abort(); stream?.close(); stream = null; }
   function duplicate(raw) {
     const previous = received || latest;
     if (!previous || previous.projectId !== raw.projectId) return false;
@@ -103,25 +106,55 @@ export function createModelClient({ request, onSnapshot, onError = () => {}, Str
     hydration?.abort();
     const active = new AbortController(), mine = ++update;
     hydration = active;
-    let model, current = raw;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        model = await hydrateModel(current, { request, selection, signal: active.signal });
-        break;
-      } catch (error) {
-        if (active.signal.aborted || mine !== update || closed) return;
-        if (error.status !== 409) throw error;
-        current = await request(`/api/model/v1/snapshot${modelQuery(selection)}`, { signal: active.signal });
+    const currentSelection = { ...selection };
+    const cancelled = () => active.signal.aborted || mine !== update || closed;
+    let published = false, current = raw;
+    const publish = (model, animate = false, preview = false) => {
+      clearPreview();
+      const sameEpoch = !latest?.transport || latest.transport.epoch === model.transport?.epoch;
+      latest = received = model;
+      previewing = preview;
+      onSnapshot(model, animate && sameEpoch);
+      published = true;
+    };
+    try {
+      for (let attempt = 0; attempt <= 3; attempt++) {
+        const preview = await hydrateModel(current, { fetchPages: false });
+        if (cancelled()) return;
+        const early = !streamed || previewing || !latest || latest.projectId !== current.projectId ||
+          latest.transport?.epoch !== current.transport?.epoch;
+        const hasPages = COLLECTIONS.some(kind => current.pages?.[kind]?.nextCursor);
+        // Initial/scope loads become usable immediately. A live update keeps
+        // the previous consistent view while its remaining pages arrive.
+        if (early || !hasPages || attempt === 3) publish(preview, streamed && !published, hasPages);
+        else {
+          // Repeated SSE interruptions share one deadline, but its callback
+          // always publishes the latest validated, revision-consistent page.
+          pendingPreview = () => { if (!cancelled()) publish(preview, streamed && !published, true); };
+          previewTimer ??= setTimeout(() => {
+            const deliver = pendingPreview;
+            clearPreview();
+            deliver?.();
+          }, MAX_LIVE_WAIT_MS);
+        }
+        if (!hasPages || attempt === 3) return;
+        try {
+          const model = await hydrateModel(current, { request, selection: currentSelection, signal: active.signal });
+          if (cancelled()) return;
+          // Filling in this snapshot is not new agent activity.
+          publish(model, streamed && !published);
+          return;
+        } catch (error) {
+          if (cancelled()) return;
+          if (error.status !== 409) throw error;
+          current = await request(`/api/model/v1/snapshot${modelQuery(currentSelection)}`, { signal: active.signal });
+        }
       }
+    } catch (error) {
+      if (cancelled()) return;
+      if (!published) throw error;
+      onError('More model data could not be loaded. The partial view is retained.');
     }
-    // A continuously changing scope can invalidate all page cursors. Its fresh
-    // first page is still consistent; retain it with explicit partial coverage.
-    if (!model) model = await hydrateModel(current, { fetchPages: false });
-    if (active.signal.aborted || mine !== update || closed) return;
-    const sameEpoch = !latest?.transport || latest.transport.epoch === model.transport?.epoch;
-    latest = model;
-    received = model;
-    onSnapshot(model, streamed && sameEpoch);
   }
   async function open(next = selection) {
     selection = { ...next };
@@ -131,8 +164,8 @@ export function createModelClient({ request, onSnapshot, onError = () => {}, Str
     try {
       const model = await request(`/api/model/v1/snapshot${modelQuery(selection)}`, { signal: controller.signal });
       if (closed || mine !== epoch) return false;
-      await accept(model);
-      if (closed || mine !== epoch) return false;
+      readModel(model);
+      const pending = accept(model);
       if (!selection.checkpoint && Stream) {
         const active = new Stream(`/api/model/v1/events${modelQuery(selection)}`, { withCredentials: true });
         stream = active;
@@ -142,7 +175,9 @@ export function createModelClient({ request, onSnapshot, onError = () => {}, Str
             if (event.data.length > 8 * 1024 * 1024) throw new Error('model_too_large');
             const raw = JSON.parse(event.data);
             if (event.lastEventId && raw.transport?.eventId !== event.lastEventId) throw new Error('invalid_model_event');
-            void accept(raw, true).catch(() => onError('An invalid model update was ignored. Reconnect to restore the view.'));
+            void accept(raw, true).catch(() => {
+              if (stream === active && !closed) onError('An invalid model update was ignored. Reconnect to restore the view.');
+            });
           } catch { onError('An invalid model update was ignored. Reconnect to restore the view.'); }
         });
         active.addEventListener('reset', () => { if (stream === active) void open(); });
@@ -152,7 +187,8 @@ export function createModelClient({ request, onSnapshot, onError = () => {}, Str
           if (stream === active) onError('Model connection interrupted. The last received view is retained.');
         });
       }
-      return true;
+      await pending;
+      return !closed && mine === epoch;
     } catch (error) {
       if (!closed && mine === epoch && ![404, 405].includes(error.status)) onError('Model views unavailable. The code map remains available.');
       return false;

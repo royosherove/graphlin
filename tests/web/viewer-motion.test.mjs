@@ -54,7 +54,8 @@ async function harness(initial = snapshot()) {
   globalThis.fetch = async (url, options) => {
     requests.push({ url, options });
     if (url === '/api/about') return new Response('{}', { status: 404 });
-    if (url === '/api/model/v1/snapshot') return new Response('{}', { status: 404 });
+    if (url.split('?')[0] === '/api/model/v1/snapshot' || url === '/api/extensions')
+      return new Response('{}', { status: 404 });
     if (url === '/api/connection-info') return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify(connectionInfo()) };
     if (url === '/api/control') {
       const command = JSON.parse(options.body);
@@ -215,6 +216,7 @@ test('all eight themes recolor a live view without rebuilding geometry, evidence
   const exported = sanitizedExport(initial);
   const h = await harness(initial);
   try {
+    const startupRequests = [...h.requests];
     h.send(h.current);
     const nodes = [...h.$('node-layer').children];
     const content = nodes.map(group => [...group.content.children]);
@@ -253,7 +255,7 @@ test('all eight themes recolor a live view without rebuilding geometry, evidence
     h.send({ ...h.current, theme: 'sunset', graph: { ...h.current.graph, theme: 'ocean' } });
     assert.equal(h.$('drawing').dataset.theme, 'midnight', 'snapshots cannot supply presentation tokens');
     assert.deepEqual(nodes.map(sketchGroup), outlines);
-    assert.deepEqual(h.requests.map(request => request.url), ['/api/state', '/api/model/v1/snapshot', '/api/connection-info', '/api/about'], 'theme changes never make service calls');
+    assert.deepEqual(h.requests, startupRequests, 'theme changes never make service calls');
     assert.deepEqual(initial, unchanged);
     assert.deepEqual(sanitizedExport(h.current), exported, 'presentation cannot enter canonical JSON exports');
   } finally { h.close(); }
@@ -649,7 +651,9 @@ test('shape overrides and arrangements stay in their session/live/replay scopes 
     h.send({ ...h.current, sessionId: 'session-1' });
     assert.equal(nodeGroup(h, 'Notes API').dataset.shape, 'component', 'returning to a session restores its bounded in-memory override');
     assert.equal(h.$('layout').value, 'original');
-    assert.equal(h.requests.some(request => !['/api/state', '/api/model/v1/snapshot', '/api/connection-info', '/api/about'].includes(request.url)), false, 'presentation controls never write to the service');
+    assert.ok(h.requests.every(({ url, options }) => options.method === 'GET' &&
+      ['/api/state', '/api/model/v1/snapshot', '/api/extensions', '/api/connection-info', '/api/about'].includes(url.split('?')[0])),
+    'presentation controls never write to the service; session transitions may read the selected model');
   } finally { h.close(); }
 });
 

@@ -6,6 +6,221 @@ import { createModelAPI } from '../../runtime/daemon/model-api.mjs';
 import { createProjectModel } from '../../runtime/model/project-model.mjs';
 import { model, entity } from './model-fixtures.mjs';
 const settle = async () => { for (let index = 0; index < 30; index++) await Promise.resolve(); };
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+};
+const firstPage = () => model({ entities: [entity('root')], relations: [],
+  pages: { entities: { total: 2, returned: 1, nextCursor: 'synthetic.cursor' } } });
+const lastPage = () => ({ ...firstPage(), kind: 'entities', items: [entity('child', 'root')],
+  page: { total: 2, offset: 1, returned: 1, nextCursor: null } });
+function fakeClock() {
+  const originals = { setTimeout, clearTimeout }, timers = new Map();
+  let now = 0, id = 0;
+  globalThis.setTimeout = (callback, delay) => { timers.set(++id, { callback, at: now + delay }); return id; };
+  globalThis.clearTimeout = id => timers.delete(id);
+  return {
+    timers,
+    tick(ms) {
+      now += ms;
+      for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.callback(); }
+    },
+    restore() {
+      globalThis.setTimeout = originals.setTimeout; globalThis.clearTimeout = originals.clearTimeout;
+    },
+  };
+}
+
+test('continuous updates after full hydration publish the latest consistent first page within one second, before a quiet period', async () => {
+  const clock = fakeClock(), streams = [], accepted = [], pages = [];
+  const snapshot = sequence => ({ ...firstPage(), sequence, revision: sequence, entities: [entity(`root.${sequence}`)] });
+  const page = sequence => ({ ...lastPage(), sequence, revision: sequence, items: [entity(`child.${sequence}`, `root.${sequence}`)] });
+  class Stream {
+    constructor() { this.listeners = {}; streams.push(this); }
+    addEventListener(type, listener) { this.listeners[type] = listener; }
+    close() {}
+  }
+  const client = createModelClient({ Stream, onSnapshot: (value, streamed) => accepted.push({ value, streamed }),
+    request: async (path, { signal } = {}) => {
+      if (!path.includes('/entities?')) return snapshot(1);
+      if (!pages.length) { pages.push(null); return page(1); }
+      const held = { ...deferred(), signal }; pages.push(held); return held.promise;
+    },
+  });
+  const emit = sequence => streams[0].listeners.snapshot({ data: JSON.stringify(snapshot(sequence)) });
+  try {
+    await client.open();
+    assert.equal(accepted.at(-1).value.partial, false, 'begin with a fully hydrated view');
+    emit(2); await settle();
+    for (const sequence of [3, 4, 5]) { clock.tick(250); emit(sequence); await settle(); }
+    clock.tick(249); emit(6); await settle();
+    assert.equal(accepted.at(-1).value.sequence, 1, 'retain the full view only for the bounded waiting period');
+    assert.ok(pages.slice(1, -1).every(page => page.signal.aborted), 'each new event interrupted hydration');
+    clock.tick(1); await settle();
+    const latest = accepted.at(-1).value;
+    assert.equal(latest.sequence, 6, 'the latest first page must appear without waiting for hydration or a quiet stream');
+    assert.equal(latest.revision, 6);
+    assert.deepEqual(latest.entities.map(entity => entity.id), ['root.6'], 'never merge records across revisions');
+    assert.equal(latest.partial, true);
+    assert.equal(latest.coverage.client.totals.entities, 2);
+    assert.equal(latest.coverage.client.retained.entities, 1);
+    emit(7); await settle();
+    assert.equal(accepted.at(-1).value.sequence, 7, 'a busy stream continues to advance the preview');
+    pages.at(-1).resolve(page(7)); await settle();
+    assert.equal(accepted.at(-1).value.partial, false);
+    assert.equal(accepted.at(-1).streamed, false, 'hydrating the published preview is not new activity');
+    pages.slice(1, -1).forEach((held, index) => held.resolve(page(index + 2))); await settle();
+    assert.equal(accepted.at(-1).value.sequence, 7, 'cancelled pages cannot overwrite the latest view');
+    assert.equal(clock.timers.size, 0, 'finishing hydration clears the preview deadline');
+  } finally {
+    client.close(); pages.filter(Boolean).forEach(held => held.resolve(page(1))); await settle(); clock.restore();
+  }
+});
+
+test('delayed first-page delivery is cancelled on scope, replay, suspension, close, and transport epoch changes', async () => {
+  const clock = fakeClock();
+  try {
+    for (const transition of ['scope', 'checkpoint', 'suspend', 'close', 'epoch']) {
+      const held = deferred(), streams = [], accepted = [];
+      const transport = (epoch, sequence) => ({ epoch, sequence, eventId: `${epoch}:${sequence}` });
+      const initial = model({ transport: transport('epoch.one', 1) });
+      class Stream {
+        constructor() { this.listeners = {}; streams.push(this); }
+        addEventListener(type, listener) { this.listeners[type] = listener; }
+        close() {}
+      }
+      const client = createModelClient({ Stream, onSnapshot: value => accepted.push(value),
+        request: async path => path.includes('/entities?') ? held.promise : initial,
+      });
+      const emit = value => streams[0].listeners.snapshot({ data: JSON.stringify(value) });
+      try {
+        await client.open();
+        emit({ ...firstPage(), sequence: 2, transport: transport('epoch.one', 2) }); await settle();
+        assert.equal(clock.timers.size, 1, `${transition}: a preview deadline is pending`);
+        if (transition === 'scope' || transition === 'checkpoint') await client.open({ [transition]: 'next' });
+        else if (transition === 'epoch') emit({ ...firstPage(), transport: transport('epoch.two', 1) });
+        else client[transition]();
+        await settle();
+        const before = accepted.length;
+        assert.equal(clock.timers.size, 0, `${transition}: stale preview deadline is cleared`);
+        clock.tick(1000); await settle();
+        assert.equal(accepted.length, before, `${transition}: stale preview cannot be delivered`);
+      } finally { client.close(); held.resolve(lastPage()); await settle(); }
+    }
+  } finally { clock.restore(); }
+});
+
+test('a consistent partial first page is visible while hydration waits, without arrival animation on completion', async () => {
+  const page = deferred(), accepted = [];
+  const client = createModelClient({ Stream: null,
+    request: async path => path.includes('/entities?') ? page.promise : firstPage(),
+    onSnapshot: (value, streamed) => accepted.push({ value, streamed }),
+  });
+  const opening = client.open();
+  try {
+    await settle();
+    assert.equal(accepted.length, 1, 'the first page must not wait for more records');
+    assert.deepEqual(accepted[0].value.entities.map(value => value.id), ['root']);
+    assert.deepEqual(accepted[0].value.coverage.client.retained.entities, 1);
+    assert.equal(accepted[0].value.partial, true);
+    page.resolve(lastPage());
+    assert.equal(await opening, true);
+    assert.deepEqual(accepted.map(({ value, streamed }) => [value.entities.length, value.partial, streamed]),
+      [[1, true, false], [2, false, false]]);
+  } finally { client.close(); page.resolve(lastPage()); await opening; }
+});
+
+test('the live stream starts during hydration and a newer snapshot prevents a late page from replacing it', async () => {
+  const page = deferred(), accepted = [], streams = [];
+  class Stream {
+    constructor() { this.listeners = {}; streams.push(this); }
+    addEventListener(type, listener) { this.listeners[type] = listener; }
+    close() {}
+  }
+  const client = createModelClient({ Stream,
+    request: async path => path.includes('/entities?') ? page.promise : firstPage(),
+    onSnapshot: value => accepted.push(value),
+  });
+  const opening = client.open();
+  try {
+    await settle();
+    assert.equal(streams.length, 1, 'live updates must not wait for the page backlog');
+    streams[0].listeners.snapshot({ data: JSON.stringify(model({ revision: 2, sequence: 2,
+      entities: [entity('new')], relations: [] })) });
+    await settle();
+    assert.deepEqual(accepted.at(-1).entities.map(value => value.id), ['new']);
+    page.resolve(lastPage()); await opening; await settle();
+    assert.deepEqual(accepted.map(value => value.entities.map(entity => entity.id)), [['root'], ['new']]);
+  } finally { client.close(); page.resolve(lastPage()); await opening; }
+});
+
+test('successive streamed first pages stay current during initial hydration without repeatedly shrinking a hydrated view', async () => {
+  const pages = [deferred(), deferred(), deferred()], accepted = [], streams = [];
+  let pageIndex = 0;
+  class Stream {
+    constructor() { this.listeners = {}; streams.push(this); }
+    addEventListener(type, listener) { this.listeners[type] = listener; }
+    close() {}
+  }
+  const client = createModelClient({ Stream,
+    request: async path => path.includes('/entities?') ? pages[pageIndex++].promise : firstPage(),
+    onSnapshot: (value, streamed) => accepted.push([value.sequence, value.entities.length, streamed]),
+  });
+  const opening = client.open();
+  const emit = sequence => streams[0].listeners.snapshot({
+    data: JSON.stringify({ ...firstPage(), sequence }),
+  });
+  try {
+    await settle();
+    emit(2); await settle();
+    assert.deepEqual(accepted, [[1, 1, false], [2, 1, true]], 'new first pages replace an unfinished preview');
+    pages[1].resolve({ ...lastPage(), sequence: 2 }); await settle();
+    assert.deepEqual(accepted.at(-1), [2, 2, false]);
+    emit(3); await settle();
+    assert.deepEqual(accepted.at(-1), [2, 2, false], 'keep a hydrated view while the next live snapshot fills in');
+    pages[2].resolve({ ...lastPage(), sequence: 3 }); await settle();
+    assert.deepEqual(accepted.at(-1), [3, 2, true]);
+    pages[0].resolve(lastPage()); await opening;
+    assert.deepEqual(accepted.at(-1), [3, 2, true]);
+  } finally { client.close(); pages.forEach(page => page.resolve(lastPage())); await opening; }
+});
+
+test('a new scope aborts background hydration and failed hydration keeps the consistent partial view', async () => {
+  const page = deferred(), accepted = [], errors = [];
+  let pageSignal;
+  const client = createModelClient({ Stream: null, onSnapshot: value => accepted.push(value), onError: value => errors.push(value),
+    request: async (path, { signal } = {}) => {
+      if (path.includes('/entities?')) { pageSignal = signal; return page.promise; }
+      if (path.includes('scope=next')) return model({ entities: [entity('next')], relations: [] });
+      return firstPage();
+    },
+  });
+  const opening = client.open();
+  try {
+    await settle();
+    assert.equal(accepted.length, 1);
+    await client.open({ scope: 'next' });
+    assert.equal(pageSignal.aborted, true);
+    page.reject(new Error('late page failure')); await opening;
+    assert.deepEqual(accepted.at(-1).entities.map(value => value.id), ['next']);
+    assert.deepEqual(errors, [], 'a cancelled request must not replace the new scope status');
+  } finally { client.close(); page.resolve(lastPage()); await opening; }
+
+  const partial = [], failures = [];
+  const failed = createModelClient({ Stream: null, onSnapshot: value => partial.push(value), onError: value => failures.push(value),
+    request: async path => {
+      if (path.includes('/entities?')) throw new Error('page unavailable');
+      return firstPage();
+    },
+  });
+  try {
+    assert.equal(await failed.open(), true);
+    assert.equal(partial.length, 1);
+    assert.equal(partial[0].partial, true);
+    assert.match(failures[0], /partial view is retained/i);
+  } finally { failed.close(); }
+});
 
 test('model transport handles full snapshot sequence jumps, duplicates, checkpoints and stale requests', async () => {
   const streams = [], calls = [], accepted = [];
@@ -96,7 +311,7 @@ test('an inconsistent revision-bound page is discarded and restarted from a fres
   });
   await client.open();
   assert.equal(paths.filter(path => path.includes('/snapshot')).length, 2);
-  assert.deepEqual(accepted[0].entities.map(entity => entity.id), ['fresh']);
+  assert.deepEqual(accepted.map(value => value.entities.map(entity => entity.id)), [['old'], ['fresh']]);
   client.close();
 });
 

@@ -33,6 +33,7 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   createFrame = createExtensionFrame, grantPollMs = 2000, architecturePollMs = 2000 }) {
   const $ = id => document.getElementById(id);
   let model, active = 'graphlin.code', instance, installed = [], generation = 0, closed = false;
+  let loading = true, loadEpoch = 0, pendingView;
   let projectionController;
   let analysisBusy = false;
   let grantWatch;
@@ -177,8 +178,8 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   }
   function controls() {
     options($('visualizer'), [...BUILTIN_VIEWS.map(view => [view.id, view.name]),
-      ...installed.map(view => [view.id, view.manifest.name || view.id])], active);
-    for (const option of $('visualizer').children) option.disabled = !model && option.value !== 'graphlin.code';
+      ...installed.map(view => [view.id, view.manifest.name || view.id])], pendingView || active);
+    for (const option of $('visualizer').children) option.disabled = !model && !loading && option.value !== 'graphlin.code';
     $('view-context').hidden = !model;
     $('c4-level-label').hidden = active !== 'graphlin.c4';
     syncArchitecture();
@@ -342,12 +343,31 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
       selection = { session: selection.session };
       onView({ clear: true });
     }
+    const chosen = Boolean(pendingView);
+    if (pendingView) { dispose(); active = pendingView; pendingView = null; }
     model = value;
-    void project(streamed);
+    void project(streamed, chosen);
   } });
+  async function loadModel() {
+    const mine = ++loadEpoch;
+    loading = true;
+    controls();
+    const available = await client.open(selection);
+    if (closed || suspended || mine !== loadEpoch) return;
+    loading = false;
+    if (!available && !model && pendingView) {
+      pendingView = null;
+      status('Model views unavailable. The Code map remains available.');
+    }
+    controls();
+  }
   function choose(id) {
+    if (!model) {
+      if (loading) { pendingView = id; controls(); status('Loading model… Your chosen view will open when it arrives.'); }
+      else { $('visualizer').value = 'graphlin.code'; status('Model views require a newer local service. The Code map remains available.'); }
+      return;
+    }
     if (id === active) return;
-    if (!model) { $('visualizer').value = 'graphlin.code'; status('Model views require a newer local service. The Code map remains available.'); return; }
     generation++; dispose(); active = id;
     onView({ clear: true });
     return project(false, true);
@@ -355,7 +375,7 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   function scope(id) {
     selection.scope = id || undefined;
     generation++; dispose();
-    void client.open(selection);
+    void loadModel();
   }
   async function grant(approved) {
     const row = installed.find(value => value.id === active);
@@ -376,7 +396,7 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
     } catch { status('Access could not be updated. Retry after reconnecting.'); }
   }
   listen('visualizer', 'change', () => choose($('visualizer').value));
-  listen('view-retry', 'click', () => { dispose(); void client.open(selection); });
+  listen('view-retry', 'click', () => { dispose(); void loadModel(); });
   listen('c4-level', 'change', () => { ownSettings().level = $('c4-level').value; void project(false, true); });
   listen('architecture-discover', 'click', () => {
     if (!architectureLive() || $('architecture-discover').disabled) return;
@@ -396,14 +416,14 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
       const marker = await request('/api/model/v1/checkpoints', { method: 'POST',
         body: JSON.stringify({ label: 'Task baseline', ...(selection.session ? { sessionId: selection.session } : {}) }) });
       ownSettings().baseline = marker.id || marker.checkpoint?.id || marker.marker?.id;
-      await client.open(selection);
+      await loadModel();
     } catch { status('The checkpoint could not be saved. Retry after reconnecting.'); }
     finally { button.disabled = Boolean(selection.checkpoint); }
   });
   listen('model-position', 'change', () => {
     selection.checkpoint = $('model-position').value;
     controls();
-    void client.open(selection);
+    void loadModel();
   });
   listen('follow-agent', 'change', () => { follow = $('follow-agent').checked; onFollow(follow); void project(); });
   listen('extension-approve', 'click', () => grant(true));
@@ -432,7 +452,7 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   });
   controls();
   return {
-    async start() { suspended = false; await Promise.all([client.open(selection), catalogue()]); },
+    async start() { suspended = false; await Promise.all([loadModel(), catalogue()]); },
     choose,
     filter(nextQuery, nextKinds) { query = nextQuery; kinds = nextKinds; void project(false, true); },
     selected(id) { canonicalSelection = id; },
@@ -444,10 +464,10 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
       canonicalSelection = null; focusEntityId = null;
       generation++; projectionController?.abort(); dispose();
       controls();
-      if (!suspended) void client.open(selection);
+      if (!suspended) void loadModel();
     },
-    session(id) { selection.session = id || undefined; generation++; dispose(); void client.open(selection); },
-    live() { selection.checkpoint = undefined; generation++; dispose(); void client.open(selection); },
+    session(id) { selection.session = id || undefined; generation++; dispose(); void loadModel(); },
+    live() { selection.checkpoint = undefined; generation++; dispose(); void loadModel(); },
     toggle(id, isCollapsed = true) {
       const own = ownSettings(), expanded = new Set(own.expanded), collapsed = new Set(own.collapsed);
       if (!isCollapsed) { expanded.delete(id); collapsed.add(id); }
@@ -456,7 +476,7 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
       void project(false, true);
     },
     close() { closed = true; generation++; projectionController?.abort(); client.close(); dispose(); listeners.forEach(remove => remove()); },
-    suspend() { suspended = true; generation++; projectionController?.abort(); client.suspend(); dispose(); },
+    suspend() { suspended = true; loadEpoch++; generation++; projectionController?.abort(); client.suspend(); dispose(); },
     get active() { return active; },
     get model() { return model; },
     get selection() { return selection; },
