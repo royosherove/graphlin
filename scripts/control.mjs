@@ -39,7 +39,7 @@ async function handle(line) {
     const supported = ['2024-11-05', '2025-03-26', '2025-06-18'];
     return result({ protocolVersion: supported.includes(message.params?.protocolVersion) ? message.params.protocolVersion : '2025-06-18',
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: 'graphlin', version: '0.2.1' },
+      serverInfo: { name: 'graphlin', version: '0.2.2' },
       instructions: 'Controls only. Passive host hooks provide observations when separately activated. No drawing calls after each action.' });
   }
   if (message.method === 'ping') return result({});

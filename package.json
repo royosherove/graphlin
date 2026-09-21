@@ -1,6 +1,6 @@
 {
   "name": "graphlin",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Live architecture and activity diagrams from observable coding-agent work.",
   "private": false,
   "type": "module",
@@ -110,6 +110,7 @@
     "./runtime/discovery/index.mjs",
     "./runtime/discovery/inventory.mjs",
     "./runtime/discovery/parser.mjs",
+    "./runtime/discovery/priority.mjs",
     "./runtime/discovery/structure.mjs",
     "./runtime/extensions/contracts.mjs",
     "./runtime/extensions/frame.mjs",
