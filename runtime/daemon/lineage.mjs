@@ -4,6 +4,7 @@ import path from 'node:path';
 import { safeText } from '../core/privacy.mjs';
 
 const TTL_MS = 2000;
+const GIT_TIMEOUT_MS = 2000;
 const CONTROLS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 const BRANCH = ['symbolic-ref', '--quiet', '--short', 'HEAD'];
 const HEAD = ['rev-parse', '--verify', '--end-of-options', 'HEAD'];
@@ -16,7 +17,7 @@ export function createLineageReader({ projectRoot, projectId, execute = execFile
       Buffer.byteLength(projectRoot) > 4096 || projectRoot.includes('\0') ||
       typeof projectId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(projectId) ||
       typeof execute !== 'function') throw new TypeError('invalid_lineage_options');
-  let cached, expiresAt = 0, pending;
+  let cached, confirmed, expiresAt = 0, pending;
   const result = (status, branch, head) => Object.freeze({
     id: createHash('sha256').update(JSON.stringify([projectId, status, branch ?? null, head ?? null])).digest('hex'),
     status, ...(branch ? { branch } : {}), ...(head ? { head } : {}),
@@ -24,15 +25,22 @@ export function createLineageReader({ projectRoot, projectId, execute = execFile
 
   function git(args) {
     return new Promise(resolve => {
-      let child, settled = false;
-      const finish = value => { if (!settled) { settled = true; clearTimeout(timer); resolve(value); } };
+      let child, grace, settled = false;
+      const finish = value => {
+        if (!settled) { settled = true; clearTimeout(timer); clearImmediate(grace); resolve(value); }
+      };
       const timer = setTimeout(() => {
-        finish({ status: 'unavailable' });
-        try { child?.kill?.('SIGKILL'); } catch { /* No child details leave the reader. */ }
-      }, 800);
+        // A busy parent can process an expired timer before an already-finished
+        // child's I/O/close callbacks. Let those callbacks drain before killing.
+        grace = setImmediate(() => { grace = setImmediate(() => {
+          if (settled) return;
+          finish({ status: 'unavailable' });
+          try { child?.kill?.('SIGKILL'); } catch { /* No child details leave the reader. */ }
+        }); });
+      }, GIT_TIMEOUT_MS);
       try {
         child = execute('git', ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', ...args], {
-          cwd: projectRoot, shell: false, timeout: 750, killSignal: 'SIGKILL', maxBuffer: 4096, encoding: 'utf8',
+          cwd: projectRoot, shell: false, timeout: 0, killSignal: 'SIGKILL', maxBuffer: 4096, encoding: 'utf8',
           env: { PATH: process.env.PATH || '/usr/bin:/bin', LC_ALL: 'C',
             GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
             GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1', GIT_NO_LAZY_FETCH: '1' },
@@ -63,7 +71,14 @@ export function createLineageReader({ projectRoot, projectId, execute = execFile
   return async function read() {
     if (cached && Date.now() < expiresAt) return cached;
     if (!pending) pending = readRefs().then(value => {
-      cached = value; expiresAt = Date.now() + TTL_MS; return value;
+      if (value.status !== 'unavailable') confirmed = value;
+      // Git is optional: initial uncertainty carries no Git authority. Losing
+      // a previously confirmed identity instead pauses runtime admission.
+      cached = value.status === 'unavailable'
+        ? confirmed ? Object.freeze({ ...confirmed, status: 'unavailable' }) : result('unknown')
+        : value;
+      expiresAt = Date.now() + TTL_MS;
+      return cached;
     }).finally(() => { pending = undefined; });
     return pending;
   };

@@ -184,8 +184,13 @@ async function bounded(promise, timeout = 8000) {
   } finally { clearTimeout(timer); }
 }
 
-test('foreground CLI parses synthetic source in local mode with zero outbound HTTP and provider calls', async t => {
+for (const unborn of [false, true]) test(`foreground CLI parses synthetic source ${unborn ? 'in an unborn Git repository' : 'without Git'} in local mode with zero outbound HTTP and provider calls`, async t => {
   const setup = await workspace(t);
+  if (unborn) {
+    await mkdir(path.join(setup.projectRoot, '.git', 'objects'), { recursive: true });
+    await mkdir(path.join(setup.projectRoot, '.git', 'refs', 'heads'), { recursive: true });
+    await writeFile(path.join(setup.projectRoot, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  }
   await writeFile(path.join(setup.projectRoot, 'local-example.js'), 'export function localExample() { return 42; }\n');
   const outbound = path.join(setup.base, 'outbound-attempts.txt');
   const preload = path.join(setup.base, 'deny-outbound-http.mjs');
@@ -205,7 +210,7 @@ syncBuiltinESMExports();
 `);
   const child = spawn(process.execPath, ['--import', preload, entry, 'start',
     '--project', setup.projectRoot, '--data-dir', setup.dataDir, '--local-source', '--no-open'], {
-    env: { PATH: path.dirname(process.execPath), HOME: setup.base,
+    env: { PATH: unborn ? `${path.dirname(process.execPath)}:/usr/bin:/bin` : path.dirname(process.execPath), HOME: setup.base,
       TYPESAFE_API_KEY: 'SYNTHETIC_UNUSED_LOCAL_MODE_KEY' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -243,14 +248,18 @@ syncBuiltinESMExports();
     assert.equal(response.status, 200);
     return response.json();
   };
-  let symbol;
+  let symbol, lineage;
   const deadline = Date.now() + 5000;
   do {
     const snapshot = await read('/api/model/v1/snapshot');
     symbol = snapshot.entities.find(entity => entity.label === 'localExample' && entity.basis === 'parsed');
-    if (!symbol) await delay(30);
-  } while (!symbol && Date.now() < deadline);
+    lineage = snapshot.coverage.lineage;
+    if (!symbol || !lineage) await delay(30);
+  } while ((!symbol || !lineage) && Date.now() < deadline);
   assert.ok(symbol, 'local consent must produce a real parsed declaration through the CLI');
+  assert.equal(lineage?.status, 'unknown');
+  assert.equal(lineage.head, undefined);
+  assert.equal(lineage.branch, undefined);
   assert.equal((await read('/api/state')).status.calls, 0);
   child.kill('SIGINT');
   assert.deepEqual(await bounded(exited, 4000), { code: 0, signal: null });

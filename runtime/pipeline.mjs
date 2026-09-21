@@ -154,6 +154,7 @@ export function createPipeline({
   let reconciliationTask = null;
   let resumeScheduled = false;
   let lineageId = null;
+  let lineageAvailable = true, lineageEpoch = 0;
   let architecture;
   let architectureEpoch = 0;
   const architectureGuards = new WeakMap();
@@ -168,12 +169,13 @@ export function createPipeline({
     policy, restoredState: restoredModel, now: clock,
     accept: operation => serialized(operation),
     revalidate: refs => serialized(async () => {
-      if (closed) return false;
+      if (closed || !lineageAvailable) return false;
       registerArtifacts(await evidence.reconcile({ refs }));
       return evidence.isCurrent(refs);
     }),
     onChange: () => { architecture?.wake(); notify(); },
   });
+  lineageAvailable = platform.snapshot().coverage.lineage?.status !== 'unavailable';
   architecture = createArchitectureController({
     snapshot: () => platform.snapshot(),
     capture: captureArchitecture,
@@ -188,10 +190,6 @@ export function createPipeline({
       return result;
     },
     available: architectureUnavailable,
-    ready: () => {
-      const { queued, active } = platform.stats();
-      return queued === 0 && active === 0;
-    },
     onChange: notify,
     onDiagnostic: result => trace(null, 'classification', {
       status: result.status === 'complete' ? 'accepted' : result.status === 'partial' ? 'partial' : 'unavailable',
@@ -206,6 +204,7 @@ export function createPipeline({
     if (!policy.transmitSource) return 'source_consent_required';
     if (missingKey) return 'missing_key';
     if (paused) return 'paused';
+    if (!lineageAvailable) return 'lineage_unavailable';
     if (mode === 'demo') return 'demo';
     if (typeof decisionService?.analyze !== 'function' || typeof decisionService?.evaluate !== 'function') {
       return 'unsupported_service';
@@ -213,16 +212,17 @@ export function createPipeline({
     return null;
   }
 
-  async function captureArchitecture(ids) {
+  async function captureArchitecture(ids, { signal } = {}) {
     const artifacts = await serialized(async () => {
-      if (architectureUnavailable()) return [];
+      if (architectureUnavailable() || signal?.aborted) return [];
       const refs = ids.slice(0, 64).filter(id => knownArtifacts.has(id)).map(artifactId => ({ artifactId }));
       const captures = await evidence.reconcile({ refs });
-      registerArtifacts(captures);
+      registerArtifacts(captures, undefined, { priority: true });
       return captures;
     });
-    // Parser acceptance uses the same serial queue; waiting inside it deadlocks.
-    await platform.whenIdle();
+    // Wait outside serialization for these versions only. Inventory can keep
+    // adding unrelated work while their parser attempts settle.
+    await platform.whenParsed(artifacts, { signal });
     return artifacts;
   }
 
@@ -514,7 +514,7 @@ export function createPipeline({
     }
   }
 
-  function registerArtifacts(artifacts, event) {
+  function registerArtifacts(artifacts, event, options) {
     const changed = [];
     for (const artifact of artifacts) {
       const previous = knownArtifacts.get(artifact.id);
@@ -548,7 +548,7 @@ export function createPipeline({
         recordPatch(session, invalidateArtifacts(session.graph, changed));
       }
     }
-    platform.observeArtifacts(artifacts, event);
+    platform.observeArtifacts(artifacts, event, options);
     if (changed.length) architecture.observe(changed);
     return changed;
   }
@@ -690,7 +690,7 @@ export function createPipeline({
   }
 
   async function flushDeferred() {
-    if (closed || paused || !deferredWork.size) return;
+    if (closed || paused || !lineageAvailable || !deferredWork.size) return;
     const work = [...deferredWork];
     deferredWork.clear();
     const needed = new Set(work.flatMap(([, entry]) => [...entry.artifacts]));
@@ -765,7 +765,8 @@ export function createPipeline({
     // judgment even when its candidate evidence has not changed.
     if (completedClassifications.has(key)) return 'source_version_completed';
     if ([...activeClassifications, ...classificationQueue].some(other =>
-      other !== job && other.session === job.session && classificationKey(other) === key)) {
+      other !== job && other.session === job.session && !other.controller?.signal.aborted &&
+      other.lineageEpoch === job.lineageEpoch && classificationKey(other) === key)) {
       return 'source_version_pending';
     }
     return null;
@@ -795,8 +796,10 @@ export function createPipeline({
     if (!decisionService) { skip('classifier_unavailable'); return; }
     const session = sessions.get(event.sessionId);
     if (!session) { skip('session_evicted'); return; }
-    if (paused) { deferClassification(event, candidates); skip('paused_deferred'); return; }
-    const job = { event, candidates, sourceEventId, session, lineageId, enqueuedAt: clock(),
+    if (paused || !lineageAvailable) {
+      deferClassification(event, candidates); skip(paused ? 'paused_deferred' : 'source_withheld'); return;
+    }
+    const job = { event, candidates, sourceEventId, session, lineageId, lineageEpoch, enqueuedAt: clock(),
       needsRefresh: activeClassifications.size >= MAX_CLASSIFICATIONS };
     const covered = coverageReason(job);
     if (covered) { skipJob(job, covered); return; }
@@ -824,7 +827,7 @@ export function createPipeline({
   }
 
   function pumpClassifications() {
-    if (closed || paused) return;
+    if (closed || paused || !lineageAvailable) return;
     while (classificationQueue.length && activeClassifications.size < MAX_CLASSIFICATIONS) {
       const job = classificationQueue.shift();
       activeClassifications.add(job);
@@ -850,7 +853,10 @@ export function createPipeline({
       skipJob(job, closed ? 'pipeline_closed' : 'session_evicted');
       return false;
     }
-    if (paused) { deferClassification(job.event, job.candidates); skipJob(job, 'paused_deferred'); return false; }
+    if (paused || !lineageAvailable) {
+      deferClassification(job.event, job.candidates);
+      skipJob(job, paused ? 'paused_deferred' : 'source_withheld'); return false;
+    }
     if (clock() - job.enqueuedAt >= CLASSIFICATION_QUEUE_TTL_MS) {
       dropped++;
       skipJob(job, 'classification_queue_expired');
@@ -890,9 +896,13 @@ export function createPipeline({
     const { event, candidates, sourceEventId, session } = job;
     const context = classificationContext(candidates, sourceEventId);
     const skip = reason => skipJob(job, reason);
-    if (closed || job.controller.signal.aborted) { skip('pipeline_closed'); return; }
+    if (closed || job.controller.signal.aborted) {
+      skip(closed ? 'pipeline_closed' : 'source_changed_during_classification'); return;
+    }
     if (sessions.get(event.sessionId) !== session) { skip('session_evicted'); return; }
-    if (paused) { deferClassification(event, candidates); skip('paused_deferred'); return; }
+    if (paused || !lineageAvailable) {
+      deferClassification(event, candidates); skip(paused ? 'paused_deferred' : 'source_withheld'); return;
+    }
     if (clock() - job.enqueuedAt >= CLASSIFICATION_QUEUE_TTL_MS) {
       dropped++;
       skip('classification_queue_expired');
@@ -909,7 +919,7 @@ export function createPipeline({
       let result;
       try {
         const interrupted = new Promise(resolve => {
-          cancel = () => resolve({ status: 'unavailable', diagnostics: { code: 'service_closed' } });
+          cancel = () => resolve({ status: 'unavailable', diagnostics: { code: closed ? 'service_closed' : 'cancelled' } });
           job.controller.signal.addEventListener('abort', cancel, { once: true });
           timer = setTimeout(() => {
             resolve({ status: 'timeout', diagnostics: { code: 'deadline_exceeded' } });
@@ -929,7 +939,9 @@ export function createPipeline({
         diagnostics: result?.diagnostics ?? {} });
       await serialized(async () => {
         if (closed || !sessions.has(event.sessionId)) { skip(closed ? 'pipeline_closed' : 'session_evicted'); return; }
-        if (job.lineageId !== lineageId) { skip('source_changed_during_classification'); return; }
+        if (!lineageAvailable || job.lineageId !== lineageId || job.lineageEpoch !== lineageEpoch) {
+          skip('source_changed_during_classification'); return;
+        }
         if (paused) { deferClassification(event, candidates); skip('paused_deferred'); notify(); return; }
         if (clock() >= deadlineAt) { classifier = 'timeout'; dropped++; skip('deadline_before_apply'); notify(); return; }
         if (result.status === 'timeout') classifier = 'timeout';
@@ -945,6 +957,7 @@ export function createPipeline({
           // have edited these files while either Jev request was in flight.
           registerArtifacts(await evidence.reconcile({ refs: sourceVersions(candidates) }));
           if (closed || sessions.get(event.sessionId) !== session) { skip(closed ? 'pipeline_closed' : 'session_evicted'); return; }
+          if (!lineageAvailable || job.lineageEpoch !== lineageEpoch) { skip('source_changed_during_classification'); return; }
           if (paused) { deferClassification(event, candidates); skip('paused_deferred'); notify(); return; }
           const artifactRefs = sourceVersions(candidates);
           if (clock() >= deadlineAt) {
@@ -1215,19 +1228,32 @@ export function createPipeline({
 
   function observeLineage(lineage) {
     return serialized(() => {
-      if (closed || lineage.id === lineageId) return;
+      const available = lineage.status !== 'unavailable', wasAvailable = lineageAvailable;
+      if (closed || lineage.id === lineageId && available === wasAvailable) return;
+      const changed = lineage.id !== lineageId;
+      lineageAvailable = available;
       platform.observeLineage(lineage);
       lineageId = lineage.id;
-      architectureEpoch++;
-      architecture.invalidate();
-      completedClassifications.clear();
-      for (const job of activeClassifications) job.controller.abort();
-      for (const job of classificationQueue.splice(0)) {
-        pending--;
-        skipJob(job, 'source_changed_during_classification');
+      if (changed || !available) {
+        lineageEpoch++;
+        architectureEpoch++;
+        for (const job of activeClassifications) {
+          if (!available) deferClassification(job.event, job.candidates);
+          job.controller.abort();
+        }
+        for (const job of classificationQueue.splice(0)) {
+          if (!available) deferClassification(job.event, job.candidates);
+          pending--;
+          skipJob(job, 'source_changed_during_classification');
+        }
       }
-      for (const artifactId of knownArtifacts.keys()) lineageWork.add(artifactId);
-      registerArtifacts(evidence.setLineage(lineage.id));
+      if (changed) {
+        architecture.invalidate();
+        completedClassifications.clear();
+        for (const artifactId of knownArtifacts.keys()) lineageWork.add(artifactId);
+        registerArtifacts(evidence.setLineage(lineage.id));
+      } else architecture.wake();
+      if (available && !wasAvailable && !paused) serialized(flushDeferred).catch(() => { dropped++; });
       notify();
     });
   }
@@ -1252,7 +1278,7 @@ export function createPipeline({
       await platform.whenIdle();
       await architecture.whenIdle();
       await serial;
-    } while (tasks.size || classificationQueue.length || platform.stats().queued || platform.stats().active);
+    } while (tasks.size || classificationQueue.length || platform.stats().active || lineageAvailable && platform.stats().queued);
   }
 
   async function close() {
@@ -1275,7 +1301,7 @@ export function createPipeline({
   return {
     ingest, getState, reconcile, observeLineage, setPaused, selectSession, whenIdle, close,
     getArchitectureStatus: () => architecture.status(),
-    discoverArchitecture: () => architecture.request(),
+    discoverArchitecture: () => { platform.retryCapacity(); return architecture.request(); },
     getModelState: options => platform.snapshot(options),
     createCheckpoint: options => platform.checkpoint(options),
     model: platform.model,

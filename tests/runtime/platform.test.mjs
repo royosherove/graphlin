@@ -94,6 +94,83 @@ test('queue overflow is visible and retried through bounded discovery and fresh 
   assert.equal(platform.snapshot().entities.filter(value => value.kind === 'variable').length, 70);
 });
 
+test('selected parse versions settle despite continuous unrelated captures and a full queue', { timeout: 5000 }, async t => {
+  const started = gate(), release = gate(), later = gate(), calls = [];
+  t.after(() => { release.resolve(); later.resolve(); });
+  const names = Array.from({ length: 100 }, (_, i) => `item-${String(i).padStart(2, '0')}.js`);
+  let platform, arrivals = [];
+  const f = await fixture(t, {
+    files: Object.fromEntries(names.map((name, i) => [name, `export const item${i} = ${i};`])),
+    extract: async input => {
+      calls.push(input.relativePath);
+      if (calls.length === 1) { started.resolve(); await release.promise; }
+      else if (calls.length > 12) await later.promise;
+      // Fresh unrelated arrivals keep the global queue busy after each parse.
+      await Promise.resolve();
+      if (arrivals.length) platform.observeArtifacts([arrivals.shift()]);
+      return extractStructure(input);
+    },
+  });
+  platform = f.platform;
+  const captures = await f.capture(names), selected = captures.slice(60, 66);
+  arrivals = captures.slice(66);
+  platform.observeArtifacts(captures.slice(0, 33));
+  await started.promise;
+  platform.observeArtifacts(selected, undefined, { priority: true });
+  assert.equal(platform.stats().queued, 32);
+  assert.equal(platform.stats().deferred, 6, 'displaced captures remain metadata-only deferred work');
+  const settled = platform.whenParsed(selected);
+  release.resolve();
+  assert.equal(await settled, true);
+  assert.ok(platform.stats().queued > 0, 'the barrier does not drain future unrelated arrivals');
+  assert.ok(calls.length <= 11, 'six selected files finish within bounded priority/oldest turns');
+  assert.ok(calls.includes(names[1]), 'oldest ordinary work still advances');
+  for (const artifact of selected) {
+    assert.ok(platform.snapshot().entities.some(entity => entity.artifactId === artifact.id &&
+      entity.kind === 'module' && entity.basis === 'parsed' && entity.validity === 'current'));
+  }
+  assert.ok(platform.stats().queued <= 32);
+});
+
+test('a targeted parse barrier rejects changed versions and failed attempts', async t => {
+  const started = gate(), release = gate();
+  t.after(() => release.resolve());
+  let first = true;
+  const { platform, capture, root } = await fixture(t, { extract: async input => {
+    if (first) { first = false; started.resolve(); await release.promise; }
+    else throw new Error('synthetic_parser_failure');
+    return extractStructure(input);
+  } });
+  const old = await capture(['sample.js']);
+  platform.observeArtifacts(old, undefined, { priority: true });
+  await started.promise;
+  const settled = platform.whenParsed(old);
+  await writeFile(path.join(root, 'sample.js'), 'export const replacement = 2;');
+  const fresh = await capture(['sample.js']);
+  platform.observeArtifacts(fresh, undefined, { priority: true });
+  release.resolve();
+  assert.equal(await settled, false);
+  assert.equal(await platform.whenParsed(fresh), false);
+  assert.equal(platform.snapshot().entities.some(entity => entity.basis === 'parsed'), false);
+  assert.equal(platform.stats().failed, 1);
+});
+
+test('cancelling a targeted wait does not wait for unrelated parser work', async t => {
+  const started = gate(), release = gate(), controller = new AbortController();
+  t.after(() => release.resolve());
+  const { platform, capture } = await fixture(t, { extract: async input => {
+    started.resolve(); await release.promise;
+    return extractStructure(input);
+  } });
+  const artifacts = await capture(['sample.js']);
+  platform.observeArtifacts(artifacts, undefined, { priority: true });
+  await started.promise;
+  const settled = platform.whenParsed(artifacts, { signal: controller.signal });
+  controller.abort();
+  assert.equal(await settled, false);
+  assert.equal(platform.stats().active, 1);
+});
+
 test('a same-file change between revalidation and acceptance cannot install the old parse', async t => {
   const waiting = gate(), release = gate();
   let first = true;
@@ -268,6 +345,63 @@ test('lineage changes clear the parse cache so unchanged bytes are recaptured an
   assert.equal(calls, 2);
   assert.equal(platform.stats().deferred, 0);
   assert.equal(platform.snapshot().entities.find(value => value.label === 'sample').validity, 'current');
+});
+
+test('unavailable lineage pauses new parses and same-identity recovery retains completed parses', async t => {
+  let calls = 0;
+  const { platform, capture } = await fixture(t, {
+    files: { 'one.js': 'export const one = 1;', 'two.js': 'export const two = 2;' },
+    extract: input => { calls++; return extractStructure(input); },
+  });
+  const lineage = { id: 'lineage-one', status: 'git' };
+  platform.observeLineage(lineage);
+  const first = await capture(['one.js']);
+  platform.observeArtifacts(first);
+  await platform.whenIdle();
+  assert.equal(platform.stats().parsed, 1);
+  const before = platform.snapshot().entities;
+  platform.observeLineage({ ...lineage, status: 'unavailable' });
+  platform.observeArtifacts(await capture(['two.js']));
+  await platform.whenIdle();
+  assert.equal(calls, 1);
+  assert.equal(platform.stats().parsed, 1);
+  assert.equal(platform.stats().queued, 1);
+  assert.equal(platform.snapshot().coverage.lineage.status, 'unavailable');
+  assert.ok(before.every(entity => platform.snapshot().entities.some(value =>
+    value.id === entity.id && value.validity === entity.validity)));
+  platform.observeLineage(lineage);
+  await platform.whenIdle();
+  assert.equal(calls, 2);
+  assert.equal(platform.stats().parsed, 2);
+  assert.equal((await capture(['one.js']))[0].generation, first[0].generation);
+  platform.observeArtifacts(first);
+  await platform.whenIdle();
+  assert.equal(calls, 2, 'the confirmed same lineage does not discard completed parser work');
+});
+
+test('a parse started before lineage became unavailable cannot commit after same-identity recovery', async t => {
+  const started = gate(), release = gate();
+  let calls = 0;
+  const { platform, capture } = await fixture(t, { extract: async input => {
+    calls++;
+    if (calls === 1) { started.resolve(); await release.promise; }
+    return extractStructure({ ...input, signal: undefined });
+  } });
+  const lineage = { id: 'lineage-one', status: 'git' };
+  platform.observeLineage(lineage);
+  const artifacts = await capture(['sample.js']);
+  platform.observeArtifacts(artifacts);
+  await started.promise;
+  platform.observeLineage({ ...lineage, status: 'unavailable' });
+  platform.observeLineage(lineage);
+  release.resolve();
+  await platform.whenIdle();
+  assert.equal(platform.stats().parsed, 0);
+  assert.equal(platform.snapshot().entities.some(value => value.basis === 'parsed'), false);
+  platform.observeArtifacts(artifacts);
+  await platform.whenIdle();
+  assert.equal(platform.stats().parsed, 1);
+  assert.equal(calls, 2);
 });
 
 test('lineage changes abort active and queued work and reject a late parse even after switching back', async t => {

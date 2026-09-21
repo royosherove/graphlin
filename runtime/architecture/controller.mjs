@@ -1,3 +1,5 @@
+import { pathPriority, selectPrioritized } from '../discovery/priority.mjs';
+
 const MAX_PENDING = 10_000;
 const BATCH_SIZE = 6;
 const STATES = new Set(['waiting', 'queued', 'running', 'complete', 'partial', 'unavailable']);
@@ -15,6 +17,7 @@ export function createArchitectureController({
   const retries = new Map();
   let state = 'waiting', reason = 'no_source', timer, active, abort, activeVersions;
   let closed = false, epoch = 0, manual = false, omitted = 0, failures = 0, lastRunAt = null;
+  let selectionCursor = 0;
 
   function status() {
     const model = snapshot();
@@ -74,7 +77,7 @@ export function createArchitectureController({
       const item = metadata(artifact), old = known.get(artifact.id);
       if (old && version(old) === version(item)) continue;
       if (!old && known.size >= MAX_PENDING) { omitted++; continue; }
-      known.set(artifact.id, item);
+      known.set(artifact.id, { ...item, priority: pathPriority(artifact.relativePath) });
       completed.delete(artifact.id);
       retries.delete(artifact.id);
       enqueue(artifact.id);
@@ -94,12 +97,16 @@ export function createArchitectureController({
       manual = false;
     }
     if (!pending.size) { publish('waiting', 'no_source'); return; }
-    const ids = [...pending.keys()].slice(0, BATCH_SIZE), generation = epoch;
+    const selected = selectPrioritized(pending.keys(), BATCH_SIZE, {
+      cursor: selectionCursor, priority: id => pending.get(id).priority,
+    });
+    selectionCursor = selected.cursor;
+    const ids = selected.values, generation = epoch;
     abort = new AbortController();
     const signal = abort.signal;
     publish('running');
     active = (async () => {
-      const artifacts = await capture(ids);
+      const artifacts = await capture(ids, { signal });
       if (closed || signal.aborted || generation !== epoch) return;
       const captured = new Map(artifacts.map(value => [value.id, metadata(value)]));
       activeVersions = new Map(ids.flatMap(id => known.has(id)
@@ -128,6 +135,9 @@ export function createArchitectureController({
       }
       if (Number.isSafeInteger(applied.omitted) && applied.omitted > 0) omitted += applied.omitted;
       const deferred = new Set(result.coverage?.deferredArtifactIds ?? []);
+      const advanceNeighbors = !(applied.omitted > 0) && result.interpretations?.some(value =>
+        value.namespace === 'graphlin.architecture' && value.kind === 'application' &&
+        value.validity === 'current' && value.support === 'supported' && value.classification === 'accepted');
       const progressed = ids.some(id => !deferred.has(id));
       for (const id of ids) {
         if (activeVersions.get(id) !== version(known.get(id) ?? {})) continue;
@@ -139,7 +149,12 @@ export function createArchitectureController({
         completed.set(id, activeVersions.get(id));
         if (deferred.has(id)) failures++;
       }
-      for (const id of deferred) enqueue(id);
+      for (const id of deferred) {
+        // Follow an admitted application's evidence next. This changes queue
+        // order only; a neighbor still needs its own supported interpretation.
+        if (advanceNeighbors && known.has(id)) known.set(id, { ...known.get(id), priority: 0 });
+        enqueue(id);
+      }
       for (const id of result.coverage?.deferredMembershipArtifactIds ?? []) {
         const count = retries.get(id) ?? 0;
         if (count < 2) { retries.set(id, count + 1); enqueue(id, { force: true }); }

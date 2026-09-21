@@ -326,7 +326,7 @@ test('lineage projection preserves recorded checkpoint branch and HEAD in scoped
 
 test('lineage is bounded metadata with required identity and exact status, never raw provider data', async t => {
   const f = await fixture(t);
-  for (const status of ['git', 'not_git', 'unavailable']) {
+  for (const status of ['git', 'not_git', 'unknown', 'unavailable']) {
     const minimal = { id: `lineage-${status}`, status };
     f.state.coverage.lineage = minimal;
     assert.deepEqual((await f.request('snapshot')).data.coverage.lineage, minimal);
@@ -341,7 +341,7 @@ test('lineage is bounded metadata with required identity and exact status, never
     assert.deepEqual((await f.request('snapshot')).data.coverage.lineage, { id: 'lineage-bounded', status: 'git' });
   }
   for (const invalid of [null, [], 'RAW_SENTINEL', {}, { id: 'lineage-one' }, { status: 'git' },
-    { id: 'lineage-one', status: 'GIT' }, { id: 'lineage-one', status: 'unknown' },
+    { id: 'lineage-one', status: 'GIT' }, { id: 'lineage-one', status: 'unsupported' },
     { id: 'x'.repeat(161), status: 'git' }, { id: '/Users/synthetic', status: 'git' }]) {
     f.state.coverage.lineage = invalid;
     assert.equal((await f.request('snapshot')).data.coverage.lineage, undefined);

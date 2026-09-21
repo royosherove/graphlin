@@ -261,7 +261,6 @@ test('identical-byte generation follows lineage transitions, including repeats a
     lineage('new-head', { status: 'git', branch: after.branch, head: 'b'.repeat(40) }),
     lineage('new-head', { status: 'git', branch: after.branch, head: 'b'.repeat(40) }),
     before,
-    lineage('unavailable', { status: 'unavailable' }),
     lineage('not-git', { status: 'not_git' }),
     lineage('sha256-head', { status: 'git', head: 'c'.repeat(64) }),
   ];
@@ -292,4 +291,89 @@ test('identical-byte generation follows lineage transitions, including repeats a
   assert.equal(pipeline.getState().status.pending, 0);
   assert.equal(pipeline.getModelState().projectId, f.projectId);
   assert.equal(await readFile(path.join(f.root, 'component.js'), 'utf8'), source.replace('syntheticComponent', 'componentComponent'));
+});
+
+test('unknown lineage pauses new decisions and same-ID recovery reuses source generations and completed parses', testOptions, async t => {
+  const f = await fixture(t);
+  const { pipeline } = f;
+  await pipeline.observeLineage(before);
+  await f.read('baseline', { incomplete: true });
+  await pipeline.whenIdle();
+  const version = oneVersion(f.calls[0].input.candidates);
+  const marker = pipeline.createCheckpoint(), frozen = pipeline.getModelState({ checkpointId: marker.id });
+  f.setAutomatic(false);
+  await f.read('held-full-read');
+  const old = f.calls[1];
+  assert.ok(old && !old.settled);
+  await pipeline.observeLineage({ ...before, status: 'unavailable' });
+  assert.equal(old.input.signal.aborted, true);
+  await f.read('during-unknown');
+  await pipeline.whenIdle();
+  assert.equal(f.calls.length, 2, 'unknown lineage admits no new remote work');
+  assert.equal(pipeline.getArchitectureStatus().reason, 'lineage_unavailable');
+  assert.equal(pipeline.getModelState().coverage.parsing.parsed, 1);
+  assert.equal(pipeline.getModelState().coverage.artifacts[0].generation, version.generation);
+  f.setAutomatic(true);
+  await pipeline.observeLineage(before);
+  await pipeline.whenIdle();
+  assert.equal(f.calls.length, 3);
+  assert.deepEqual(oneVersion(f.calls[2].input.candidates), version);
+  assertCurrent(pipeline.getModelState(), version);
+  const current = pipeline.getModelState();
+  old.release();
+  await tick();
+  await pipeline.whenIdle();
+  assert.deepEqual(pipeline.getModelState(), current, 'the pre-uncertainty answer cannot commit late');
+  assert.deepEqual(pipeline.getModelState({ checkpointId: marker.id }), frozen);
+});
+
+test('an answer returned before unknown-and-recovered lineage observations still fails the admission epoch guard', testOptions, async t => {
+  let f, oldId, switching;
+  f = await fixture(t, { automatic: false, onDiagnostic(record) {
+    if (record.eventId === oldId && record.stage === 'classification' && record.status === 'accepted') {
+      switching = Promise.all([
+        f.pipeline.observeLineage({ ...before, status: 'unavailable' }),
+        f.pipeline.observeLineage(before),
+      ]);
+    }
+  } });
+  await f.pipeline.observeLineage(before);
+  await f.read('returned-answer');
+  const old = f.calls[0], version = oneVersion(old.input.candidates);
+  oldId = old.input.event.id;
+  f.setAutomatic(true);
+  old.release();
+  await f.pipeline.whenIdle();
+  assert.ok(switching);
+  await switching;
+  assert.equal(old.result.status, 'accepted');
+  assert.ok(!f.records.some(record => record.eventId === oldId && record.stage === 'apply'));
+  assert.ok(f.records.some(record => record.eventId === oldId && record.reason === 'source_changed_during_classification'));
+  assertCurrent(f.pipeline.getModelState(), version);
+});
+
+test('overlapping pause/resume and lineage recovery cannot let a cancelled job suppress its replacement', testOptions, async t => {
+  const f = await fixture(t, { automatic: false });
+  const { pipeline } = f;
+  await pipeline.observeLineage(before);
+  await pipeline.ingest({ cwd: f.root, hook_event_name: 'SessionStart', session_id: 'synthetic-session' });
+  assert.equal(f.calls.length, 1);
+  const old = f.calls[0], version = oneVersion(old.input.candidates);
+  f.setAutomatic(true);
+  pipeline.setPaused(true);
+  const unknown = pipeline.observeLineage({ ...before, status: 'unavailable' });
+  const recovered = pipeline.observeLineage(before);
+  pipeline.setPaused(false);
+  await Promise.all([unknown, recovered]);
+  await pipeline.whenIdle();
+  assert.equal(old.input.signal.aborted, true);
+  assert.equal(f.calls.length, 2, 'the cancelled active job cannot cover a replacement queued during recovery');
+  assertCurrent(pipeline.getModelState(), version);
+  assert.equal(pipeline.getState().status.pending, 0);
+  assert.ok(!f.records.some(record => record.eventId === old.input.event.id && record.stage === 'apply'));
+  const current = pipeline.getModelState();
+  old.release();
+  await tick();
+  await pipeline.whenIdle();
+  assert.deepEqual(pipeline.getModelState(), current);
 });

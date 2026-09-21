@@ -135,7 +135,7 @@ function enumeration(value) {
 function lineage(value) {
   const result = pick(value, {
     id: identifier,
-    status: value => ['git', 'not_git', 'unavailable'].includes(value) ? value : undefined,
+    status: value => ['git', 'not_git', 'unknown', 'unavailable'].includes(value) ? value : undefined,
     branch: text,
     head: value => typeof value === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value) ? value : undefined,
   });
