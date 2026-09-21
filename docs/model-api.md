@@ -102,11 +102,17 @@ checkpoint cursors go to `history`. Keep exactly the same selectors.
 
 Pages return `{items, page: {total, offset, returned, complete, nextCursor}}`
 along with model revision, model sequence, selection and transport metadata.
-Entities use deterministic breadth-first containment order: roots and ancestors
-precede children, with siblings sorted by ID. The initial bounded snapshot
-therefore preserves retained ancestor groups. Subsequent pages extend that
-same assembly; they do not repeat its ancestors. Other collections use stable
-ID ordering; activity and checkpoint ordering uses model sequence and then ID.
+Entities use deterministic breadth-first containment order, with siblings sorted
+by ID. Current, accepted, supported `graphlin.architecture` applications,
+components, and memberships with source hash/generation references and current
+canonical anchors receive priority: their anchors and complete ancestor chains
+come first, preserving containment order, followed by the remaining entities in
+their original order. These interpretations likewise precede other interpretations,
+with ID order preserved within each portion. Priority uses only records disclosed
+by the caller's field grant and scope. Without eligible architecture, ordering is
+unchanged. Every bounded prefix keeps parents before children; subsequent pages
+extend the same assembly without repeating ancestors. Relations and sessions use
+ID order; activity and checkpoints use model sequence and then ID.
 Cursors are signed and bind project/daemon epoch,
 principal, collection or parent, selectors, revision, model sequence, and
 the complete safe projection fingerprint. They expire after five minutes.

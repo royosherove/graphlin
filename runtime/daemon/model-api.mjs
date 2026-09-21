@@ -198,6 +198,35 @@ function containmentOrder(entities) {
   if (ordered.length !== entities.length) fail(503, 'invalid_model_containment');
   return ordered;
 }
+function prioritizeArchitecture(data) {
+  const supported = data.interpretations.filter(value =>
+    value.namespace === 'graphlin.architecture' &&
+    ['application', 'component', 'architecture_membership'].includes(value.kind) &&
+    value.validity === 'current' && value.classification === 'accepted' && value.support === 'supported' &&
+    value.entityIds?.length && value.sourceRefs?.some(ref =>
+      ref.artifactId && ref.hash && positiveInteger(ref.generation)));
+  if (!supported.length) return;
+  const byId = new Map(data.entities.map(value => [value.id, value]));
+  const records = new Set(), anchors = new Set();
+  for (const value of supported) {
+    if (!value.entityIds.every(id => byId.get(id)?.validity === 'current')) continue;
+    records.add(value.id);
+    for (const id of value.entityIds) {
+      let entity = byId.get(id);
+      while (entity && !anchors.has(entity.id)) {
+        anchors.add(entity.id);
+        entity = byId.get(entity.parentId);
+      }
+    }
+  }
+  if (!records.size) return;
+  // Stable partitions preserve containment order in both portions. Promoting
+  // every ancestor keeps each bounded prefix parent-before-child.
+  data.entities = [...data.entities.filter(value => anchors.has(value.id)),
+    ...data.entities.filter(value => !anchors.has(value.id))];
+  data.interpretations = [...data.interpretations.filter(value => records.has(value.id)),
+    ...data.interpretations.filter(value => !records.has(value.id))];
+}
 function exactKeys(value, allowed) {
   if (!plain(value) || Object.keys(value).some(key => !allowed.includes(key))) fail(400, 'invalid_input');
 }
@@ -428,6 +457,8 @@ export function createModelAPI({ projectId, getSnapshot, getSessions, createChec
         Array.isArray(value.entityIds) && value.entityIds.every(id => selected.has(id)));
       result.activity = result.activity.filter(value => !value.entityIds?.length || value.entityIds.some(id => selected.has(id)));
     }
+    // Only disclosed, in-scope interpretations may influence the visible order.
+    prioritizeArchitecture(result);
     result.coverage = principal.fields.includes('coverage') ? coverage(raw.coverage,
       selection.scopeId ? new Set(result.entities.flatMap(value =>
         [value.artifactId, ...(value.sourceRefs ?? []).map(ref => ref.artifactId)].filter(Boolean))) : undefined) : {};
