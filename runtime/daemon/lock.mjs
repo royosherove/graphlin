@@ -25,8 +25,14 @@ async function claims(directory) {
   for await (const entry of await opendir(directory)) {
     if (++scanned > 1024) throw busy();
     const match = CLAIM_NAME.exec(entry.name);
-    if (!match || !entry.isDirectory()) throw busy();
+    if (!match) throw busy();
     const filename = path.join(directory, entry.name), pid = Number(match[1]);
+    if (!entry.isDirectory()) {
+      // A departing peer may disappear before its directory type is resolved.
+      // Only confirmed absence is benign; existing entries still fail closed.
+      if (!await lstat(filename).catch(absent)) continue;
+      throw busy();
+    }
     if (!alive(pid)) {
       await rm(filename, { recursive: true, force: true });
       continue;

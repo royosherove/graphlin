@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, lstat, readdir, writeFile } from 'node:fs/promises';
+import fs, { mkdir, lstat, readdir, writeFile, rm, symlink } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import { workspace } from './helpers.mjs';
 import { projectPaths, atomicJSON, readPrivateJSON } from '../../runtime/daemon/paths.mjs';
-import { acquireLock } from '../../runtime/daemon/lock.mjs';
+import { acquireLock, withPublicationGuard } from '../../runtime/daemon/lock.mjs';
 
 const workerPath = path.resolve('tests/runtime/fixtures/lock-worker.mjs');
 const deadPid = 2147483647;
@@ -33,6 +35,53 @@ async function worker(t, setup, phase = 'owner') {
   assert.deepEqual(await next(), { ready: true });
   return { child, next, stop, exited };
 }
+
+test('a non-directory claim entry is ignored only after its peer has disappeared', async t => {
+  for (const state of ['departed', 'file', 'symlink', 'directory', 'invalid name']) await t.test(state, async t => {
+    const setup = await workspace(t), paths = await projectPaths(setup.projectRoot, setup.dataDir, { create: true });
+    const directory = `${paths.lock}.claims`;
+    const name = state === 'invalid name' ? 'unexpected-entry' : `${process.pid}-${randomUUID()}`;
+    const peer = path.join(directory, name);
+    await mkdir(directory, { mode: 0o700 });
+    await mkdir(peer, { mode: 0o700 });
+    const target = path.join(paths.directory, 'link-target');
+    await mkdir(target, { mode: 0o700 });
+    const opendir = fs.opendir;
+    let injected = false, entered = false;
+    t.mock.method(fs, 'opendir', async (...args) => {
+      const handle = await opendir(...args);
+      if (args[0] !== directory) return handle;
+      return {
+        async *[Symbol.asyncIterator]() {
+          for await (const entry of handle) {
+            if (entry.name !== name || injected) { yield entry; continue; }
+            injected = true;
+            if (state !== 'directory') await rm(peer, { recursive: true });
+            if (state === 'file') await writeFile(peer, 'synthetic', { mode: 0o600 });
+            if (state === 'symlink') await symlink(target, peer);
+            // The peer leaves after enumeration; its reported type is no
+            // longer a directory. A present replacement must still block.
+            yield { name, isDirectory: () => false };
+          }
+        },
+      };
+    });
+    syncBuiltinESMExports();
+    try {
+      const guarded = withPublicationGuard(paths, async () => { entered = true; });
+      if (state === 'departed') await guarded;
+      else await assert.rejects(guarded, { code: 'daemon_busy' });
+      assert.equal(injected, true);
+      assert.equal(entered, state === 'departed');
+      assert.deepEqual(await readdir(directory), ['file', 'symlink', 'directory'].includes(state) ? [name] : [],
+        'only the contender removes its own claim; unsafe peer entries are preserved');
+      assert.equal((await lstat(target)).isDirectory(), true);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  });
+});
 
 test('dead and ownerless legacy locks recover even with an abandoned reaping directory', async t => {
   for (const ownerless of [false, true]) {
