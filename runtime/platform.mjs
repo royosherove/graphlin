@@ -1,7 +1,8 @@
 import path from 'node:path';
+import { lstat, realpath } from 'node:fs/promises';
 import { createInventory, extractStructure } from './discovery/index.mjs';
 import { createProjectModel } from './model/index.mjs';
-import { integer, isHash, isId } from './core/common.mjs';
+import { integer, isHash, isId, opaque } from './core/common.mjs';
 import { relativePath, currentPolicy } from './model/records.mjs';
 import { pathPriority, selectPrioritized } from './discovery/priority.mjs';
 
@@ -275,6 +276,36 @@ export function createPlatform({
       return result;
     },
     observeLegacy(graph, options) { model.observeLegacy(graph, options); },
+    async activityTargets(paths) {
+      const effective = currentPolicy(policy);
+      const names = [...new Set(paths.slice(0, 32).map(value => typeof value === 'string'
+        ? relativePath(path.relative(projectRoot, path.resolve(projectRoot, value)).split(path.sep).join('/'), effective)
+        : null).filter(Boolean))];
+      const entries = [];
+      for (const name of names) {
+        if (model.resolveActivityTargets([name]).entityIds.length) continue;
+        // A named path is intent. Only real, non-symlink file metadata may add
+        // a file anchor; no source is opened or hashed for activity mapping.
+        try {
+          const parts = name.split('/');
+          if (parts.length > 24 || await realpath(projectRoot) !== projectRoot) continue;
+          let current = projectRoot, info;
+          for (const part of parts) {
+            current = path.join(current, part);
+            info = await lstat(current);
+            if (info.isSymbolicLink()) { info = null; break; }
+          }
+          if (info?.isFile()) entries.push({
+            relativePath: name, kind: 'file', size: info.size, mtimeMs: info.mtimeMs,
+            root: parts.length > 1 ? parts[0] : '',
+          });
+        } catch { /* A missing or unavailable target remains explicitly named intent. */ }
+      }
+      const targets = model.resolveActivityTargets(names, { entries });
+      return { ...targets, paths: names,
+        artifactIds: names.map(name => opaque('artifact', projectRoot, name)) };
+    },
+    currentActivityTargets(paths) { return model.resolveActivityTargets(paths); },
     recordActivity(event) { model.recordActivity(event); },
     setSessions(sessions) { model.setSessions(sessions); },
     snapshot(options) {

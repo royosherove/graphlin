@@ -1,5 +1,6 @@
+import path from 'node:path';
 import { CATEGORIES, KINDS, LIMITS, OUTCOMES, freeze, hash, integer, isId, opaque, plain } from './common.mjs';
-import { toolResultPaths } from './tool-discovery.mjs';
+import { toolActivityTargets, toolResultPaths } from './tool-discovery.mjs';
 
 const DEFAULT_EXCLUDES = Object.freeze([
   '**/.git/**', '**/node_modules/**', '**/.env*', '**/.ssh/**', '**/.aws/**',
@@ -154,6 +155,7 @@ export function metadataEvent(event = {}) {
     at: safeTime(event.at),
     sequence: integer(event.sequence) ? event.sequence : 0,
     incomplete: event.incomplete !== false,
+    ...(['read', 'edit'].includes(event.operation) ? { operation: event.operation } : {}),
   });
 }
 
@@ -175,7 +177,9 @@ export function normalizeHostEvent(raw, { host = 'claude', projectId = '', seque
   // Delta/batch reconstruction is deliberately outside the first adapter's coverage.
   if (raw.delta !== undefined || raw.batch_index !== undefined || raw.batchIndex !== undefined ||
       /(?:delta|batch)/i.test(sourceKind)) kind = 'capture.gap';
-  const input = plain(raw.tool_input) ? raw.tool_input : plain(raw.input) ? raw.input : {};
+  const input = plain(raw.tool_input) ? raw.tool_input : plain(raw.input) ? raw.input
+    : typeof raw.tool_input === 'string' ? { input: raw.tool_input }
+      : typeof raw.input === 'string' ? { input: raw.input } : {};
   const result = plain(raw.tool_response) ? raw.tool_response : plain(raw.result) ? raw.result : {};
   const status = raw.outcome ?? result.status;
   if (kind === 'tool.succeeded') {
@@ -187,6 +191,7 @@ export function normalizeHostEvent(raw, { host = 'claude', projectId = '', seque
   }
   if (kind === 'capture.gap') incomplete = true;
   const toolCategory = TOOLS.get(boundedString(raw.tool_name ?? raw.toolName, 100).toLowerCase()) ?? 'other';
+  const activity = kind.startsWith('tool.') ? toolActivityTargets({ toolCategory, input }) : { paths: [] };
   let outcome = 'observed';
   if (kind.startsWith('tool.')) outcome = kind === 'tool.requested' ? 'pending' : kind.slice(5);
   if (kind === 'capture.gap') outcome = 'unresolved';
@@ -210,9 +215,18 @@ export function normalizeHostEvent(raw, { host = 'claude', projectId = '', seque
   const sourceId = boundedString(raw.event_id ?? raw.id ?? raw.message_id);
   const id = opaque('event', projectId, sessionId, agentId, sourceId || toolCallId || sequence, kind, outcome);
   const timestamp = typeof now === 'function' ? now() : now;
+  const directory = input.workdir ?? input.cwd ?? raw.cwd;
+  const safeDirectory = value => typeof value === 'string' && value.length > 0 && value.length <= 4096 &&
+    !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(value);
+  let workingDirectory = directory === undefined ? undefined : safeDirectory(directory) ? directory : null;
+  if (workingDirectory && !path.isAbsolute(workingDirectory)) {
+    workingDirectory = safeDirectory(raw.cwd) && path.isAbsolute(raw.cwd)
+      ? path.resolve(raw.cwd, workingDirectory) : null;
+  }
   const event = metadataEvent({
     id, projectId, sessionId, agentId, toolCallId, kind, toolCategory, outcome,
-    at: timestamp, sequence, incomplete: incomplete || raw.incomplete === true,
+    at: timestamp, sequence, incomplete: incomplete || raw.incomplete === true, operation: activity.operation,
   });
-  return { event, paths: [...paths], publicText };
+  return { event, paths: [...paths], activityPaths: activity.paths, activityRanges: activity.ranges ?? [],
+    workingDirectory, publicText };
 }

@@ -90,6 +90,80 @@ function looksLikeFile(value) {
     /(?:^|\/)(?:[^/]+\.[\p{L}\p{N}_-]{1,16}|Dockerfile|Containerfile|Makefile|Procfile|Gemfile|Rakefile)$/u.test(value);
 }
 
+// A deliberately small, read-only shell grammar. No expansion, command
+// substitution, pipelines, redirection, or source output is interpreted.
+function readCommandPaths(command) {
+  if (typeof command !== 'string' || command.length > 8192 ||
+      /[\u0000-\u001f\u007f`$\\;&|<>#]/.test(command)) return [];
+  command = command.trim();
+  const word = /\s*(?:"([^"]*)"|'([^']*)'|([^\s"']+))(?=\s|$)/y;
+  const words = [];
+  let offset = 0;
+  while (offset < command.length && words.length < 128) {
+    word.lastIndex = offset;
+    const match = word.exec(command);
+    if (!match) return [];
+    words.push(match[1] ?? match[2] ?? match[3]);
+    offset = word.lastIndex;
+  }
+  if (offset !== command.length) return [];
+  const program = /^(?:(?:\/usr)?\/bin\/|\/opt\/homebrew\/bin\/)?(cat|head|tail|sed)$/.exec(words.shift() ?? '')?.[1];
+  if (!program) return [];
+  if (program === 'sed') {
+    if (words.shift() !== '-n' || !/^\d+(?:,\d+)?p$/.test(words.shift() ?? '')) return [];
+  }
+  const paths = [];
+  let options = true;
+  for (let index = 0; index < words.length; index++) {
+    const value = words[index];
+    if (options && value === '--') { options = false; continue; }
+    if (options && value.startsWith('-')) {
+      if (program === 'cat' && /^-[benstuvAE]+$/.test(value)) continue;
+      if (['head', 'tail'].includes(program)) {
+        if (/^-(?:[nc]?\d+|[qv])$/.test(value)) continue;
+        if (['-n', '-c'].includes(value) && /^\d+$/.test(words[index + 1] ?? '')) { index++; continue; }
+      }
+      return [];
+    }
+    if (!pathValue(value) || value === '-' || /[*?[\]{}~]/.test(value)) return [];
+    paths.push(value);
+  }
+  return paths.slice(0, LIMITS.paths);
+}
+
+export function toolActivityTargets({ toolCategory, input = {} } = {}) {
+  if (toolCategory === 'shell') {
+    const paths = readCommandPaths(input.command ?? input.cmd);
+    return paths.length ? { operation: 'read', paths } : { paths: [] };
+  }
+  const operation = toolCategory === 'read' ? 'read'
+    : ['write', 'edit'].includes(toolCategory) ? 'edit' : null;
+  if (!operation) return { paths: [] };
+  const paths = new Set();
+  const add = value => { if (paths.size < LIMITS.paths && pathValue(value)) paths.add(value); };
+  for (const value of [input.file_path, input.filePath, input.path, input.filename]) add(value);
+  for (const key of ['paths', 'files']) {
+    for (const value of Array.isArray(input[key]) ? input[key].slice(0, LIMITS.paths) : []) add(filePath(value));
+  }
+  if (toolCategory === 'edit') {
+    const patch = input.patch ?? input.input;
+    if (typeof patch === 'string' && patch.length <= LIMITS.rawChars) {
+      for (const match of patch.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): ([^\r\n]+)$/gm)) add(match[1]);
+    }
+  }
+  const ranges = [];
+  if (operation === 'read' && paths.size === 1) {
+    const positive = value => Number.isSafeInteger(value) && value > 0 && value <= 10_000_000;
+    const start = input.start_line ?? input.startLine ?? input.line_start ?? input.offset;
+    const explicitEnd = input.end_line ?? input.endLine ?? input.line_end;
+    const end = explicitEnd ?? (positive(start) && positive(input.limit) ? start + input.limit - 1 : null);
+    if (positive(start) && positive(end) && end >= start) {
+      ranges.push({ path: [...paths][0], startLine: start, endLine: end });
+    }
+  }
+  return { operation, paths: [...paths], ranges };
+}
+
 export function toolResultPaths(result, { toolCategory, input = {} } = {}) {
   if (!plain(result) || result.interrupted === true || result.isImage === true) return [];
   const paths = new Set();

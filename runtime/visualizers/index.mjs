@@ -5,7 +5,7 @@ import { changes } from './changes.mjs';
 import { timeline } from './timeline.mjs';
 import { validateScene } from '../extensions/scene.mjs';
 
-export const BUILTIN_VIEWS = Object.freeze([code, blocks, c4, changes, timeline]);
+export const BUILTIN_VIEWS = Object.freeze([blocks, code, c4, changes, timeline]);
 
 export function createBuiltin(id, context) {
   const definition = BUILTIN_VIEWS.find(view => view.id === id);

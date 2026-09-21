@@ -2,7 +2,7 @@ import { layoutGraph, LAYOUT_ALGORITHMS } from './layout.js';
 import { sketchOutline, sketchDetails, sketchConnection } from './sketch.js';
 import { createLiveSidebar } from './sidebar.js';
 import { createViewPlatform } from './platform.js';
-import { layoutScene, sceneGraph, representedSelection } from './scene.js';
+import { layoutScene, sceneGraph, representedSelection, createToolActivity, activityTargets, sceneActivity } from './scene.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
@@ -1581,7 +1581,7 @@ export function startViewer() {
     viewport: null, fitBounds: null, zoom: 1, followFit: true, lastGraphSignature: '', inspectorSignature: '',
     nodeElements: new Map(), edgeElements: new Map(), activityElements: new Map(),
     views: new Map(), viewKey: null, view: null, displayGraph: null, searchQuery: '',
-    nodeTypes: null, nodeTypeButtons: new Map(),
+    nodeTypes: null, nodeTypeButtons: new Map(), manualCamera: false,
     effects: new Map(), liveReady: false, motionReady: false, movement: null, closed: false, projectName: '',
     model: null, scene: null, projectedGraph: null, platformActive: false, custom: false, follow: true, viewName: 'Code',
   };
@@ -1616,9 +1616,32 @@ export function startViewer() {
   let pointer = null;
   let canvasSize = '';
   let projectController = null;
+  const toolActivity = createToolActivity();
+  let activityModel = null, activitySession, activityReplay = false, activityTimer, activityStripSignature = '';
+  let activityFocus = [];
   const platform = createViewPlatform({
     document, request,
-    onFollow(value) { state.follow = value; if (!value) { clearMotion(); state.followFit = false; } },
+    onFollow(value) {
+      state.follow = value;
+      if (value) state.manualCamera = false;
+      else { clearMotion(); state.followFit = false; }
+    },
+    onActivity(value, selection) {
+      const replay = Boolean(selection.checkpoint);
+      if (activitySession !== selection.session || activityReplay !== replay) {
+        toolActivity.clear(); activityFocus = [];
+      }
+      activitySession = selection.session; activityReplay = replay;
+      activityModel = value;
+      const started = value ? toolActivity.update(value, { session: activitySession, replay }) : [];
+      activityFocus.push(...started);
+      refreshToolActivity();
+      const follow = state.follow && !state.manualCamera && !state.searchQuery && state.nodeTypes === null && !replay;
+      return { follow, revealEntityIds: follow && value ? toolActivity.current()
+        .filter(call => call.active && started.includes(call.key))
+        .flatMap(call => activityTargets(call, value))
+        .filter(id => ['file', 'module'].includes(value.entities.find(entity => entity.id === id)?.kind)) : [] };
+    },
     onSelect({ entityId, relationId, activityId }) {
       if (entityId) {
         platform.selected(entityId);
@@ -1647,6 +1670,7 @@ export function startViewer() {
         state.nodeElements.clear(); state.edgeElements.clear();
         $('architecture').hidden = true; $('architecture').setAttribute('aria-hidden', 'true');
         $('custom-view').hidden = true; $('empty-canvas').hidden = true;
+        refreshToolActivity();
         $('inspector-body').replaceChildren(html('p', 'Select an item in the active view to inspect its evidence.'));
         updateControls();
         return;
@@ -1661,10 +1685,15 @@ export function startViewer() {
       if (switched) resetMotionBaseline();
       const selectionId = state.scene && representedSelection(result.selection, state.scene, state.model);
       if (selectionId) state.selection = { type: 'node', id: selectionId };
-      const live = result.streamed && !switched && state.follow;
+      const following = state.follow && !state.manualCamera && !state.searchQuery && state.nodeTypes === null && !activityReplay;
+      const live = result.streamed && !switched && following;
       const arrivals = liveNodeChanges(previous, state.projectedGraph, live);
-      const focusNodeId = live && state.scene && result.focusEntityId
+      const requested = toolActivity.current().find(call => call.active && activityFocus.includes(call.key));
+      const target = requested && state.scene && activityTargets(requested, state.model)
+        .map(id => representedSelection(id, state.scene, state.model)).find(Boolean);
+      const focusNodeId = following && !switched && target ? target : live && state.scene && result.focusEntityId
         ? representedSelection(result.focusEntityId, state.scene, state.model) : arrivals.added.at(-1);
+      activityFocus = [];
       const before = state.displayGraph;
       render({ forceFit: result.force || switched, focusNodeId });
       if (!state.custom && state.scene && !state.scene.groups.length) animateChanges(arrivals, before, focusNodeId);
@@ -1682,6 +1711,88 @@ export function startViewer() {
         progress].filter(Boolean).join(' · ');
     },
   });
+
+  function activityIcon(operation) {
+    const icon = svgElement('svg', { class: 'tool-activity-icon', width: 15, height: 15,
+      viewBox: '0 0 20 20', 'aria-hidden': 'true' });
+    if (operation === 'read') {
+      icon.append(svgElement('ellipse', { cx: 5, cy: 10, rx: 4, ry: 6 }),
+        svgElement('ellipse', { cx: 15, cy: 10, rx: 4, ry: 6 }),
+        svgElement('circle', { cx: 6, cy: 10, r: 1.8, class: 'eye-pupil' }),
+        svgElement('circle', { cx: 16, cy: 10, r: 1.8, class: 'eye-pupil' }));
+    } else {
+      icon.append(svgElement('path', { d: 'M3 14 13 4 17 8 7 18 2 19Z M11 6 15 10 M3 14 7 18 M14 3 16 1 20 5 18 7' }));
+    }
+    return icon;
+  }
+  function refreshToolActivity() {
+    clearTimeout(activityTimer);
+    const visible = !state.closed && activityModel && !activityReplay && state.platformActive &&
+      activityModel.projectId === state.model?.projectId && Boolean(state.scene || state.custom);
+    const calls = visible ? toolActivity.current() : [];
+    const badges = visible && state.scene ? sceneActivity(state.scene, state.model, calls) : new Map();
+    for (const [id, group] of state.nodeElements) {
+      const values = badges.get(id) || [], node = state.displayGraph?.nodes.find(value => value.id === id);
+      const signature = JSON.stringify(values.map(value => [value.operation, value.outcome, value.count, value.opacity]));
+      // Group headers may have been rebuilt by a normal graph render.
+      if (group.activitySignature === signature && (!values.length || group.activityOverlay?.parentElement === group)) continue;
+      group.activityOverlay?.remove(); group.activityOverlay = null; group.activitySignature = signature;
+      group.dataset.reading = String(values.some(value => value.operation === 'read' && value.active));
+      group.dataset.editing = String(values.some(value => value.operation === 'edit' && value.active));
+      if (group.activityAria) group.setAttribute('aria-label', group.activityAria);
+      if (!values.length || !node) {
+        if (group.isSceneGroup) group.querySelector('[class="group-summary"]')?.setAttribute('visibility', 'visible');
+        continue;
+      }
+      group.setAttribute('aria-label', `${group.activityAria || group.getAttribute('aria-label')} Tool activity: ${
+        values.map(value => `${value.label}${value.count > 1 ? ` (${value.count} calls)` : ''}`).join('; ')}.`);
+      if (group.isSceneGroup) group.querySelector('[class="group-summary"]')?.setAttribute('visibility', 'hidden');
+      const row = svgElement('g', { class: 'tool-activity-badges', 'aria-hidden': 'true', 'pointer-events': 'none' });
+      const operations = ['read', 'edit'].filter(operation => values.some(value => value.operation === operation));
+      let x = 10;
+      for (const operation of operations) {
+        const same = values.filter(value => value.operation === operation), value = same[0];
+        const otherFailure = value.active && same.some(item => !item.active && item.outcome !== 'succeeded');
+        const text = `${value.label}${value.count > 1 ? ` ×${value.count}` : ''}${otherFailure ? ' !' : ''}`;
+        const width = Math.min(((node.width || NODE_WIDTH) - 24) / operations.length, Math.max(70, text.length * 5.3 + 26));
+        const badge = svgElement('g', { class: 'tool-activity-badge', 'data-operation': operation,
+          'data-outcome': value.outcome, opacity: value.opacity, transform: `translate(${x} ${node.isGroup ? 34 : 7})` });
+        const icon = activityIcon(operation);
+        icon.setAttribute('x', 5); icon.setAttribute('y', 3);
+        badge.append(svgElement('rect', { width, height: 22, rx: 5 }), icon,
+          svgElement('text', { x: 23, y: 15, ...(text.length * 5.3 > width - 27
+            ? { textLength: width - 27, lengthAdjust: 'spacingAndGlyphs' } : {}) }, text));
+        row.append(badge); x += width + 4;
+      }
+      group.activityOverlay = row; group.append(row);
+    }
+    const items = calls.slice(0, 4).map(call => {
+      const targets = activityTargets(call, activityModel);
+      const entity = activityModel.entities.find(value => value.id === targets[0]);
+      const represented = entity && state.scene && representedSelection(entity.id, state.scene, state.model);
+      const block = state.scene?.groups.find(group => group.id === represented);
+      const label = entity?.label || 'File target not in this scope';
+      return { call, text: `${call.label} ${label}${block && block.label !== label ? ` · in ${block.label}` : ''}` };
+    });
+    const signature = JSON.stringify([items.map(({ call, text }) => [call.key, call.outcome, text]), calls.length]);
+    $('current-activity').hidden = !calls.length;
+    if (signature !== activityStripSignature) {
+      activityStripSignature = signature;
+      $('current-activity-items').replaceChildren(...items.map(({ call, text }) => {
+        const item = html('span', undefined, 'current-activity-item');
+        item.dataset.operation = call.operation; item.dataset.outcome = call.outcome;
+        item.setAttribute('title', `${text}. ${call.mapping === 'decision' ? 'Decision-mapped target.' : 'Exact file target.'} Tool status does not verify source changes.`);
+        item.append(activityIcon(call.operation), html('span', text));
+        return item;
+      }));
+      if (calls.length > items.length) $('current-activity-items').append(html('span', `+${calls.length - items.length} more calls`, 'current-activity-more'));
+    }
+    items.forEach(({ call }, index) => {
+      const item = $('current-activity-items').children[index];
+      if (item) item.dataset.fade = String(Math.ceil(call.opacity * 4));
+    });
+    if (calls.length) activityTimer = setTimeout(refreshToolActivity, 250);
+  }
 
   function announce(message) {
     clearTimeout(announcementTimer);
@@ -2090,6 +2201,7 @@ export function startViewer() {
   function fitGraph() {
     const graph = state.displayGraph;
     if (!graph) return;
+    state.manualCamera = false;
     cancelMovement();
     fitCamera(graphBounds(graph));
   }
@@ -2112,6 +2224,7 @@ export function startViewer() {
   }
   function zoom(factor, anchor = { x: .5, y: .5 }) {
     if (!state.viewport || !state.fitBounds) return;
+    state.manualCamera = true;
     cancelMovement();
     finishPan();
     const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, state.zoom * factor));
@@ -2161,6 +2274,7 @@ export function startViewer() {
       $('graph-count').textContent = state.custom && Number.isSafeInteger(state.customCount) ? `${state.customCount} items` : '';
       $('revision').textContent = `Revision ${state.model.revision}`;
       $('empty-canvas').hidden = true;
+      refreshToolActivity();
       return;
     }
     renderNodeTypeFilters(state.platformActive ? { nodes: state.model.entities } : canonical);
@@ -2176,7 +2290,7 @@ export function startViewer() {
     // diagram changes retain fit-all; metadata-only updates keep the camera.
     const newest = graph.nodes.find(node => node.id === focusNodeId);
     if (newest && state.viewport && !forceFit) focusNode(newest, bounds);
-    else if (forceFit || !state.viewport || (state.follow && signature !== state.lastGraphSignature)) fitCamera(bounds);
+    else if (forceFit || !state.viewport || (state.follow && (!state.platformActive || !state.manualCamera) && signature !== state.lastGraphSignature)) fitCamera(bounds);
     state.lastGraphSignature = signature;
     $('layout').value = view.algorithm;
     $('auto-arrange').checked = view.auto;
@@ -2241,7 +2355,8 @@ export function startViewer() {
           $('group-layer').append(group);
         }
         group.setAttribute('transform', `translate(${node.x} ${node.y})`);
-        group.setAttribute('aria-label', `${node.label}. ${node.memberCount} members, ${node.activityCount} with activity. ${node.collapsed ? 'Collapsed' : 'Expanded'}. Inspect evidence.`);
+        group.activityAria = `${node.label}. ${node.memberCount} members. ${node.collapsed ? 'Collapsed' : 'Expanded'}. Inspect evidence.`;
+        group.setAttribute('aria-label', group.activityAria);
         group.dataset.change = node.style || 'default';
         const toggle = svgElement('g', { class: 'group-toggle', role: 'button', tabindex: 0,
           'aria-label': `${node.collapsed ? 'Expand' : 'Collapse'} ${node.label}`,
@@ -2256,7 +2371,7 @@ export function startViewer() {
         const restoreToggleFocus = group.contains(document.activeElement) && document.activeElement !== group;
         group.replaceChildren(svgElement('rect', { class: 'group-frame', width: node.width, height: node.height, rx: 5 }),
           svgElement('text', { class: 'group-heading', x: 14, y: 27 }, clip(node.label, Math.max(15, Math.floor((node.width - 70) / 8)))),
-          svgElement('text', { class: 'group-summary', x: 14, y: 47 }, `${node.memberCount} members · ${node.activityCount} with activity`), toggle);
+          svgElement('text', { class: 'group-summary', x: 14, y: 47 }, `${node.memberCount} members`), toggle);
         if (restoreToggleFocus) toggle.focus({ preventScroll: true });
         continue;
       }
@@ -2283,7 +2398,9 @@ export function startViewer() {
       group.dataset.shape = node.shape;
       group.dataset.kind = node.kind;
       group.dataset.change = node.style || 'default';
-      group.setAttribute('aria-label', `${node.label}. ${upperFirst(node.kind)}. ${summary.label}. Activity ${node.activityState}. Inspect evidence.`);
+      group.activityAria = `${node.label}. ${upperFirst(node.kind)}. ${summary.label}. Activity ${node.activityState}. Inspect evidence.`;
+      group.setAttribute('aria-label', group.activityAria);
+      group.activitySignature = null;
       const nodeSignature = JSON.stringify([node.label, node.shape, node.kind, node.activityState, summary]);
       if (group.renderSignature === nodeSignature) continue;
       const titleLines = nodeTitleLines(node.label, node.shape);
@@ -2338,9 +2455,12 @@ export function startViewer() {
       ? ['No matching components.', 'Choose another type or All types to show components.']
       : state.replayFrame
       ? ['No components in this revision.', 'Move through the recent revisions or return to Live to follow the current map.']
+      : state.platformActive && state.viewName === 'Blocks'
+      ? ['Waiting for files in this scope.', 'File reading and editing activity appears locally, without a classification key. Open another source scope or let your agent work.']
       : emptyMessages[classifier] || ['Your architecture starts here.', 'Work in a connected agent session. Components appear when approved evidence supports them; activity can arrive first.'];
     $('empty-title').textContent = message[0];
     $('empty-description').textContent = message[1];
+    refreshToolActivity();
   }
   function paintEdgeGeometry(group, route, id) {
     const ink = sketchConnection(route.points, id);
@@ -2983,6 +3103,7 @@ export function startViewer() {
       state.viewport.x += move[0] * state.viewport.width * .1;
       state.viewport.y += move[1] * state.viewport.height * .1;
       state.followFit = false;
+      state.manualCamera = true;
       setViewBox();
     }
   });
@@ -3002,6 +3123,7 @@ export function startViewer() {
     state.viewport.x = pointer.view.x - (event.clientX - pointer.x) * scale;
     state.viewport.y = pointer.view.y - (event.clientY - pointer.y) * scale;
     state.followFit = false;
+    state.manualCamera = true;
     setViewBox();
   });
   function finishPan() {
@@ -3026,6 +3148,9 @@ export function startViewer() {
     const nextSize = `${rect.width}:${rect.height}`;
     if (nextSize === canvasSize) return;
     canvasSize = nextSize;
+    // The activity strip also resizes the stage. Respect the user's camera
+    // for both those layout changes and actual window resizes.
+    if (!state.follow || state.manualCamera) return;
     fitGraph();
   };
   const resizeObserver = window.ResizeObserver ? new window.ResizeObserver(onResize) : null;
@@ -3074,6 +3199,8 @@ export function startViewer() {
       state.stream = null;
       clearTimeout(toastTimer);
       clearTimeout(announcementTimer);
+      clearTimeout(activityTimer);
+      toolActivity.clear();
       document.removeEventListener?.('visibilitychange', onVisibility);
       motionPreference?.removeEventListener?.('change', onMotionPreference);
       window.removeEventListener?.('pagehide', onPageHide);

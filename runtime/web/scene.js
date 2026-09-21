@@ -6,6 +6,126 @@ const SHAPES = {
   event: 'document', configuration: 'parallelogram', package: 'folder', unknown: 'rect', group: 'group',
 };
 
+const TERMINAL = new Set(['succeeded', 'failed', 'denied', 'interrupted', 'unresolved']);
+const ACTIVE_MS = 60_000, RECENT_MS = 4_000;
+
+/** Journal pages may arrive newest-first or repeat records. A mapping is target
+ * enrichment, never a fresh tool request or a new completion timestamp.
+ */
+export function createToolActivity() {
+  let context, calls = new Map();
+  return {
+    update(model, { session, replay = false, now = Date.now() } = {}) {
+      const next = JSON.stringify([model.projectId, session || null, replay]);
+      if (context !== next) { calls.clear(); context = next; }
+      const started = [];
+      if (replay) return started;
+      for (const event of [...(model.activity || [])].sort((a, b) => a.sequence - b.sequence)) {
+        if ((session && event.sessionId !== session) || !event.toolCallId ||
+          !Number.isSafeInteger(event.sequence)) continue;
+        const mapped = event.kind === 'activity.mapped';
+        const requested = event.kind === 'tool.requested';
+        const outcome = requested ? 'pending' : event.kind === 'tool.finished' || mapped
+          ? event.outcome : event.kind?.replace(/^tool\./, '');
+        if (!mapped && !requested && !TERMINAL.has(outcome)) continue;
+        const key = JSON.stringify([event.sessionId || '', event.agentId || '', event.toolCallId]);
+        let call = calls.get(key);
+        if (!call) {
+          call = { key, sequence: -1, lifecycleSequence: -1, targetSequence: -1,
+            entityIds: [], artifactIds: [] };
+          calls.set(key, call);
+        }
+        call.sequence = Math.max(call.sequence, event.sequence);
+        if (event.sequence > call.targetSequence) {
+          // Target sets are authoritative. An exact terminal withdraws stale
+          // semantic targets; an older mapping page cannot add them back.
+          call.targetSequence = event.sequence;
+          for (const field of ['entityIds', 'artifactIds']) call[field] = [...new Set(event[field] || [])].slice(0, 256);
+          if (['read', 'edit'].includes(event.operation)) call.operation = event.operation;
+          if (['exact', 'decision'].includes(event.mapping)) call.mapping = event.mapping;
+        }
+        const time = Date.parse(event.at);
+        if (!Number.isFinite(time)) continue;
+        const at = Math.min(time, now);
+        if (mapped) {
+          // The terminal record can be outside a bounded page. Its copied
+          // outcome prevents an older requested page from reviving the call.
+          if (TERMINAL.has(outcome) && event.sequence > (call.mappedSequence ?? -1)) {
+            call.mappedTerminal = { outcome, at }; call.mappedSequence = event.sequence;
+          }
+          continue;
+        }
+        if (event.sequence <= call.lifecycleSequence) continue;
+        call.lifecycleSequence = event.sequence;
+        if (requested && call.outcome) continue;
+        call.outcome = outcome; call.at = at;
+        if (requested) started.push(key);
+      }
+      if (calls.size > 2048) calls = new Map([...calls].sort((a, b) => b[1].sequence - a[1].sequence).slice(0, 2048));
+      return started;
+    },
+    current(now = Date.now()) {
+      const visible = [];
+      for (const call of calls.values()) {
+        if (!call.outcome || !call.operation) continue;
+        let { outcome, at } = call;
+        if (outcome === 'pending' && call.mappedTerminal) ({ outcome, at } = call.mappedTerminal);
+        if (outcome === 'pending' && now >= at + ACTIVE_MS) { outcome = 'unresolved'; at += ACTIVE_MS; }
+        const active = outcome === 'pending', expires = at + (active ? ACTIVE_MS : RECENT_MS);
+        if (now >= expires) continue;
+        const verb = call.operation === 'read' ? 'Read' : 'Edit';
+        const label = active ? `${verb}ing` : outcome === 'succeeded' ? (verb === 'Read' ? verb : 'Edited') : `${verb} ${outcome}`;
+        visible.push({ ...call, outcome, at, active, expires, label,
+          opacity: active ? 1 : Math.min(1, Math.max(0, (expires - now) / 1000)) });
+      }
+      return visible.sort((a, b) => Number(b.active) - Number(a.active) || b.lifecycleSequence - a.lifecycleSequence);
+    },
+    clear() { calls.clear(); context = null; },
+  };
+}
+
+/** Resolve an exact file even when its earlier metadata-only entity was replaced.
+ * File activity does not claim that every parsed method was inspected.
+ */
+export function activityTargets(call, model) {
+  const byId = new Map(model.entities.map(entity => [entity.id, entity]));
+  const ids = call.entityIds.filter(id => byId.has(id) && byId.get(id).validity !== 'retracted');
+  const artifacts = new Set(call.artifactIds);
+  for (const entity of model.entities) {
+    if (!artifacts.has(entity.artifactId) || entity.validity === 'retracted' ||
+      ['project', 'directory'].includes(entity.kind)) continue;
+    const parent = byId.get(entity.parentId);
+    if (!parent || parent.artifactId !== entity.artifactId || ['project', 'directory'].includes(parent.kind)) ids.push(entity.id);
+  }
+  return [...new Set(ids)];
+}
+
+/** Host-owned badges also reach visible containers whose bounded member list
+ * omitted the leaf: canonical source ancestry supplies that containment.
+ */
+export function sceneActivity(scene, model, calls) {
+  const byId = new Map(model.entities.map(entity => [entity.id, entity]));
+  const items = [...scene.groups, ...scene.nodes], result = new Map();
+  for (const call of calls) {
+    const family = new Set(activityTargets(call, model).flatMap(id => [id, ...ancestors(id, byId)]));
+    const represented = new Set(items.filter(item => item.entityIds
+      ? item.entityIds.some(id => family.has(id)) : family.has(item.entityId)).map(item => item.id));
+    for (const item of items) if (represented.has(item.id)) {
+      let parent = item.parentId;
+      while (parent && !represented.has(parent)) { represented.add(parent); parent = items.find(value => value.id === parent)?.parentId; }
+    }
+    for (const id of represented) {
+      if (!result.has(id)) result.set(id, []);
+      const badges = result.get(id), same = badges.find(value => value.operation === call.operation && value.outcome === call.outcome);
+      if (same) { same.count++; same.opacity = Math.max(same.opacity, call.opacity); }
+      else badges.push({ ...call, count: 1 });
+    }
+  }
+  for (const badges of result.values()) badges.sort((a, b) => (a.operation === b.operation
+    ? Number(b.active) - Number(a.active) : a.operation === 'read' ? -1 : 1));
+  return result;
+}
+
 export function filterScene(scene, { query = '', kinds = null } = {}, model) {
   if (!query && kinds === null) return scene;
   const entities = new Map(model.entities.map(entity => [entity.id, entity]));
@@ -72,22 +192,19 @@ export function sceneGraph(scene, model) {
     classification: entity?.classification || 'unknown', basis: entity?.basis || 'metadata',
     evidenceState: entity?.basis === 'parsed' ? 'observed' : 'proposed', activityState: 'idle',
   });
-  const active = new Map();
-  for (const event of model.activity) for (const id of event.entityIds || []) active.set(id, event.outcome);
   const nodes = [
     ...scene.groups.map(group => {
       const entity = entities.get(group.entityIds[0]);
       const interpretation = group.membershipId && model.interpretations.find(value => value.id === group.membershipId);
       return { ...claim(interpretation || entity), ...group, kind: group.kind || entity?.kind || 'unknown',
         entityId: entity?.id, shape: 'group', isGroup: true, label: group.label,
-        memberCount: group.entityIds.length, activityCount: group.entityIds.filter(id => active.has(id)).length,
+        memberCount: group.entityIds.length, activityCount: 0,
         activityState: 'idle' };
     }),
     ...scene.nodes.map(node => {
       const entity = entities.get(node.entityId);
       return { ...claim(entity), ...node, kind: entity?.kind || node.kind,
-        shape: node.shape || SHAPES[sceneKind(node.kind)] || 'rect',
-        activityState: active.get(node.entityId) === 'pending' ? 'pending' : active.get(node.entityId) === 'failed' ? 'failed' : 'idle' };
+        shape: node.shape || SHAPES[sceneKind(node.kind)] || 'rect' };
     }),
   ].map(node => ({ x: 0, y: 0, ...node }));
   return { revision: model.revision, nodes, edges: scene.edges.map(edge => ({

@@ -15,6 +15,85 @@ function completed(tool_name, tool_input, tool_response, extra = {}, options = {
 }
 const bash = (command, stdout, response = {}) => completed('Bash', { command }, { stdout, ...response });
 
+test('named read/edit activity is separate from discovered result paths and raw tool bodies', () => {
+  for (const [name, input, operation, paths] of [
+    ['Read', { file_path: 'src/read.ts' }, 'read', ['src/read.ts']],
+    ['read_file', { path: 'src/read.ts' }, 'read', ['src/read.ts']],
+    ['Write', { file_path: 'src/write.ts', content: 'SYNTHETIC_SOURCE_BODY' }, 'edit', ['src/write.ts']],
+    ['Edit', { file_path: 'src/edit.ts', old_string: 'SYNTHETIC_SOURCE_BODY' }, 'edit', ['src/edit.ts']],
+    ['MultiEdit', { file_path: 'src/multi.ts', edits: [{ new_string: 'SYNTHETIC_SOURCE_BODY' }] }, 'edit', ['src/multi.ts']],
+    ['apply_patch', { input: '*** Begin Patch\n*** Update File: src/old.ts\n*** Move to: src/new.ts\n+SYNTHETIC_SOURCE_BODY\n*** End Patch' },
+      'edit', ['src/old.ts', 'src/new.ts']],
+  ]) {
+    const normalized = completed(name, input, { paths: ['src/incidental.ts'] });
+    assert.equal(normalized.event.operation, operation);
+    assert.deepEqual(normalized.activityPaths, paths);
+    assert.doesNotMatch(JSON.stringify(normalized), /SYNTHETIC_SOURCE_BODY/);
+  }
+  assert.deepEqual(bash('find src -type f', 'src/incidental.ts\n').activityPaths, []);
+  assert.deepEqual(completed('Read', {}, { filePath: 'src/result-only.ts' }).activityPaths, []);
+});
+
+test('static shell read activity admits only simple named operands without interpreting output', () => {
+  for (const [command, paths] of [
+    ['cat src/a.ts "src/with spaces.ts"', ['src/a.ts', 'src/with spaces.ts']],
+    ['/bin/cat -n -- src/a.ts', ['src/a.ts']],
+    ['head -n 20 src/a.ts', ['src/a.ts']],
+    ['tail -n20 src/a.ts', ['src/a.ts']],
+    ["sed -n '10,30p' src/a.ts", ['src/a.ts']],
+  ]) {
+    const normalized = bash(command, 'SYNTHETIC_SOURCE_BODY');
+    assert.equal(normalized.event.operation, 'read');
+    assert.deepEqual(normalized.activityPaths, paths);
+    assert.deepEqual(normalized.paths, [], 'source output is not a directory listing');
+    assert.doesNotMatch(JSON.stringify(normalized), /SYNTHETIC_SOURCE_BODY/);
+  }
+  for (const command of ['cat *.ts', 'cat $(echo src/a.ts)', 'cat src/a.ts > out.ts',
+    'cat src/a.ts && cat src/b.ts', "sed -i 's/a/b/' src/a.ts", 'tail -f src/a.ts',
+    'echo src/a.ts', 'cat "unterminated.ts', 'cat src/a.ts | head -n20']) {
+    assert.deepEqual(bash(command, '').activityPaths, [], command);
+  }
+});
+
+test('read line hints come only from valid explicit positive input ranges', () => {
+  for (const input of [
+    { file_path: 'src/a.ts', offset: 5, limit: 3 },
+    { path: 'src/a.ts', start_line: 5, end_line: 7 },
+    { path: 'src/a.ts', startLine: 5, endLine: 7 },
+    { path: 'src/a.ts', line_start: 5, line_end: 7 },
+  ]) {
+    const normalized = completed('read_file', input, { startLine: 99, endLine: 100 });
+    assert.deepEqual(normalized.activityRanges, [{ path: 'src/a.ts', startLine: 5, endLine: 7 }]);
+    assert.equal(normalized.event.lineRanges, undefined, 'line hints remain private adapter metadata');
+  }
+  for (const input of [
+    { offset: 0, limit: 3 }, { offset: '5', limit: 3 }, { offset: 5, limit: -1 },
+    { start_line: 10, end_line: 9 }, { start_line: Infinity, end_line: Infinity },
+    { offset: 10_000_000, limit: 2 }, { offset: 5 }, {},
+  ]) assert.deepEqual(completed('Read', { file_path: 'src/a.ts', ...input },
+    { startLine: 5, endLine: 7 }).activityRanges, []);
+  assert.deepEqual(completed('Edit', { file_path: 'src/a.ts', offset: 5, limit: 3 }).activityRanges, []);
+});
+
+test('tool working directories stay private, bounded and relative to the host directory', () => {
+  for (const [input, expected] of [
+    [{ workdir: '/example/project/src' }, '/example/project/src'],
+    [{ cwd: '/example/project/src' }, '/example/project/src'],
+    [{ workdir: 'src' }, '/example/project/src'],
+    [{}, '/example/project'],
+    [{ workdir: '/example/project/\u0001src' }, null],
+    [{ workdir: 'x'.repeat(4097) }, null],
+    [{ workdir: {} }, null],
+  ]) {
+    const normalized = completed('exec_command', { cmd: 'cat a.js', ...input }, {}, { cwd: '/example/project' });
+    assert.equal(normalized.workingDirectory, expected);
+    assert.equal(normalized.event.workingDirectory, undefined);
+    assert.doesNotMatch(JSON.stringify(normalized.event), /example|cat a/);
+  }
+  assert.equal(completed('exec_command', { cmd: 'cat a.js', workdir: 'src' }, {}).workingDirectory, null,
+    'a relative directory without an absolute host base is ambiguous');
+});
+
 test('Read and Write expose returned filenames without exposing source or messages', () => {
   const read = completed('Read', {}, {
     type: 'text', file: {

@@ -41,6 +41,29 @@ The unchanged pipeline accepts this service through its existing
 `decisionService` option. `classify({ event, candidates, policy, deadlineAt,
 signal })`, `stats()`, and `close()` retain their existing contracts.
 
+## File activity targets
+
+`runtime/activity/targets.mjs` uses the same replaceable service's `evaluate`
+method to select relevant source blocks for a file read or edit. The pipeline
+first publishes exact local file targets, then schedules this optional
+enrichment asynchronously. It never holds an agent hook open for a decision.
+
+The `graphlin.activity.targets` profile asks independent boolean questions
+about at most 12 candidates from eight explicitly named files. State contains
+aliased IDs, filtered symbol labels, parsed containment, bounded relationships,
+and optional numeric line hints. File paths, commands, source bodies, session
+identifiers, and tool inputs stay local. Transmission requires existing source
+consent. The 1.5-second deadline includes queue time, with no retries; uncertain,
+unavailable, or late answers preserve the exact file indicator.
+
+The pipeline rechecks the complete candidate context, policy, lineage, call,
+and source versions before recording `activity.mapped`. This observation adds
+display targets only. It retains the latest real tool outcome and timestamp,
+including when completion arrives while evaluation is in flight. It cannot
+create architecture facts, report successful execution, or reactivate a
+finished call. Classification diagnostics include bounded mapping counts and
+outcome codes, with no raw provider state.
+
 ## Broker evaluation API and SDK descriptors
 
 `evaluate(input)` and `decide(input)` are aliases. These are trusted daemon

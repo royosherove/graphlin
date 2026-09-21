@@ -1,6 +1,6 @@
 {
   "name": "graphlin",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Live architecture and activity diagrams from observable coding-agent work.",
   "private": false,
   "type": "module",
@@ -70,6 +70,7 @@
     "./docs/visualizer-views.md",
     "./mcp.json",
     "./plugin.json",
+    "./runtime/activity/targets.mjs",
     "./runtime/architecture/analysis.mjs",
     "./runtime/architecture/controller.mjs",
     "./runtime/architecture/evidence.mjs",

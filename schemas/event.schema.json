@@ -66,6 +66,9 @@
         "other"
       ]
     },
+    "operation": {
+      "enum": ["read", "edit"]
+    },
     "outcome": {
       "enum": [
         "pending",

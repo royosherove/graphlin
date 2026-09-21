@@ -106,8 +106,8 @@ test('a fresh viewer binds its initial model request and stream to the backend-s
 test('source-only startup follows the first session with Follow agent off and retains parsed architecture', async () => {
   const h = await harness({ sessionId: null });
   try {
-    const nodes = [...h.$('node-layer').children], oldStream = h.latestModelStream();
-    assert.equal(nodes.length, 5);
+    const groups = [...h.$('group-layer').children], oldStream = h.latestModelStream();
+    assert.equal(groups.length, 3);
     assert.equal(params(oldStream.path).has('session'), false);
     h.$('follow-agent').checked = false;
     await h.$('follow-agent').fire('change'); await settle();
@@ -116,8 +116,8 @@ test('source-only startup follows the first session with Follow agent off and re
     assert.equal(h.modelReads().length, 2);
     assert.equal(oldStream.closed, true);
     assert.equal(h.$('session').value, 'session-1');
-    assert.equal(h.$('visualizer').value, 'graphlin.code');
-    assert.deepEqual(h.$('node-layer').children, nodes, 'session filtering retains the project source nodes');
+    assert.equal(h.$('visualizer').value, 'graphlin.blocks');
+    assert.deepEqual(h.$('group-layer').children, groups, 'session filtering retains the project source blocks');
   } finally { h.close(); }
 });
 
@@ -170,6 +170,7 @@ test('project changes clear old scope and late requests without confusing host a
   const h = await harness();
   let pending;
   try {
+    await h.choose('graphlin.code');
     const node = h.$('node-layer').children.find(value => value.getAttribute('aria-label').startsWith('run.'));
     await node.fire('click');
     const open = h.$('inspector-body').querySelector('button');

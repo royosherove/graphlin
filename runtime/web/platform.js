@@ -29,11 +29,11 @@ function discoveryStatus(value) {
   return result;
 }
 
-export function createViewPlatform({ document, request, onView, onSelect, onFollow = () => {},
+export function createViewPlatform({ document, request, onView, onSelect, onFollow = () => {}, onActivity = () => {},
   createFrame = createExtensionFrame, grantPollMs = 2000, architecturePollMs = 2000 }) {
   const $ = id => document.getElementById(id);
   let model, active = 'graphlin.code', instance, installed = [], generation = 0, closed = false;
-  let loading = true, loadEpoch = 0, pendingView;
+  let loading = true, loadEpoch = 0, pendingView = 'graphlin.blocks';
   let projectionController;
   let analysisBusy = false;
   let grantWatch;
@@ -328,15 +328,10 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   }
   const client = createModelClient({ request, onError: status, onSnapshot(value, streamed) {
     focusEntityId = null;
-    if (model && streamed && follow && !selection.checkpoint && value.projectId === model.projectId) {
+    if (model && streamed && follow && !query && kinds === null && !selection.checkpoint && value.projectId === model.projectId) {
       const known = new Set(model.entities.map(entity => entity.id));
       const arrival = value.entities.filter(entity => !known.has(entity.id)).at(-1)?.id;
-      const observed = value.activity.filter(event => event.sequence > model.sequence).at(-1)?.entityIds?.[0];
-      focusEntityId = observed || arrival || null;
-      if (focusEntityId) {
-        const byId = new Map(value.entities.map(entity => [entity.id, entity]));
-        ownSettings().expanded = [...new Set([...ownSettings().expanded, ...ancestors(focusEntityId, byId)])];
-      }
+      focusEntityId = arrival || null;
     }
     if (model && model.projectId !== value.projectId) {
       dispose(); settings.clear(); canonicalSelection = null;
@@ -346,11 +341,21 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
     const chosen = Boolean(pendingView);
     if (pendingView) { dispose(); active = pendingView; pendingView = null; }
     model = value;
+    const activity = onActivity(value, { ...selection });
+    if (activity?.follow === false) focusEntityId = null;
+    if (follow && !query && kinds === null && !selection.checkpoint && activity?.follow !== false) {
+      const byId = new Map(value.entities.map(entity => [entity.id, entity]));
+      const reveal = BUILTIN_VIEWS.some(view => view.id === active) ? activity?.revealEntityIds || [] : [];
+      const targets = [...reveal, focusEntityId].filter(id => byId.has(id) &&
+        (!selection.scope || id === selection.scope || ancestors(id, byId).includes(selection.scope)));
+      ownSettings().expanded = [...new Set([...ownSettings().expanded, ...targets.flatMap(id => ancestors(id, byId))])];
+    }
     void project(streamed, chosen);
   } });
   async function loadModel() {
     const mine = ++loadEpoch;
     loading = true;
+    onActivity(null, { ...selection });
     controls();
     const available = await client.open(selection);
     if (closed || suspended || mine !== loadEpoch) return;
@@ -476,7 +481,7 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
       void project(false, true);
     },
     close() { closed = true; generation++; projectionController?.abort(); client.close(); dispose(); listeners.forEach(remove => remove()); },
-    suspend() { suspended = true; loadEpoch++; generation++; projectionController?.abort(); client.suspend(); dispose(); },
+    suspend() { suspended = true; loadEpoch++; generation++; projectionController?.abort(); client.suspend(); dispose(); onActivity(null, { ...selection }); },
     get active() { return active; },
     get model() { return model; },
     get selection() { return selection; },

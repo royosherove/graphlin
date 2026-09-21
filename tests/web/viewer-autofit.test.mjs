@@ -687,7 +687,7 @@ test('layout selection and manual Arrange always fit, including when automatic a
   } finally { h.close(); }
 });
 
-test('resize fits only changed canvas dimensions and reduced motion still applies the final fit', async () => {
+test('resize preserves manual zoom until explicit Fit; automatic resize and reduced motion still fit', async () => {
   const h = await harness(snapshot({ graph: chain(8) }));
   try {
     await h.$('zoom-in').fire('click');
@@ -695,8 +695,13 @@ test('resize fits only changed canvas dimensions and reduced motion still applie
     h.resize(920, 510);
     assert.deepEqual(h.viewport(), manual, 'repeated observer notifications do not move the manual camera');
     h.resize(400, 280);
+    assert.deepEqual(h.viewport(), manual, 'a changed window size must also preserve manual zoom');
+    await h.$('fit').fire('click');
     contains(h.viewport(), graphBounds(presented(h.current.graph)));
     assert.ok(Math.abs(h.viewport().width / h.viewport().height - 400 / 280) < 1e-9);
+    h.resize(600, 320);
+    contains(h.viewport(), graphBounds(presented(h.current.graph)));
+    assert.ok(Math.abs(h.viewport().width / h.viewport().height - 600 / 320) < 1e-9);
     h.media.matches = true;
     h.$('layout').value = 'dependency';
     await h.$('layout').fire('change');

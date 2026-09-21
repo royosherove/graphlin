@@ -10,6 +10,7 @@ import { safeLabel, safeText, excluded } from './core/privacy.mjs';
 import { createPlatform } from './platform.mjs';
 import { createArchitectureController } from './architecture/controller.mjs';
 import { analyzeArchitecture, ARCHITECTURE_NAMESPACE } from './architecture/analysis.mjs';
+import { classifyActivityTargets, isCurrentActivityTargetContext, ACTIVITY_TARGET_LIMITS } from './activity/targets.mjs';
 
 const MAX_ACTIVITY = 200;
 const MAX_HOOK_EVENTS = 200;
@@ -140,6 +141,7 @@ export function createPipeline({
   const classificationQueue = [];
   const activeClassifications = new Set();
   const completedClassifications = new Map();
+  const activityCalls = new Map(), activityMappingQueue = new Map(), activityMappings = new Map();
   const tasks = new Set();
   let selectedSession = null;
   let sequence = 0;
@@ -173,7 +175,7 @@ export function createPipeline({
       registerArtifacts(await evidence.reconcile({ refs }));
       return evidence.isCurrent(refs);
     }),
-    onChange: () => { architecture?.wake(); notify(); },
+    onChange: () => { architecture?.wake(); wakeActivityMappings(); notify(); },
   });
   lineageAvailable = platform.snapshot().coverage.lineage?.status !== 'unavailable';
   architecture = createArchitectureController({
@@ -374,6 +376,9 @@ export function createPipeline({
     sessions.delete(id);
     syncSessions();
     deferredWork.delete(id);
+    for (const [key, call] of activityCalls) if (call.event.sessionId === id) {
+      activityCalls.delete(key); activityMappingQueue.delete(key); activityMappings.get(key)?.abort();
+    }
     for (const key of completedClassifications.keys()) {
       if (key.startsWith(`${id}:`)) completedClassifications.delete(key);
     }
@@ -553,22 +558,211 @@ export function createPipeline({
     return changed;
   }
 
-  function addActivity(session, event) {
+  function addActivity(session, event, targets) {
     const state = activityState(event);
-    const row = { ...metadataEvent(event), label: activityLabel(event), state };
-    platform.recordActivity(row);
     const existing = event.toolCallId
       ? session.activity.findIndex(item => item.toolCallId === event.toolCallId &&
           item.agentId === event.agentId && item.kind?.startsWith('tool.'))
       : -1;
+    const old = existing >= 0 ? session.activity[existing] : null;
+    if (TERMINAL.has(old?.state) && state === 'pending') return old;
+    const operation = event.operation ?? old?.operation;
+    const mapping = targets?.mapping ?? (targets ? 'exact' : old?.mapping ?? 'exact');
+    const row = { ...metadataEvent(event), label: activityLabel(event), state,
+      ...(['read', 'edit'].includes(operation) ? {
+        operation, mapping,
+        entityIds: targets?.entityIds ?? old?.entityIds ?? [],
+        artifactIds: targets?.artifactIds ?? old?.artifactIds ?? [],
+        sourceRefs: state === 'pending' || mapping !== 'decision' ? [] : targets?.sourceRefs ?? old?.sourceRefs ?? [],
+      } : {}),
+    };
+    platform.recordActivity(row);
     if (existing >= 0) {
-      const old = session.activity[existing];
-      if (TERMINAL.has(old.state) && state === 'pending') return;
       session.activity[existing] = row;
     } else {
       session.activity.push(row);
       if (session.activity.length > MAX_ACTIVITY) session.activity.shift();
     }
+    if (operation) {
+      const key = activityKey(row), previous = activityCalls.get(key);
+      const call = previous ?? { key, session, versions: [] };
+      call.event = row;
+      call.paths = targets?.paths.length ? targets.paths : call.paths ?? [];
+      if (targets?.lineRanges?.length && JSON.stringify(targets.lineRanges) !== JSON.stringify(call.lineRanges)) {
+        call.lineRanges = targets.lineRanges;
+        call.attempted = false;
+        activityMappings.get(key)?.abort();
+      }
+      call.lineRanges ??= [];
+      call.artifactIds = row.artifactIds;
+      activityCalls.set(key, call);
+      while (activityCalls.size > MAX_ACTIVITY) {
+        const victim = activityCalls.keys().next().value;
+        activityCalls.delete(victim); activityMappingQueue.delete(victim); activityMappings.get(victim)?.abort();
+      }
+    }
+    return row;
+  }
+
+  const activityKey = event => `${event.sessionId}:${event.agentId}:${event.toolCallId ?? event.id}`;
+  const sameSource = (left, right) => left.artifactId === right.artifactId &&
+    left.hash === right.hash && left.generation === right.generation;
+
+  async function retainTerminalMapping(event, targets, previous) {
+    if (!TERMINAL.has(activityState(event)) || previous?.event.mapping !== 'decision' ||
+        !previous.event.sourceRefs?.length || !targets || !lineageAvailable) return targets;
+    const sameFiles = [...targets.artifactIds].sort().join(',') === [...previous.artifactIds].sort().join(',');
+    if (!sameFiles) return targets;
+    const epoch = lineageEpoch, refs = previous.event.sourceRefs;
+    try {
+      registerArtifacts(await evidence.reconcile({ refs }));
+      if (epoch !== lineageEpoch || !lineageAvailable || !evidence.isCurrent(refs)) return targets;
+      return { ...targets, mapping: 'decision', sourceRefs: refs,
+        entityIds: [...new Set([...targets.entityIds, ...previous.event.entityIds])] };
+    } catch { return targets; }
+  }
+
+  function finishPendingActivity(session, event) {
+    for (const row of [...session.activity]) {
+      if (row.state !== 'pending' || event.kind !== 'session.ended' && row.agentId !== event.agentId) continue;
+      addActivity(session, { ...row, id: opaque(`${row.id}:${event.id}:finished`),
+        kind: 'tool.unresolved', outcome: 'unresolved', at: event.at, incomplete: true });
+    }
+  }
+
+  function observeActivityVersions(event, artifacts) {
+    const call = activityCalls.get(activityKey(event));
+    if (!call) return;
+    const versions = artifacts.filter(artifact => call.artifactIds.includes(artifact.id) &&
+      artifact.status === 'present' && artifact.hash).sort((a, b) => a.id.localeCompare(b.id))
+      .slice(0, ACTIVITY_TARGET_LIMITS.files)
+      .map(artifact => ({ artifactId: artifact.id, hash: artifact.hash, generation: artifact.generation }));
+    if (artifacts.some(artifact => call.artifactIds.includes(artifact.id)) &&
+        JSON.stringify(versions) !== JSON.stringify(call.versions)) {
+      call.versions = versions;
+      call.attempted = false;
+      activityMappings.get(call.key)?.abort();
+    }
+    if (!activityMappingAvailable()) {
+      const reason = !policy.transmitSource ? 'metadata_only' : missingKey ? 'missing_key'
+        : paused ? 'paused' : !lineageAvailable ? 'stale_evidence' : 'no_decision_service';
+      if (call.fallbackReason !== reason) {
+        call.fallbackReason = reason;
+        traceActivityMapping(call, { status: 'unknown', entityIds: [] }, reason);
+      }
+    }
+    wakeActivityMappings();
+  }
+
+  function activityMappingAvailable() {
+    return !closed && !paused && lineageAvailable && !missingKey && mode !== 'demo' &&
+      policy.transmitSource && typeof decisionService?.evaluate === 'function';
+  }
+
+  function traceActivityMapping(call, result, reason) {
+    const accepted = result.status === 'accepted';
+    const code = reason ?? (accepted ? 'approved' : result.status === 'unknown' ? 'no_accepted_classification'
+      : result.diagnostics?.code === 'deadline_exceeded' ? 'deadline_exceeded'
+        : result.status === 'cancelled' ? 'cancelled' : 'decision_failure');
+    trace(call.event, 'classification', {
+      status: accepted ? 'accepted' : result.status === 'unknown' ? 'abstained' : 'unavailable', reason: code,
+      diagnostics: { code, candidatesOmitted: result.diagnostics?.omitted ?? 0,
+        trace: { version: 1, requests: [{ status: accepted ? 'accepted' : 'unavailable', code,
+          candidateCount: result.diagnostics?.candidates ?? 0, approvedCount: result.entityIds?.length ?? 0 }] } },
+    });
+  }
+
+  function wakeActivityMappings() {
+    if (!activityMappingAvailable()) return;
+    for (const call of activityCalls.values()) {
+      if (call.attempted || !call.versions.length || call.event.mapping === 'decision' ||
+          clock() - Date.parse(call.event.at) > PENDING_LEASE_MS ||
+          call.session.status === 'ended' || activityMappings.has(call.key)) continue;
+      const current = platform.currentActivityTargets(call.paths);
+      if (!call.versions.every(ref => current.sourceRefs.some(value => sameSource(ref, value)))) continue;
+      if (!activityMappingQueue.has(call.key) && activityMappingQueue.size >= 32) {
+        call.attempted = true; // Exact file attribution remains available at capacity.
+        traceActivityMapping(call, { status: 'unknown', entityIds: [] }, 'queue_full');
+        continue;
+      }
+      activityMappingQueue.set(call.key, call);
+    }
+    queueMicrotask(pumpActivityMappings);
+  }
+
+  function pumpActivityMappings() {
+    if (!activityMappingAvailable()) return;
+    while (activityMappingQueue.size && activityMappings.size < 2) {
+      const [key, call] = activityMappingQueue.entries().next().value;
+      activityMappingQueue.delete(key);
+      if (activityCalls.get(key) !== call || call.attempted) continue;
+      const controller = new AbortController();
+      activityMappings.set(key, controller);
+      call.attempted = true;
+      const task = mapActivity(call, controller).catch(() => {
+        traceActivityMapping(call, { status: 'unavailable', entityIds: [] }, 'decision_failure');
+      }).finally(() => {
+        if (controller.signal.aborted) call.attempted = false;
+        activityMappings.delete(key);
+        tasks.delete(task);
+        wakeActivityMappings();
+      });
+      tasks.add(task);
+    }
+  }
+
+  async function mapActivity(call, controller) {
+    const epoch = lineageEpoch, policyVersion = policy.version, versions = call.versions, lineRanges = call.lineRanges;
+    const current = () => activityMappingAvailable() && !controller.signal.aborted &&
+      activityCalls.get(call.key) === call && sessions.get(call.event.sessionId) === call.session &&
+      call.session.status !== 'ended' && lineageEpoch === epoch && policy.version === policyVersion &&
+      call.versions === versions && call.lineRanges === lineRanges && clock() - Date.parse(call.event.at) <= PENDING_LEASE_MS;
+    const model = await serialized(() => current() ? platform.snapshot() : null);
+    if (!model || !current()) {
+      traceActivityMapping(call, { status: 'cancelled', entityIds: [] }, 'stale_evidence');
+      return;
+    }
+    const input = {
+      service: decisionService, model, policy,
+      event: { ...metadataEvent(call.event), projectId: modelProjectId, toolCategory: call.event.operation },
+      artifactIds: versions.map(ref => ref.artifactId),
+      namedEntityIds: platform.currentActivityTargets(call.paths).entityIds.slice(0, ACTIVITY_TARGET_LIMITS.namedEntities),
+      lineRanges: lineRanges.filter(range => versions.some(ref => ref.artifactId === range.artifactId)),
+      signal: controller.signal,
+    };
+    const result = await classifyActivityTargets(input);
+    if (result.status !== 'accepted' || !result.entityIds.length) { traceActivityMapping(call, result); return; }
+    if (!current()) { traceActivityMapping(call, { ...result, status: 'stale' }, 'stale_evidence'); return; }
+    const applied = await serialized(async () => {
+      if (!current() || result.provenance?.policyVersion !== policy.version ||
+          result.provenance.lineageId !== (lineageId ?? modelProjectId) ||
+          result.sourceRefs.some(ref => !versions.some(value => sameSource(ref, value)))) return;
+      // Every context reference is checked. Activity retains one version per
+      // artifact, not the classifier's larger set of symbol/relationship spans.
+      registerArtifacts(await evidence.reconcile({ refs: versions }));
+      if (!current() || !evidence.isCurrent(result.sourceRefs)) return;
+      const fresh = platform.snapshot(), entities = new Map(fresh.entities.map(value => [value.id, value]));
+      if (!isCurrentActivityTargetContext({ ...input, model: fresh, policy }, result)) return;
+      if (result.entityIds.some(id => {
+        const entity = entities.get(id);
+        return !entity || entity.basis !== 'parsed' || entity.validity !== 'current' ||
+          !versions.some(ref => ref.artifactId === entity.artifactId);
+      })) return;
+      const exact = platform.currentActivityTargets(call.paths);
+      const entityIds = [...new Set([...exact.entityIds, ...result.entityIds])];
+      const event = call.event;
+      platform.recordActivity({ ...event, id: opaque(`${event.id}:mapped:${result.provenance.evidenceVersion}`),
+        kind: 'activity.mapped', mapping: 'decision', entityIds, sourceRefs: versions,
+        attribution: 'correlated', creation: false });
+      const row = { ...event, mapping: 'decision', entityIds, sourceRefs: versions };
+      const index = call.session.activity.indexOf(event);
+      if (index >= 0) call.session.activity[index] = row;
+      call.event = row;
+      notify();
+      return true;
+    });
+    traceActivityMapping(call, applied ? result : { ...result, status: 'stale' },
+      applied ? undefined : 'stale_evidence');
   }
 
   function expirePending() {
@@ -577,13 +771,12 @@ export function createPipeline({
       for (let index = 0; index < session.activity.length; index++) {
         const row = session.activity[index];
         if (row.state !== 'pending' || clock() - Date.parse(row.at) < PENDING_LEASE_MS) continue;
-        const event = metadataEvent({
+        const event = {
           ...row, id: opaque(`${row.id}:expired`), kind: 'tool.unresolved',
           outcome: 'unresolved', at: new Date(clock()).toISOString(),
           sequence: ++sequence, incomplete: true,
-        });
-        session.activity[index] = { ...event, label: activityLabel(event), state: 'unresolved' };
-        platform.recordActivity(event);
+        };
+        addActivity(session, event);
         changed = true;
       }
     }
@@ -594,22 +787,34 @@ export function createPipeline({
     return platform.discover({ limit: 64 });
   }
 
-  function canonicalNamedPaths(paths, raw) {
+  function canonicalNamedPaths(paths, raw, workingDirectory) {
     const aliases = [inputRoot];
     // A host can report a system alias such as /var instead of /private/var.
     // Normalize only an established project-root prefix, never child symlinks.
     if (typeof raw?.cwd === 'string') {
       try { if (realpathSync(raw.cwd) === root) aliases.push(path.resolve(raw.cwd)); } catch {}
     }
-    return paths.slice(0, 32).map(file => {
-      const absolute = path.resolve(inputRoot, file);
+    const canonical = absolute => {
       for (const alias of aliases) {
         const relative = path.relative(alias, absolute);
-        if (relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+        if (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
           return path.resolve(root, relative);
         }
       }
       return absolute;
+    };
+    let directory = root;
+    if (workingDirectory !== undefined) {
+      if (typeof workingDirectory !== 'string') return [];
+      directory = canonical(path.resolve(inputRoot, workingDirectory));
+      const relative = path.relative(root, directory);
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
+      try { if (realpathSync(directory) !== directory) return []; } catch { return []; }
+    }
+    return paths.slice(0, 32).filter(file => typeof file === 'string').map(file =>
+      canonical(path.resolve(directory, file))).filter(absolute => {
+      const relative = path.relative(root, absolute);
+      return relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
     });
   }
 
@@ -1094,14 +1299,30 @@ export function createPipeline({
         syncSessions();
         if (followSession) selectedSession = session.id;
         observeMessage(event, prepared.publicText);
-        addActivity(session, event);
+        const requestedPaths = canonicalNamedPaths(prepared.activityPaths ?? [], raw, prepared.workingDirectory);
+        const previousActivity = activityCalls.get(activityKey(event));
+        let activityTargets = event.operation || previousActivity?.event.operation
+          ? await platform.activityTargets(requestedPaths.length ? requestedPaths : previousActivity?.paths ?? []) : undefined;
+        if (activityTargets) activityTargets.lineRanges = (prepared.activityRanges ?? []).slice(0, 32).flatMap(range => {
+          const [absolute] = canonicalNamedPaths([range.path], raw, prepared.workingDirectory);
+          if (!absolute) return [];
+          const name = path.relative(root, absolute).split(path.sep).join('/');
+          const index = activityTargets.paths.indexOf(name);
+          return index >= 0 ? [{ artifactId: activityTargets.artifactIds[index],
+            startLine: range.startLine, endLine: range.endLine }] : [];
+        });
+        activityTargets = await retainTerminalMapping(event, activityTargets, previousActivity);
+        const activity = addActivity(session, event, activityTargets);
+        if (['turn.stopped', 'agent.stopped', 'session.ended'].includes(event.kind)) finishPendingActivity(session, event);
         if (event.kind === 'capture.gap') dropped++;
-        // Publish the new selection before source discovery or classification.
-        if (event.kind === 'session.started') notify();
+        // Named-file intent is visible before source capture, parsing or any
+        // remote enrichment. Their progress cannot delay the tool lifecycle.
+        if (event.kind === 'session.started' || event.kind.startsWith('tool.') ||
+            ['turn.stopped', 'agent.stopped', 'session.ended'].includes(event.kind)) notify();
         let artifacts = [];
         let namedSet = new Set();
         try {
-          const named = Array.isArray(prepared.paths) ? canonicalNamedPaths(prepared.paths, raw) : [];
+          const named = [...new Set([...canonicalNamedPaths(prepared.paths ?? [], raw, prepared.workingDirectory), ...requestedPaths])];
           const discover = event.kind === 'session.started' ||
             ['tool.succeeded', 'tool.failed'].includes(event.kind);
           const sessionPaths = event.kind === 'session.started'
@@ -1113,6 +1334,7 @@ export function createPipeline({
             artifacts.push(...await evidence.capture(paths.slice(index, index + 32)));
           }
           const changed = registerArtifacts(artifacts, metadataEvent(event));
+          if (activity.id === event.id) observeActivityVersions(event, artifacts);
           trace(event, 'capture', { status: 'observed', reason: 'artifacts_observed',
             artifacts: artifacts.map(artifact => ({ ...artifactMetadata(artifact),
               reason: changed.some(item => item.id === artifact.id) ? 'artifact_changed' : 'artifact_unchanged' })) });
@@ -1210,6 +1432,8 @@ export function createPipeline({
     paused = Boolean(value);
     if (wasPaused !== paused) architectureEpoch++;
     if (!wasPaused && paused) {
+      for (const controller of activityMappings.values()) controller.abort();
+      activityMappingQueue.clear();
       for (const job of classificationQueue.splice(0)) {
         deferClassification(job.event, job.candidates);
         skipJob(job, 'paused_deferred');
@@ -1222,6 +1446,7 @@ export function createPipeline({
         .finally(() => { resumeScheduled = false; });
     }
     architecture.wake();
+    wakeActivityMappings();
     notify();
     return getState();
   }
@@ -1235,6 +1460,8 @@ export function createPipeline({
       platform.observeLineage(lineage);
       lineageId = lineage.id;
       if (changed || !available) {
+        for (const controller of activityMappings.values()) controller.abort();
+        activityMappingQueue.clear();
         lineageEpoch++;
         architectureEpoch++;
         for (const job of activeClassifications) {
@@ -1254,6 +1481,7 @@ export function createPipeline({
         registerArtifacts(evidence.setLineage(lineage.id));
       } else architecture.wake();
       if (available && !wasAvailable && !paused) serialized(flushDeferred).catch(() => { dropped++; });
+      wakeActivityMappings();
       notify();
     });
   }
@@ -1270,8 +1498,9 @@ export function createPipeline({
       await serial;
       await platform.whenIdle();
       await serial;
-      while (tasks.size || classificationQueue.length) {
+      while (tasks.size || classificationQueue.length || activityMappingAvailable() && activityMappingQueue.size) {
         pumpClassifications();
+        pumpActivityMappings();
         await Promise.allSettled([...tasks]);
         await serial;
       }
@@ -1285,6 +1514,8 @@ export function createPipeline({
     if (closed) return;
     closed = true;
     architectureEpoch++;
+    activityMappingQueue.clear();
+    for (const controller of activityMappings.values()) controller.abort();
     const architectureClosed = architecture.close();
     deferredWork.clear();
     for (const job of classificationQueue.splice(0)) {

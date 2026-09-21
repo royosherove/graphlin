@@ -771,6 +771,29 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
     return stats();
   }
 
+  function resolveActivityTargets(paths, { entries = [] } = {}) {
+    if (entries.length) {
+      const names = new Set(entries.map(entry => relativePath(entry.relativePath, currentPolicy(policy))).filter(Boolean));
+      const added = [...names].filter(name => !files.has(name)).length;
+      observeInventory({ entries, coverage: {
+        ...inventoryCoverage, inventoried: Math.max(inventoryCoverage.inventoried, files.size + added),
+      } });
+    }
+    const entityIds = new Set(), artifactIds = new Set(), effective = currentPolicy(policy);
+    for (const input of paths.slice(0, 32)) {
+      const name = relativePath(input, effective), file = name && files.get(name);
+      const entity = file && entities.get(file.scopeId);
+      if (entity && ['file', 'module'].includes(entity.kind)) entityIds.add(entity.id);
+      if (file?.artifactId) artifactIds.add(file.artifactId);
+    }
+    const sourceRefs = [...artifactIds].flatMap(artifactId => {
+      const artifact = artifacts.get(artifactId);
+      return artifact?.fresh && artifact.status === 'present' && artifact.hash
+        ? [{ artifactId, hash: artifact.hash, generation: artifact.generation }] : [];
+    });
+    return { entityIds: [...entityIds], artifactIds: [...artifactIds], sourceRefs };
+  }
+
   function recordActivity(event) {
     if (!plain(event)) return stats();
     sequence++;
@@ -1015,6 +1038,7 @@ export function createProjectModel({ projectId, policy = {}, restoredState, limi
   restore(restoredState);
   return Object.freeze({
     observeInventory, observeStructure, invalidateArtifacts, observeLegacy, observeInterpretations, replaceInterpretations,
+    resolveActivityTargets,
     recordActivity, setSessions, observeLineage, snapshot, checkpoint, changes, stats,
   });
 }

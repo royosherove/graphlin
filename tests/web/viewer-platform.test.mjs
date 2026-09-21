@@ -59,6 +59,8 @@ async function harness() {
 test('viewer switches code, blocks, C4 and activity through one model, preserving theme and source selection', async () => {
   const h = await harness();
   try {
+    assert.equal(h.$('visualizer').value, 'graphlin.blocks');
+    await h.choose('graphlin.code');
     assert.equal(h.$('node-layer').children.length, 5);
     h.$('theme').value = 'midnight'; await h.$('theme').fire('change');
     const run = h.$('node-layer').children.find(node => node.getAttribute('aria-label').startsWith('run.'));

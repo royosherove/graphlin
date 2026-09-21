@@ -12,6 +12,25 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
+test('Blocks is the clean-load default, but an explicit Code choice wins while loading', async () => {
+  for (const choice of [null, 'graphlin.code']) {
+    const document = createDocument(await readFile(new URL('../../runtime/web/index.html', import.meta.url), 'utf8'));
+    const snapshot = deferred(), views = [];
+    const platform = createViewPlatform({ document, onView: value => views.push(value), onSelect() {},
+      request: async path => path === '/api/extensions' ? { extensions: [] } : snapshot.promise });
+    const opening = platform.start();
+    try {
+      assert.equal(document.getElementById('visualizer').value, 'graphlin.blocks');
+      if (choice) await platform.choose(choice);
+      snapshot.resolve(model()); await opening; await settle();
+      assert.equal(platform.active, choice || 'graphlin.blocks');
+      assert.equal(views.at(-1).id, choice || 'graphlin.blocks');
+      platform.serverSession('session.new'); await settle();
+      assert.equal(platform.active, choice || 'graphlin.blocks', 'session transitions keep the selected view');
+    } finally { platform.close(); snapshot.resolve(model()); await opening; }
+  }
+});
+
 test('a C4 choice made before the snapshot survives first-page rendering and background hydration', async () => {
   const document = createDocument(await readFile(new URL('../../runtime/web/index.html', import.meta.url), 'utf8'));
   const snapshot = deferred(), page = deferred(), views = [];

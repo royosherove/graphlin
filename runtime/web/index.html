@@ -47,7 +47,7 @@
         <div class="workspace-toolbar">
           <label class="session-picker" for="visualizer">
             <span>View</span>
-            <select id="visualizer" aria-label="Visualizer"><option value="graphlin.code">Code</option></select>
+            <select id="visualizer" aria-label="Visualizer"><option value="graphlin.blocks">Blocks</option><option value="graphlin.code">Code</option></select>
           </label>
           <label class="session-picker" for="session">
             <span>Session</span>
@@ -154,6 +154,11 @@
               <button id="extension-approve" type="button">Allow selected data</button>
               <button id="extension-deny" type="button">Deny access</button>
             </section>
+            <div id="current-activity" class="current-activity" role="status" aria-live="polite" aria-atomic="true" hidden>
+              <span class="current-activity-heading">Tool activity</span>
+              <div id="current-activity-items"></div>
+              <span id="current-activity-note">Tool status, not verified source changes.</span>
+            </div>
             <div class="diagram-stage" id="diagram-stage">
               <svg id="architecture" viewBox="0 0 920 510" role="group" tabindex="0" aria-labelledby="diagram-title diagram-desc">
                 <title id="diagram-title">Architecture diagram</title>

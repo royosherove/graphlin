@@ -109,10 +109,29 @@ canonical anchors receive priority: their anchors and complete ancestor chains
 come first, preserving containment order, followed by the remaining entities in
 their original order. These interpretations likewise precede other interpretations,
 with ID order preserved within each portion. Priority uses only records disclosed
-by the caller's field grant and scope. Without eligible architecture, ordering is
-unchanged. Every bounded prefix keeps parents before children; subsequent pages
+by the caller's field grant and scope. Recent explicit file activity has priority
+over architecture: targets of the latest 16 correlated calls and their complete
+ancestor chains are promoted, up to 192 entities. Every bounded prefix keeps
+parents before children; subsequent pages
 extend the same assembly without repeating ancestors. Relations and sessions use
-ID order; activity and checkpoints use model sequence and then ID.
+ID order; checkpoints use model sequence and then ID. Activity records belonging
+to those recent calls come first, newest sequence first, followed by remaining
+records in sequence order. Consumers must sort by `sequence` to reconstruct
+chronology. Priority never depends on wall time, so an unchanged model keeps
+stable cursor ordering.
+
+Activity may include `operation: "read" | "edit"` and
+`mapping: "exact" | "decision"`. Correlate a call by session, agent, and tool-call
+ID. `activity.mapped` enriches its canonical `entityIds`; it does not start a new
+operation. Its `at` and `outcome` retain the latest observed tool lifecycle,
+while `recordedAt` and `sequence` identify the mapping receipt. A late mapping
+must not reactivate a completed call or restart its recent-activity timer.
+Target IDs and `mapping` come from the highest-sequence record for that call.
+An exact terminal can replace prior semantic targets with file-only targets
+when their source versions changed. Older pages must not restore those targets;
+a later validated mapping can supply a new set.
+Exact file intent has no source reference proving a successful modification.
+
 Cursors are signed and bind project/daemon epoch,
 principal, collection or parent, selectors, revision, model sequence, and
 the complete safe projection fingerprint. They expire after five minutes.

@@ -48,14 +48,15 @@ hooks. Start a new agent session after installation. Then ask either agent:
 
 > Orient yourself in this project: read its main files and explain how the components connect.
 
-Watch the diagram populate as it explores. On later runs, repeat step 1 and
+Watch **Blocks** light up as it explores: eyes for reading, a pen for editing.
+On later runs, repeat step 1 and
 launch your agent; Graphlin reuses the saved setup. Use the printed agent command
 if you selected a custom data directory.
 
 For setup alone, append `init` to the command. Append `uninstall` to remove
 Graphlin's host plugins across projects while keeping your saved key and history.
 
-Choose **Code**, nested **Blocks**, **C4**, **Changes**, or **Activity timeline**.
+Start in nested **Blocks**, or choose **Code**, **C4**, **Changes**, or **Activity timeline**.
 Search with `/`, expand a source scope, or set a task baseline. Architecture
 documents are optional; uncertain boundaries stay marked as unknown.
 

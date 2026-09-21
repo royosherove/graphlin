@@ -148,6 +148,8 @@ export function activityRecord(value, sequence, now) {
     attribution: ['observed', 'correlated', 'unknown'].includes(value.attribution) ? value.attribution : 'unknown',
   };
   for (const field of ['sessionId', 'agentId', 'toolCallId']) if (id(value[field])) record[field] = value[field];
+  if (['read', 'edit'].includes(value.operation)) record.operation = value.operation;
+  if (['exact', 'decision'].includes(value.mapping)) record.mapping = value.mapping;
   for (const field of ['entityIds', 'artifactIds']) {
     record[field] = Array.isArray(value[field]) ? [...new Set(value[field].slice(0, 256).filter(id))] : [];
   }
@@ -156,7 +158,7 @@ export function activityRecord(value, sequence, now) {
   // Creation is accepted only as an explicit successful observation with source
   // version correlation. A write attempt or a new file in inventory is not one.
   record.creation = value.creation === true && record.outcome === 'succeeded' &&
-    record.kind !== 'tool.requested' && record.sourceRefs.length > 0 &&
+    !['tool.requested', 'activity.mapped'].includes(record.kind) && record.sourceRefs.length > 0 &&
     record.sourceRefs.every(ref => ref.sourceClass !== 'public_intent');
   return record;
 }
@@ -210,9 +212,17 @@ export function projectSnapshot(state, policy, { persistent = false, sessionId, 
   const interpretations = state.interpretations.map(value => interpretationRecord(value)).filter(value =>
     value && value.entityIds.every(entityId => entityIds.has(entityId))).map(value =>
     sourceLabels && !value.sourceRefs.some(ref => blockedArtifacts.has(ref.artifactId)) ? value : { ...value, label: 'Interpretation' });
+  const fileAnchors = new Map(entities.filter(entity => entity.artifactId &&
+    ['file', 'module'].includes(entity.kind)).map(entity => [entity.artifactId, entity.id]));
   const activity = state.activity.filter(value => !sessionId || value.sessionId === sessionId).map(value => {
     const record = activityRecord(value, value.sequence, Date.parse(value.recordedAt));
     record.entityIds = record.entityIds.filter(value => entityIds.has(value));
+    if (record.mapping === 'exact') {
+      // A parser replaces its metadata file with a canonical module. Keep the
+      // same named-file activity attached without importing future history.
+      record.entityIds = [...new Set([...record.entityIds,
+        ...record.artifactIds.map(artifactId => fileAnchors.get(artifactId)).filter(Boolean)])].slice(0, 256);
+    }
     return record;
   });
   const coverage = structuredClone(state.coverage);

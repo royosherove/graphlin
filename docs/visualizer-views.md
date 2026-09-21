@@ -1,7 +1,7 @@
 # Viewer views
 
 Graphlin keeps a source model separate from the drawing. The compact view picker
-selects **Code**, **Blocks**, **C4**, **Changes**, **Activity timeline**, or an
+starts in **Blocks** and selects **Code**, **Blocks**, **C4**, **Changes**, **Activity timeline**, or an
 installed visualizer. Details, History, and the legacy Activity panel remain
 hidden until opened. The existing sketch renderer and eight palettes remain
 available.
@@ -15,6 +15,31 @@ available.
 | C4 | Context, applications/datastores, components, and code; supported current interpretations determine architectural boundaries |
 | Changes | Discoveries, creations, modifications, removals, and invalidations against an explicitly selected checkpoint |
 | Activity timeline | Ordered tool/agent observations, attributed lanes, terminal outcomes, and attempts whose outcome is unresolved |
+
+## Live file activity
+
+Blocks highlights the files and containing scopes involved in observable agent
+tool calls. An eyes badge marks **Reading**; a pen badge marks **Editing**.
+Text and icons distinguish the two even without color. Collapsed blocks show
+activity in their descendants. Completed calls briefly show **Read** or
+**Edited**, while failed or interrupted calls keep a distinct outcome.
+Pending indicators expire when a completion hook is missing, and replay never
+displays a historical call as happening now.
+
+Explicit file targets appear immediately using local path correlation. With
+source-transmission consent and a configured decision service, Jev can select
+additional related blocks from bounded, filtered model metadata. The mapper
+does not send tool commands, file contents, or absolute paths. Missing keys,
+uncertain answers, or slow classification leave the exact file indicator
+available. A mapped block is a relevance judgment; it does not prove that every
+line in that block was read or modified.
+
+The pre-tool indicator describes the requested operation. Only an observed
+successful completion receives the completed label; source changes remain
+separate observations. Background indexing does not count as an agent read.
+Each agent's tool calls are tracked separately, including overlapping reads
+and edits. **Follow agent** brings activity into view; turn it off to keep your
+current position.
 
 Folders do not establish applications, processes, or deployment boundaries.
 Without a supported interpretation at the selected C4 level, source scopes
