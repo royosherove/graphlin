@@ -1,5 +1,7 @@
 import { opaque, plain, integer } from '../core/common.mjs';
-import { excluded, safeText } from '../core/privacy.mjs';
+import { createPolicy, excluded, safeText } from '../core/privacy.mjs';
+
+const DEFAULT_POLICY = createPolicy();
 
 export const DEFAULT_LIMITS = Object.freeze({
   entities: 20_000, relations: 40_000, artifacts: 10_000, interpretations: 512,
@@ -24,7 +26,7 @@ export const key = (prefix, ...parts) => opaque(prefix, ...parts);
 const version = value => typeof value === 'string' && value.length <= 256 &&
   /^[@A-Za-z0-9][A-Za-z0-9_.@+/-]*$/.test(value) && safeText(value, 256) ? value : null;
 
-export function relativePath(value, policy = {}) {
+export function relativePath(value, policy = DEFAULT_POLICY) {
   if (typeof value !== 'string' || value.length > 512 || !value ||
       /[\\:\0\r\n<>%]/.test(value) || value.split('/').some(p => !p || p === '.' || p === '..') ||
       !safeText(value, 512) || excluded(value, policy)) return null;
@@ -32,13 +34,7 @@ export function relativePath(value, policy = {}) {
 }
 
 export function currentPolicy(provider) {
-  const value = (typeof provider === 'function' ? provider() : provider) ?? {};
-  return {
-    readSource: value.readSource === true || value.transmitSource === true,
-    displayEvidence: value.displayEvidence !== false,
-    persistEvidence: value.persistEvidence === true,
-    excludePaths: Array.isArray(value.excludePaths) ? value.excludePaths : [],
-  };
+  return createPolicy(typeof provider === 'function' ? provider() : provider);
 }
 
 export function lineageRecord(value) {

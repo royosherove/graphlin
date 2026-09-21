@@ -10,7 +10,10 @@ const DEFAULT_EXCLUDES = Object.freeze([
   '**/*credential*', '**/*secret*', '**/*.pem', '**/*.key', '**/*.p12', '**/*.pfx',
   '**/id_rsa*', '**/id_ed25519*',
 ]);
+const policies = new WeakSet();
+const compiledExclusions = new WeakMap();
 export function createPolicy(options = {}) {
+  if (policies.has(options)) return options;
   options = plain(options) ? options : {};
   const excludePaths = [...new Set([...DEFAULT_EXCLUDES, ...(
     Array.isArray(options.excludePaths) ? options.excludePaths.slice(0, 128)
@@ -25,7 +28,9 @@ export function createPolicy(options = {}) {
     persistEvidence: options.persistEvidence === true,
     excludePaths,
   };
-  return freeze({ ...fields, version: `policy-${hash(fields).slice(0, 32)}` });
+  const policy = freeze({ ...fields, version: `policy-${hash(fields).slice(0, 32)}` });
+  policies.add(policy);
+  return policy;
 }
 
 function globRegex(pattern) {
@@ -45,7 +50,13 @@ function globRegex(pattern) {
 export function excluded(relativePath, policy) {
   if (typeof relativePath !== 'string' || relativePath.length > 4096 || /[\0\r\n\\]/.test(relativePath)) return true;
   const normalized = relativePath.replace(/^\.\//, '');
-  return createPolicy(policy).excludePaths.some(pattern => globRegex(pattern).test(normalized));
+  const effective = createPolicy(policy);
+  let patterns = compiledExclusions.get(effective);
+  if (!patterns) {
+    patterns = effective.excludePaths.map(globRegex);
+    compiledExclusions.set(effective, patterns);
+  }
+  return patterns.some(pattern => pattern.test(normalized));
 }
 
 const SECRET_NAME = /(?:password|passwd|passphrase|pwd|apikey|accesskeyid|(?:access|secret|private|signing|encryption)key|token|secret|auth|credentials?)(?:value)?$/i;
