@@ -58,6 +58,10 @@ export interface Activity {
   agentId?: Identifier;
   toolCallId?: Identifier;
   toolCategory?: 'read' | 'write' | 'edit' | 'shell' | 'search' | 'test' | 'other';
+  /** Observable file activity, independent of a successful source modification. */
+  operation?: 'read' | 'edit';
+  /** Exact file targets or additional decision-selected source blocks. */
+  mapping?: 'exact' | 'decision';
   outcome?: 'pending' | 'succeeded' | 'failed' | 'interrupted' | 'denied' | 'unresolved' | 'observed';
   attribution?: 'observed' | 'correlated' | 'unknown';
   creation?: boolean;

@@ -56,3 +56,19 @@ test('fields and history narrow projection, including activity-only extensions',
   assert.equal(getExtensionDataProjection({ ...snapshot, checkpointId: 'checkpoint-1' },
     grant({ fields: ['entities'], history: false })), null);
 });
+
+test('file activity extensions receive bounded operation labels, never tool input', () => {
+  const snapshot = model();
+  Object.assign(snapshot.activity[0], { operation: 'read', mapping: 'decision',
+    toolInput: { file: '/private/DO_NOT_DISCLOSE', command: 'DO_NOT_DISCLOSE' } });
+  const visible = getExtensionDataProjection(snapshot, grant());
+  assert.equal(visible.activity[0].operation, 'read');
+  assert.equal(visible.activity[0].mapping, 'decision');
+  assert.doesNotMatch(JSON.stringify(visible), /DO_NOT_DISCLOSE|toolInput/);
+  const hidden = getExtensionDataProjection(snapshot, grant({ fields: ['entities'] }));
+  assert.deepEqual(hidden.activity, []);
+  Object.assign(snapshot.activity[0], { operation: 'execute', mapping: 'unbounded' });
+  const invalid = getExtensionDataProjection(snapshot, grant());
+  assert.equal(invalid.activity[0].operation, undefined);
+  assert.equal(invalid.activity[0].mapping, undefined);
+});

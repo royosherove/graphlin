@@ -87,6 +87,8 @@ const SCHEMAS = {
     version: identifier, entityIds: ids },
   activity: { ...common, sequence: integerField, at: time, timestamp: time, recordedAt: time,
     outcome: word, attribution: word, toolCategory: word, agentId: identifier, toolCallId: identifier,
+    operation: value => ['read', 'edit'].includes(value) ? value : undefined,
+    mapping: value => ['exact', 'decision'].includes(value) ? value : undefined,
     entityIds: ids, artifactIds: ids, creation: booleanField },
   sessions: { id: identifier, host: word, status: word, startedAt: time, endedAt: time },
   checkpoints: { id: identifier, projectId: identifier, label: text, sessionId: identifier,
@@ -226,6 +228,41 @@ function prioritizeArchitecture(data) {
     ...data.entities.filter(value => !anchors.has(value.id))];
   data.interpretations = [...data.interpretations.filter(value => records.has(value.id)),
     ...data.interpretations.filter(value => !records.has(value.id))];
+}
+function prioritizeActivity(data) {
+  const byId = new Map(data.entities.map(value => [value.id, value]));
+  const calls = new Set(), records = new Set(), anchors = new Set();
+  const callKey = value => JSON.stringify([value.sessionId ?? '', value.agentId ?? '',
+    value.toolCallId ?? value.id]);
+  // Keep the latest calls and their lifecycle together on the first page. Use
+  // sequence rather than wall time so a cursor's ordering cannot expire midway.
+  for (let index = data.activity.length - 1; index >= 0 && calls.size < 16; index--) {
+    const value = data.activity[index];
+    if (!value.operation || !['tool.requested', 'tool.succeeded', 'tool.failed',
+      'tool.denied', 'tool.interrupted', 'tool.unresolved', 'activity.mapped'].includes(value.kind) ||
+      !value.entityIds?.some(id => byId.has(id))) continue;
+    calls.add(callKey(value));
+  }
+  if (!calls.size) return;
+  for (let index = data.activity.length - 1; index >= 0; index--) {
+    const value = data.activity[index];
+    if (!calls.has(callKey(value))) continue;
+    records.add(value.id);
+    for (const id of value.entityIds ?? []) {
+      const chain = [];
+      let entity = byId.get(id);
+      while (entity && !anchors.has(entity.id)) {
+        chain.push(entity.id);
+        entity = byId.get(entity.parentId);
+      }
+      // Never promote a child without all of its visible ancestors.
+      if (anchors.size + chain.length <= 192) for (const ancestor of chain) anchors.add(ancestor);
+    }
+  }
+  data.entities = [...data.entities.filter(value => anchors.has(value.id)),
+    ...data.entities.filter(value => !anchors.has(value.id))];
+  data.activity = [...data.activity.filter(value => records.has(value.id)).reverse(),
+    ...data.activity.filter(value => !records.has(value.id))];
 }
 function exactKeys(value, allowed) {
   if (!plain(value) || Object.keys(value).some(key => !allowed.includes(key))) fail(400, 'invalid_input');
@@ -457,8 +494,9 @@ export function createModelAPI({ projectId, getSnapshot, getSessions, createChec
         Array.isArray(value.entityIds) && value.entityIds.every(id => selected.has(id)));
       result.activity = result.activity.filter(value => !value.entityIds?.length || value.entityIds.some(id => selected.has(id)));
     }
-    // Only disclosed, in-scope interpretations may influence the visible order.
+    // Only disclosed, in-scope records may influence the visible order.
     prioritizeArchitecture(result);
+    prioritizeActivity(result);
     result.coverage = principal.fields.includes('coverage') ? coverage(raw.coverage,
       selection.scopeId ? new Set(result.entities.flatMap(value =>
         [value.artifactId, ...(value.sourceRefs ?? []).map(ref => ref.artifactId)].filter(Boolean))) : undefined) : {};

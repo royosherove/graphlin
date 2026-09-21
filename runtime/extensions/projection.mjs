@@ -69,6 +69,8 @@ function activity(value) {
     ...pick(value, { id: safeId, kind: token, sessionId: safeId, agentId: safeId, toolCallId: safeId,
       sequence: integer, knownAtSequence: integer, at: timestamp, recordedAt: timestamp,
       toolCategory: value => ['read', 'write', 'edit', 'shell', 'search', 'test', 'other'].includes(value),
+      operation: value => ['read', 'edit'].includes(value),
+      mapping: value => ['exact', 'decision'].includes(value),
       attribution: value => ['observed', 'correlated', 'unknown'].includes(value),
       outcome: value => ['pending', 'succeeded', 'failed', 'interrupted', 'denied', 'unresolved', 'observed'].includes(value),
       creation: value => typeof value === 'boolean' }),
