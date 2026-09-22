@@ -4,7 +4,7 @@ Live architecture diagrams while **Claude Code or Codex** explores and builds yo
 
 ![Claude Code builds a checkout app while Graphlin draws its files and connections, starting from an empty canvas](docs/images/graphlin-live.gif)
 
-*Recorded Claude Code output beside Graphlin's live file map, accelerated. [Still image](docs/images/graphlin-preview.png).*
+*Real Claude Code terminal beside Graphlin's live diagram. Recorded session, accelerated. [Still image](docs/images/graphlin-preview.png).*
 
 ## Get started
 
