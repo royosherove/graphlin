@@ -30,7 +30,7 @@ const assets = new Map([
   ['/sketch.js', ['sketch.js', 'text/javascript; charset=utf-8']],
   ['/style.css', ['style.css', 'text/css; charset=utf-8']],
 ]);
-for (const filename of ['platform.js', 'model-client.js', 'scene.js', 'extension-frame.js']) {
+for (const filename of ['platform.js', 'model-client.js', 'scene.js', 'extension-frame.js', 'discovery-progress.js']) {
   assets.set(`/${filename}`, [filename, 'text/javascript; charset=utf-8']);
 }
 for (const filename of [
@@ -94,7 +94,12 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
   const missingKey = !decisionService && !decisionProvider && policy.transmitSource && mode === 'live' && !apiKey;
   function snapshot(persistent = false) {
     const state = pipeline.getState({ persistent });
-    return { ...state, status: { ...state.status,
+    return { ...state,
+      ...(!persistent ? {
+        sourceMode: policy.transmitSource ? 'source' : policy.readSource ? 'local' : 'metadata',
+        discovery: pipeline.getDiscoveryStatus(),
+      } : {}),
+      status: { ...state.status,
       classifier: missingKey && !state.paused ? 'missing_key' : state.status.classifier,
       dropped: (state.status?.dropped ?? 0) + drops } };
   }

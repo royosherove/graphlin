@@ -55,9 +55,24 @@ explains missing consent, a missing key, unavailable source, paused
 classification, partial coverage, or a failed analysis.
 Automatic discovery and incremental rechecks are scheduled by the local service.
 
-The browser reads discovery status every two seconds while C4 is open at Live.
-Changing views or entering replay aborts pending status requests and stops
-polling; replay disables the discovery button. Only an explicit button click
+When local privacy filtering withholds source, the status asks you to remove
+hardcoded secrets and secret fallbacks and reference environment variables only.
+After editing, **Recheck sources** runs another check under the same privacy
+rules. The status never displays withheld values or file paths.
+Counts separate **checked** attempts from current, validated **analyzed** results;
+an analyzed result can honestly find no supported boundary. Older services'
+`inspected` counts are shown as checked attempts. Withheld, unsupported, and
+unavailable source have separate counts and are not successful analyses.
+Status messages preserve the drawing; model evidence updates still invalidate
+stale boundaries.
+
+Discovery status uses one bounded, two-second poll at Live. When the host
+progress panel subscribes, all built-in views share it; otherwise it runs only
+in C4. Replay, third-party views, and suspension stop the feed and abort pending
+requests. Hidden pages pause the feed; returning resumes it only when the host
+allows live discovery, so demo and replay modes can keep it disabled.
+Reconnecting or changing projects clears previous status while the
+new model loads. Replay disables the discovery button. Only an explicit C4 button click
 posts a discovery request. Opening C4, switching levels, filtering, and arranging
 do not start analysis from the browser. New supported boundaries arrive through
 the model stream and update the active drawing automatically.

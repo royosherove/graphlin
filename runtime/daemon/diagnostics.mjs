@@ -44,6 +44,9 @@ const REASONS = new Set([
   'invalid_capture', 'source_reconciliation', 'no_session',
   'event_not_classifiable', 'excluded_path', 'file_missing', 'incomplete_artifact', 'artifact_unavailable',
   'source_withheld', 'empty_source', 'source_not_safe', 'candidate_limit', 'candidates_ready', 'artifact_limit', 'snippet_limit',
+  'unsupported_source', 'source_unavailable', 'analysis_failed', 'architecture_complete', 'architecture_unknown',
+  'architecture_partial', 'architecture_unavailable', 'architecture_cancelled',
+  'architecture_capture_failed', 'architecture_analysis_failed', 'architecture_commit_failed', 'unknown_profile',
   'approved', 'sensitive_and_irrelevant', 'candidate_incomplete', 'event_incomplete',
   'node_support_below_min', 'role_probability_below_min', 'role_confidence_below_min',
   'source_not_accepted', 'target_not_accepted', 'evidence_incomplete', 'edge_support_below_min',
@@ -172,6 +175,11 @@ function decisionDiagnostics(input) {
   if (plain(input.trace)) result.trace = trace(input.trace);
   if (plain(input.queue)) result.queue = copyFields(input.queue,
     ['waitMs', 'depth', 'active', 'capacity', 'omitted'], finite);
+  if (plain(input.architecture)) result.architecture = {
+    ...copyFields(input.architecture, ['stage'], value => ['capture', 'analysis', 'commit'].includes(value)),
+    ...copyFields(input.architecture, ['attempted', 'analyzed', 'withheld', 'unsupported', 'unavailable', 'deferred'],
+      value => count(value) && value <= 10_000),
+  };
   if (Array.isArray(input.extraction)) result.extraction = list(input.extraction, 33).filter(plain).map(value => ({
     ...copyFields(value, ['artifactId'], isId),
     ...copyFields(value, ['available', 'selected'], count),

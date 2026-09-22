@@ -144,6 +144,34 @@
               </div>
             </div>
             <p id="architecture-status" class="architecture-status" role="status" aria-live="polite" hidden></p>
+            <section id="discovery-progress" class="discovery-progress" aria-labelledby="discovery-title" data-state="waiting">
+              <div class="discovery-heading">
+                <span class="discovery-indicator" aria-hidden="true"></span>
+                <h3 id="discovery-title">Opening your project</h3>
+                <span id="discovery-elapsed" class="discovery-elapsed" aria-live="off">Tracking for 0s</span>
+                <button id="discovery-toggle" class="text-button" type="button" aria-expanded="false" aria-controls="discovery-details">Progress</button>
+              </div>
+              <p id="discovery-summary" class="discovery-summary" hidden></p>
+              <div id="discovery-details" hidden>
+                <ol class="discovery-stages" aria-label="Independent discovery stages">
+                  <li id="discovery-stage-0" data-state="waiting">
+                    <span class="discovery-step" aria-hidden="true">1</span>
+                    <div><strong id="discovery-stage-0-label">Find files</strong><span id="discovery-stage-0-detail">Waiting for inventory counts</span></div>
+                  </li>
+                  <li id="discovery-stage-1" data-state="waiting">
+                    <span class="discovery-step" aria-hidden="true">2</span>
+                    <div><strong id="discovery-stage-1-label">Build source map</strong><span id="discovery-stage-1-detail">Waiting for local structure</span></div>
+                  </li>
+                  <li id="discovery-stage-2" data-state="waiting">
+                    <span class="discovery-step" aria-hidden="true">3</span>
+                    <div><strong id="discovery-stage-2-label">Discover architecture</strong><span id="discovery-stage-2-detail">Waiting for project analysis status</span></div>
+                  </li>
+                </ol>
+              </div>
+              <p id="discovery-note">Waiting for the local service and its discovery counts.</p>
+              <div id="discovery-meter" class="discovery-meter" role="progressbar" aria-label="Discovery in progress" hidden></div>
+              <span id="discovery-announcement" class="screen-reader" role="status" aria-live="polite" aria-atomic="true"></span>
+            </section>
             <p class="view-status" id="view-status" role="status" hidden></p>
             <section class="extension-access" id="extension-access" aria-label="Visualizer data access" hidden>
               <p id="extension-access-description"></p>

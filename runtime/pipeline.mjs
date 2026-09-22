@@ -154,6 +154,7 @@ export function createPipeline({
   let classifier = mode === 'demo' ? 'demo' : policy.transmitSource ? 'ready' : 'metadata_only';
   let serial = Promise.resolve();
   let reconciliationTask = null;
+  let initialCaptureComplete = false;
   let resumeScheduled = false;
   let lineageId = null;
   let lineageAvailable = true, lineageEpoch = 0;
@@ -195,8 +196,12 @@ export function createPipeline({
     onChange: notify,
     onDiagnostic: result => trace(null, 'classification', {
       status: result.status === 'complete' ? 'accepted' : result.status === 'partial' ? 'partial' : 'unavailable',
-      reason: result.status === 'complete' ? 'ok' : result.status === 'partial' ? 'unknown' : 'decision_failure',
-      diagnostics: { calls: result.providerRequests },
+      reason: result.reason,
+      diagnostics: { code: result.code, calls: result.providerRequests, architecture: {
+        stage: result.stage, attempted: result.attempted, analyzed: result.analyzed,
+        withheld: result.withheld, unsupported: result.unsupported, unavailable: result.unavailable,
+        deferred: result.deferred,
+      } },
     }),
     now: clock,
   });
@@ -296,6 +301,7 @@ export function createPipeline({
     const relative = artifact.relativePath;
     return {
       artifactId: artifact.id, status: artifact.status, complete: artifact.complete === true,
+      ...(artifact.sourceReason === 'source_withheld' ? { reason: 'source_withheld' } : {}),
       ...(policy.transmitSource && (policy.displayEvidence || policy.persistEvidence) && typeof relative === 'string' &&
         safeText(relative, 4096) && !excluded(relative, policy) ? { path: relative } : {}),
     };
@@ -787,6 +793,14 @@ export function createPipeline({
     return platform.discover({ limit: 64 });
   }
 
+  function settleInitialCapture(captured) {
+    if (!closed && captured && !initialCaptureComplete &&
+        ['complete', 'partial'].includes(platform.getDiscoveryStatus().inventory.status)) {
+      initialCaptureComplete = true;
+      notify();
+    }
+  }
+
   function canonicalNamedPaths(paths, raw, workingDirectory) {
     const aliases = [inputRoot];
     // A host can report a system alias such as /var instead of /private/var.
@@ -1254,6 +1268,7 @@ export function createPipeline({
       return { accepted: false, reason: 'overloaded' };
     }
     localQueue++;
+    let captured = false;
     try {
       return await serialized(async () => {
         if (closed) return { accepted: false, reason: 'closed' };
@@ -1334,10 +1349,12 @@ export function createPipeline({
             artifacts.push(...await evidence.capture(paths.slice(index, index + 32)));
           }
           const changed = registerArtifacts(artifacts, metadataEvent(event));
+          captured = true;
           if (activity.id === event.id) observeActivityVersions(event, artifacts);
           trace(event, 'capture', { status: 'observed', reason: 'artifacts_observed',
             artifacts: artifacts.map(artifact => ({ ...artifactMetadata(artifact),
-              reason: changed.some(item => item.id === artifact.id) ? 'artifact_changed' : 'artifact_unchanged' })) });
+              reason: artifact.sourceReason === 'source_withheld' ? 'source_withheld'
+                : changed.some(item => item.id === artifact.id) ? 'artifact_changed' : 'artifact_unchanged' })) });
           // A tool completion also reconciles prior support, including deletions
           // omitted from the tool's returned file list.
           if (event.kind.startsWith('tool.') && event.kind !== 'tool.requested') {
@@ -1381,6 +1398,7 @@ export function createPipeline({
       return { accepted: false, reason: 'invalid' };
     } finally {
       localQueue--;
+      settleInitialCapture(captured);
     }
   }
 
@@ -1388,6 +1406,7 @@ export function createPipeline({
     if (reconciliationTask) return reconciliationTask;
     if (closed || localQueue >= MAX_LOCAL_QUEUE) return Promise.resolve();
     localQueue++;
+    let captured = false;
     reconciliationTask = serialized(async () => {
       if (closed) return;
       const expired = expirePending();
@@ -1400,6 +1419,7 @@ export function createPipeline({
       const known = await evidence.reconcile({ limit: 32 });
       const observed = [...artifacts, ...known];
       const changed = registerArtifacts(observed);
+      captured = true;
       // Parser revalidation may have already refreshed a file's generation.
       // Retain canceled classifier work until this dispatch path sees it.
       for (const artifact of observed) {
@@ -1423,7 +1443,11 @@ export function createPipeline({
       } else trace(null, 'skip', { status: 'skipped', reason: 'no_session',
         artifacts: changed.map(artifactMetadata) });
       notify();
-    }).finally(() => { localQueue--; reconciliationTask = null; });
+    }).finally(() => {
+      localQueue--;
+      reconciliationTask = null;
+      settleInitialCapture(captured);
+    });
     return reconciliationTask;
   }
 
@@ -1532,6 +1556,7 @@ export function createPipeline({
   return {
     ingest, getState, reconcile, observeLineage, setPaused, selectSession, whenIdle, close,
     getArchitectureStatus: () => architecture.status(),
+    getDiscoveryStatus: () => ({ ...platform.getDiscoveryStatus(), initialCaptureComplete }),
     discoverArchitecture: () => { platform.retryCapacity(); return architecture.request(); },
     getModelState: options => platform.snapshot(options),
     createCheckpoint: options => platform.checkpoint(options),

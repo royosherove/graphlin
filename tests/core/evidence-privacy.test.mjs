@@ -1,0 +1,37 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { EvidenceStore } from '../../runtime/core/evidence.mjs';
+import { privateText } from '../../runtime/core/privacy.mjs';
+
+test('an environment fallback withholds the whole capture with a fixed reason and recovers after a safe edit', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'graphlin-evidence-privacy-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const safe = 'export const options = { secret: process.env.SESSION_SECRET };';
+  const privateSource = safe.replace('process.env.SESSION_SECRET', "process.env.SESSION_SECRET || 'SYNTHETIC_FALLBACK_CREDENTIAL'");
+  assert.equal(privateText(safe), false);
+  assert.equal(privateText(privateSource), true);
+  const store = new EvidenceStore({ projectRoot: root, policy: { transmitSource: true } });
+  const file = path.join(root, 'server.js');
+  await writeFile(file, safe);
+  const [initial] = await store.capture([file]);
+  const ref = { artifactId: initial.id, hash: initial.hash, generation: initial.generation };
+  await writeFile(file, privateSource);
+  const [withheld] = await store.reconcile();
+  assert.equal(withheld.status, 'present');
+  assert.equal(withheld.complete, true);
+  assert.equal(withheld.text, null);
+  assert.equal(withheld.sourceReason, 'source_withheld');
+  assert.equal(store.isCurrent([ref]), false);
+  assert.doesNotMatch(JSON.stringify(withheld), /SYNTHETIC_FALLBACK_CREDENTIAL|SESSION_SECRET/);
+  const [same] = await store.reconcile();
+  assert.equal(same.generation, withheld.generation);
+  assert.equal(same.sourceReason, 'source_withheld');
+  await writeFile(file, safe);
+  const [recovered] = await store.reconcile();
+  assert.equal(recovered.text, safe);
+  assert.equal(recovered.sourceReason, undefined);
+  assert.ok(recovered.generation > withheld.generation);
+});

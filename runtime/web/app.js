@@ -2,6 +2,7 @@ import { layoutGraph, LAYOUT_ALGORITHMS } from './layout.js';
 import { sketchOutline, sketchDetails, sketchConnection } from './sketch.js';
 import { createLiveSidebar } from './sidebar.js';
 import { createViewPlatform } from './platform.js';
+import { createDiscoveryProgress, normalizeDiscoveryProgress } from './discovery-progress.js';
 import { layoutScene, sceneGraph, representedSelection, createToolActivity, activityTargets, sceneActivity } from './scene.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -372,6 +373,8 @@ export function normalizeSnapshot(value, { includeExcerpts = true } = {}) {
     projectId: identifier(value.projectId),
     sessionId,
     mode: token(value.mode, ['live', 'demo', 'replay'], 'live'),
+    sourceMode: token(value.sourceMode, ['metadata', 'local', 'source'], 'unknown'),
+    discovery: normalizeDiscoveryProgress(value.discovery),
     paused: value.paused === true,
     sessions,
     graph,
@@ -1594,6 +1597,7 @@ export function startViewer() {
     renderStatus();
   } });
   const diagnosticsDialog = startDiagnosticsDialog({ currentSession: () => state.snapshot?.sessionId });
+  const discoveryProgress = createDiscoveryProgress({ document });
   const sidebar = createLiveSidebar({
     onInspect(selection, id) {
       const target = typeof selection === 'string' ? { type: selection, id } : selection;
@@ -1619,14 +1623,22 @@ export function startViewer() {
   const toolActivity = createToolActivity();
   let activityModel = null, activitySession, activityReplay = false, activityTimer, activityStripSignature = '';
   let activityFocus = [];
+  let discoveryCoverage = null;
   const platform = createViewPlatform({
     document, request,
+    architectureEnabled: () => Boolean(state.snapshot) && !state.replayFrame
+      && !['demo', 'replay'].includes(state.snapshot.mode) && state.snapshot.status.classifier !== 'demo',
+    onArchitecture(value) { discoveryProgress.architecture(value); },
     onFollow(value) {
       state.follow = value;
       if (value) state.manualCamera = false;
       else { clearMotion(); state.followFit = false; }
     },
     onActivity(value, selection) {
+      // The model client resets this callback before each load and rejects
+      // superseded responses. Legacy and model project IDs use different schemes.
+      discoveryCoverage = value?.coverage ?? null;
+      syncDiscoveryProgress(selection);
       const replay = Boolean(selection.checkpoint);
       if (activitySession !== selection.session || activityReplay !== replay) {
         toolActivity.clear(); activityFocus = [];
@@ -1711,6 +1723,19 @@ export function startViewer() {
         progress].filter(Boolean).join(' · ');
     },
   });
+
+  function syncDiscoveryProgress(selection = platform.selection) {
+    discoveryProgress.update({
+      projectId: state.snapshot?.projectId,
+      connection: state.connection, mode: state.snapshot?.mode, sourceMode: state.snapshot?.sourceMode,
+      discovery: state.snapshot?.discovery,
+      classifier: state.snapshot?.status.classifier, paused: state.snapshot?.paused,
+      coverage: discoveryCoverage,
+      scoped: Boolean(selection?.scope),
+      replay: Boolean(selection?.checkpoint || state.replayFrame || state.snapshot?.mode === 'replay'),
+      external: !['graphlin.blocks', 'graphlin.code', 'graphlin.c4', 'graphlin.changes', 'graphlin.timeline'].includes(platform.active),
+    });
+  }
 
   function activityIcon(operation) {
     const icon = svgElement('svg', { class: 'tool-activity-icon', width: 15, height: 15,
@@ -1810,6 +1835,7 @@ export function startViewer() {
   }
   function connection(value) {
     state.connection = value;
+    syncDiscoveryProgress();
     $('connection').dataset.state = value;
     $('connection-label').textContent = {
       connecting: 'Connecting to local service',
@@ -2772,6 +2798,7 @@ export function startViewer() {
     $('activity-list').hidden = events.length === 0;
   }
   function render(graphOptions) {
+    syncDiscoveryProgress();
     renderStatus();
     renderOnboarding();
     renderGraph(graphOptions);
@@ -3136,7 +3163,7 @@ export function startViewer() {
   $('architecture').addEventListener('pointerup', finishPan);
   $('architecture').addEventListener('pointercancel', finishPan);
   $('architecture').addEventListener('lostpointercapture', finishPan);
-  const onPageHide = () => { connectionDialog.close(); diagnosticsDialog.close(); platform.suspend(); resetMotionBaseline(); state.stream?.close(); state.stream = null; };
+  const onPageHide = () => { connectionDialog.close(); diagnosticsDialog.close(); platform.suspend(); discoveryProgress.suspend(); resetMotionBaseline(); state.stream?.close(); state.stream = null; };
   const onPageShow = event => { if (!state.closed && event.persisted) connect(); };
   const onOnline = () => { if (!state.closed && state.connection !== 'connected') connect(); };
   const onVisibility = () => resetMotionBaseline();
@@ -3168,6 +3195,7 @@ export function startViewer() {
     ready: connect(),
     close() {
       state.closed = true;
+      discoveryProgress.close();
       platform.close();
       projectController?.abort();
       projectController = null;

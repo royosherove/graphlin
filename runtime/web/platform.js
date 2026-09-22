@@ -12,6 +12,9 @@ const DISCOVERY_REASONS = {
   missing_key: 'Configure a classification service key in Graphlin setup to discover architecture.',
   no_source: 'No source evidence is available yet. Let Graphlin inspect project files, then try again.',
   paused: 'Classification is paused. Resume classification to discover architecture.',
+  source_withheld: 'Source was withheld by local privacy filtering. Remove hardcoded secrets and secret fallbacks from source; reference environment variables only, then recheck sources.',
+  unsupported_source: 'Some source is unsupported for architecture discovery. Use supported source formats, then recheck sources.',
+  source_unavailable: 'Some source could not be captured or parsed for architecture discovery. Check that project files are available, then recheck sources.',
   analysis_failed: 'Architecture discovery could not finish. Try again; supported boundaries remain available.',
   unsupported_service: 'The configured classification service does not support architecture discovery.',
   source_changed: 'Source changed during discovery. Boundaries will be checked against current evidence.',
@@ -22,14 +25,16 @@ const DISCOVERY_REASONS = {
 };
 function discoveryStatus(value) {
   if (!value || !DISCOVERY_STATES.includes(value.status)) throw new Error('invalid_architecture_status');
-  const result = { status: value.status, reason: typeof value.reason === 'string' ? value.reason : '' };
-  for (const name of ['applications', 'components', 'pending', 'inspected', 'total']) {
+  const result = { status: value.status, reason: typeof value.reason === 'string' && Object.hasOwn(DISCOVERY_REASONS, value.reason) ? value.reason : '' };
+  for (const name of ['applications', 'components', 'pending', 'inspected', 'total',
+    'attempted', 'analyzed', 'withheld', 'unsupported', 'unavailable']) {
     if (Number.isSafeInteger(value[name]) && value[name] >= 0 && value[name] <= 1_000_000) result[name] = value[name];
   }
   return result;
 }
 
-export function createViewPlatform({ document, request, onView, onSelect, onFollow = () => {}, onActivity = () => {},
+export function createViewPlatform({ document, request, onView, onSelect, onFollow = () => {}, onActivity = () => {}, onArchitecture,
+  architectureEnabled = () => true,
   createFrame = createExtensionFrame, grantPollMs = 2000, architecturePollMs = 2000 }) {
   const $ = id => document.getElementById(id);
   let model, active = 'graphlin.code', instance, installed = [], generation = 0, closed = false;
@@ -38,6 +43,7 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   let analysisBusy = false;
   let grantWatch;
   let architectureWatch, architectureState, architectureProject, architectureBusy = false, suspended = true;
+  let architectureModelReady = false;
   let selection = {}, serverSessionId, canonicalSelection = null, follow = true, query = '', kinds = null, focusEntityId = null;
   const settings = new Map(), listeners = [];
   const ownSettings = () => {
@@ -63,8 +69,15 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
     if (grantWatch) { clearTimeout(grantWatch.timer); grantWatch.controller?.abort(); grantWatch = null; }
     instance?.dispose(); instance = null;
   }
-  const architectureLive = () => !closed && !suspended && model && active === 'graphlin.c4' && !selection.checkpoint;
+  const architectureLive = () => !closed && !suspended && !document.hidden && architectureModelReady && model &&
+    !selection.checkpoint && architectureEnabled() &&
+    (active === 'graphlin.c4' || (typeof onArchitecture === 'function' && BUILTIN_VIEWS.some(view => view.id === active)));
+  function reportArchitecture(value) {
+    architectureState = value === null ? null : discoveryStatus(value);
+    if (typeof onArchitecture === 'function') onArchitecture(architectureState ? { ...architectureState } : null);
+  }
   function stopArchitecture() {
+    const hadStatus = architectureWatch || architectureState;
     if (architectureWatch) {
       clearTimeout(architectureWatch.timer);
       clearTimeout(architectureWatch.deadline);
@@ -72,13 +85,16 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
       architectureWatch = null;
     }
     architectureBusy = false;
+    if (hadStatus) reportArchitecture(null);
   }
   function renderArchitecture() {
     const shown = active === 'graphlin.c4';
     $('architecture-discover').hidden = !shown;
     $('architecture-status').hidden = !shown;
     const state = architectureState;
-    $('architecture-discover').disabled = !architectureLive() || architectureBusy ||
+    $('architecture-discover').textContent = !selection.checkpoint && state?.reason === 'source_withheld'
+      ? 'Recheck sources' : 'Discover architecture';
+    $('architecture-discover').disabled = !shown || !architectureLive() || architectureBusy ||
       ['queued', 'running'].includes(state?.status) || DISCOVERY_BLOCKED.includes(state?.reason);
     $('architecture-discover').setAttribute('aria-busy', String(architectureBusy));
     if (!shown) return;
@@ -98,13 +114,18 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
     };
     const counts = ['applications', 'components'].filter(name => state[name] !== undefined)
       .map(name => `${state[name]} ${name}`);
-    if (state.inspected !== undefined && state.total !== undefined) counts.push(`${state.inspected} of ${state.total} inspected`);
+    if (state.analyzed !== undefined) counts.push(`${state.analyzed} analyzed`);
+    const checked = state.attempted ?? state.inspected;
+    if (checked !== undefined && state.total !== undefined) counts.push(`${checked} of ${state.total} checked`);
+    for (const name of ['withheld', 'unsupported', 'unavailable']) if (state[name] > 0) counts.push(`${state[name]} ${name}`);
     if (state.pending > 0) counts.push(`${state.pending} pending`);
     $('architecture-status').textContent = [
       DISCOVERY_REASONS[state.reason] || messages[state.status], counts.join(' · '),
     ].filter(Boolean).join(' ');
   }
   async function refreshArchitecture(watch, manual = false) {
+    if (architectureWatch !== watch) return;
+    if (!architectureLive()) { syncArchitecture(); return; }
     const controller = new AbortController();
     watch.controller = controller;
     const deadline = watch.deadline = setTimeout(() => controller.abort(), 8000);
@@ -112,17 +133,20 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
       const result = await request(manual ? '/api/architecture/discover' : '/api/architecture',
         { signal: controller.signal, ...(manual ? { method: 'POST', body: '{}' } : {}) });
       if (architectureWatch !== watch || !architectureLive()) return;
-      architectureState = discoveryStatus(manual && !DISCOVERY_STATES.includes(result?.status) ? { status: 'queued' } : result);
+      reportArchitecture(manual && !DISCOVERY_STATES.includes(result?.status) ? { status: 'queued' } : result);
     } catch (error) {
       if (architectureWatch !== watch || !architectureLive()) return;
-      architectureState = { status: 'unavailable', reason: error.status === 404 ? 'endpoint_unavailable' : 'request_failed' };
+      reportArchitecture({ status: 'unavailable', reason: error.status === 404 ? 'endpoint_unavailable' : 'request_failed' });
     } finally {
       clearTimeout(deadline);
-      if (architectureWatch === watch && architectureLive()) {
-        architectureBusy = false;
-        renderArchitecture();
-        if (architectureState?.reason !== 'endpoint_unavailable')
-          watch.timer = setTimeout(() => refreshArchitecture(watch), architecturePollMs);
+      if (architectureWatch === watch) {
+        if (!architectureLive()) syncArchitecture();
+        else {
+          architectureBusy = false;
+          renderArchitecture();
+          if (architectureState?.reason !== 'endpoint_unavailable')
+            watch.timer = setTimeout(() => refreshArchitecture(watch), architecturePollMs);
+        }
       }
     }
   }
@@ -341,6 +365,7 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
     const chosen = Boolean(pendingView);
     if (pendingView) { dispose(); active = pendingView; pendingView = null; }
     model = value;
+    architectureModelReady = true;
     const activity = onActivity(value, { ...selection });
     if (activity?.follow === false) focusEntityId = null;
     if (follow && !query && kinds === null && !selection.checkpoint && activity?.follow !== false) {
@@ -355,6 +380,8 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   async function loadModel() {
     const mine = ++loadEpoch;
     loading = true;
+    architectureModelReady = false;
+    stopArchitecture();
     onActivity(null, { ...selection });
     controls();
     const available = await client.open(selection);
@@ -404,10 +431,10 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   listen('view-retry', 'click', () => { dispose(); void loadModel(); });
   listen('c4-level', 'change', () => { ownSettings().level = $('c4-level').value; void project(false, true); });
   listen('architecture-discover', 'click', () => {
-    if (!architectureLive() || $('architecture-discover').disabled) return;
+    if (active !== 'graphlin.c4' || !architectureLive() || $('architecture-discover').disabled) return;
     stopArchitecture();
     architectureBusy = true;
-    architectureState = { status: 'queued' };
+    reportArchitecture({ status: 'queued' });
     architectureWatch = {};
     renderArchitecture();
     void refreshArchitecture(architectureWatch, true);
@@ -427,7 +454,6 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
   });
   listen('model-position', 'change', () => {
     selection.checkpoint = $('model-position').value;
-    controls();
     void loadModel();
   });
   listen('follow-agent', 'change', () => { follow = $('follow-agent').checked; onFollow(follow); void project(); });
@@ -455,6 +481,8 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
       if (active === row.id && !closed) status('Analysis was not accepted. Check profile/data approval and this project’s source-transmission setting.');
     } finally { analysisBusy = false; if (!closed) controls(); }
   });
+  document.addEventListener?.('visibilitychange', syncArchitecture);
+  listeners.push(() => document.removeEventListener?.('visibilitychange', syncArchitecture));
   controls();
   return {
     async start() { suspended = false; await Promise.all([loadModel(), catalogue()]); },
@@ -468,8 +496,8 @@ export function createViewPlatform({ document, request, onView, onSelect, onFoll
       selection = { ...(projectChanged ? {} : selection), session: serverSessionId, checkpoint: undefined };
       canonicalSelection = null; focusEntityId = null;
       generation++; projectionController?.abort(); dispose();
-      controls();
       if (!suspended) void loadModel();
+      else controls();
     },
     session(id) { selection.session = id || undefined; generation++; dispose(); void loadModel(); },
     live() { selection.checkpoint = undefined; generation++; dispose(); void loadModel(); },

@@ -60,6 +60,27 @@ test('discovery queue timing is retained without accepting arbitrary queue data'
   assert.doesNotMatch(JSON.stringify(disk), /RAW_/);
 });
 
+test('architecture diagnostics retain only bounded counts, fixed stages and safe reason codes', async t => {
+  const { projectRoot, logger, paths } = await setupLogger(t);
+  const coverage = { stage: 'analysis', attempted: 5, analyzed: 0, withheld: 1, unsupported: 4, unavailable: 0, deferred: 0 };
+  logger.record(record(projectRoot, { reason: 'source_withheld', diagnostics: {
+    code: 'source_withheld', calls: 0, architecture: { ...coverage, error: 'RAW_ERROR', paths: ['RAW_PATH'] },
+  } }));
+  logger.record(record(projectRoot, { reason: 'analysis_failed', diagnostics: {
+    code: 'architecture_capture_failed',
+    architecture: { stage: 'RAW_STAGE', attempted: 10_001, analyzed: -1, withheld: 'RAW_COUNT', unavailable: Infinity },
+  } }));
+  const values = logger.snapshot().records;
+  assert.deepEqual(values[0].diagnostics.architecture, coverage);
+  assert.equal(values[0].reason, 'source_withheld');
+  assert.equal(values[1].diagnostics.code, 'architecture_capture_failed');
+  assert.deepEqual(values[1].diagnostics.architecture, {});
+  await logger.close();
+  const disk = await readPersistedDiagnostics(paths);
+  assert.deepEqual(disk.records[0].diagnostics.architecture, coverage);
+  assert.doesNotMatch(JSON.stringify(disk), /RAW_/);
+});
+
 test('discovery queue and coverage reasons remain searchable in the diagnostic log', async t => {
   const { projectRoot, logger, paths } = await setupLogger(t);
   const reasons = [

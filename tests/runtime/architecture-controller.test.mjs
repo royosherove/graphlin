@@ -90,6 +90,45 @@ test('a source change while capture waits for parsing does not mark newer source
   assert.equal(app.controller.status().pending, 0);
 });
 
+test('a rejecting old capture preserves the newer pending version for analysis', async t => {
+  const entered = gate(), release = gate(), analyzed = [];
+  let first = true, ready = true;
+  const app = fixture(t, {
+    ready: () => ready,
+    capture: async () => {
+      if (first) {
+        first = false;
+        entered.resolve();
+        await release.promise;
+        ready = false;
+        throw new Error('synthetic old capture failure');
+      }
+      return [app.artifacts.get('source')];
+    },
+    analyze: async input => {
+      analyzed.push(input.artifacts[0].generation);
+      return result(input.affectedArtifactIds);
+    },
+  });
+  app.observe([artifact('source')]);
+  const idle = app.controller.whenIdle();
+  await entered.promise;
+  app.observe([artifact('source', 2)]);
+  release.resolve();
+  await idle;
+  assert.equal(app.controller.status().pending, 1);
+  assert.equal(app.controller.status().attempted, 0);
+  assert.equal(app.controller.status().unavailable, 0);
+  assert.deepEqual(analyzed, []);
+  ready = true;
+  await app.controller.whenIdle();
+  assert.deepEqual(analyzed, [2]);
+  assert.equal(app.controller.status().status, 'complete');
+  assert.equal(app.controller.status().pending, 0);
+  assert.equal(app.controller.status().attempted, 1);
+  assert.equal(app.controller.status().analyzed, 1);
+});
+
 test('budget-deferred source moves to another batch and missing capture cannot loop', async t => {
   let count = 0;
   const app = fixture(t, {
@@ -133,6 +172,190 @@ test('unavailable neighbors are attempted once per version rather than requeuing
   await app.controller.whenIdle();
   assert.equal(calls.length, 1);
   assert.equal(app.controller.status().pending, 0);
+});
+
+test('privacy and unsupported coverage count attempts separately from analysis and reset on a new version', async t => {
+  const diagnostics = [];
+  let recovered = false;
+  const app = fixture(t, {
+    onDiagnostic: value => diagnostics.push(value),
+    analyze: async input => recovered ? result(input.affectedArtifactIds) : result([], {
+      status: 'unavailable', diagnostics: { code: 'source_withheld', providerRequests: 0 },
+      coverage: {
+        analyzedArtifactIds: [], withheldArtifactIds: ['private'], unsupportedArtifactIds: ['metadata'],
+        unavailableArtifactIds: input.affectedArtifactIds,
+      },
+    }),
+  });
+  app.observe([artifact('private'), artifact('metadata')]);
+  await app.controller.whenIdle();
+  const state = app.controller.status();
+  assert.equal(state.status, 'partial');
+  assert.equal(state.reason, 'source_withheld');
+  assert.equal(state.inspected, 2);
+  assert.equal(state.attempted, 2);
+  assert.equal(state.analyzed, 0);
+  assert.equal(state.withheld, 1);
+  assert.equal(state.unsupported, 1);
+  assert.equal(state.unavailable, 0);
+  assert.equal(state.failures, 0);
+  assert.deepEqual(diagnostics[0], {
+    status: 'partial', code: 'source_withheld', reason: 'source_withheld', stage: 'analysis',
+    attempted: 2, analyzed: 0, withheld: 1, unsupported: 1, unavailable: 0, deferred: 0, providerRequests: 0,
+  });
+  recovered = true;
+  app.observe([artifact('private', 2)]);
+  assert.equal(app.controller.status().withheld, 0, 'old-version withholding is not carried into new work');
+  await app.controller.whenIdle();
+  assert.equal(app.controller.status().analyzed, 1);
+  assert.equal(app.controller.status().attempted, 2);
+});
+
+test('a provider failure remains a failure alongside withheld source', async t => {
+  const app = fixture(t, {
+    analyze: async () => result([], {
+      status: 'unavailable', diagnostics: { code: 'analysis_failed', failureCode: 'authentication_failed' },
+      coverage: { analyzedArtifactIds: [], withheldArtifactIds: ['private'], failedArtifactIds: ['source'] },
+    }),
+  });
+  app.observe([artifact('private'), artifact('source')]);
+  await app.controller.whenIdle();
+  const state = app.controller.status();
+  assert.equal(state.reason, 'analysis_failed');
+  assert.equal(state.status, 'unavailable');
+  assert.equal(state.withheld, 1);
+  assert.equal(state.unavailable, 1);
+  assert.equal(state.analyzed, 0);
+  assert.equal(state.failures, 1);
+});
+
+test('a successful sibling does not retain partial coverage after only the failed artifact recovers', async t => {
+  const analyzed = [];
+  const app = fixture(t, {
+    analyze: async input => {
+      const ids = input.affectedArtifactIds;
+      analyzed.push(ids);
+      if (input.artifacts.some(value => value.id === 'failed' && value.generation === 1)) {
+        return result(['successful'], {
+          status: 'partial', diagnostics: { code: 'analysis_failed' },
+          coverage: { analyzedArtifactIds: ['successful'], failedArtifactIds: ['failed'],
+            unavailableArtifactIds: ['failed'], omittedCandidates: 0 },
+        });
+      }
+      return result(ids);
+    },
+  });
+  app.observe([artifact('successful'), artifact('failed')]);
+  await app.controller.whenIdle();
+  assert.equal(app.controller.status().reason, 'analysis_failed');
+  assert.equal(app.controller.status().analyzed, 1);
+  assert.equal(app.controller.status().unavailable, 1);
+  app.observe([artifact('failed', 2)]);
+  await app.controller.whenIdle();
+  assert.deepEqual(analyzed, [['successful', 'failed'], ['failed']]);
+  assert.equal(app.controller.status().analyzed, 2);
+  assert.equal(app.controller.status().unavailable, 0);
+  assert.equal(app.controller.status().status, 'complete');
+  assert.equal(app.controller.status().reason, 'none_supported');
+});
+
+test('later successful batches preserve current-version withholding and failure until the affected files recover', async t => {
+  let recovered = false;
+  const app = fixture(t, {
+    analyze: async input => {
+      const ids = input.affectedArtifactIds;
+      if (recovered) return result(ids);
+      const withheld = ids.filter(id => id === 'private'), failures = ids.filter(id => id === 'failed');
+      return result(ids.filter(id => !withheld.includes(id) && !failures.includes(id)), {
+        status: withheld.length || failures.length ? 'partial' : 'complete',
+        diagnostics: { code: failures.length ? 'analysis_failed' : withheld.length ? 'source_withheld' : 'architecture_unknown' },
+        coverage: {
+          analyzedArtifactIds: ids.filter(id => !withheld.includes(id) && !failures.includes(id)),
+          withheldArtifactIds: withheld, failedArtifactIds: failures,
+        },
+      });
+    },
+  });
+  app.observe(['private', ...Array.from({ length: 7 }, (_, i) => `valid-${i}`)].map(id => artifact(id)));
+  await app.controller.whenIdle();
+  assert.equal(app.controller.status().status, 'partial');
+  assert.equal(app.controller.status().reason, 'source_withheld');
+  assert.equal(app.controller.status().withheld, 1);
+  assert.equal(app.controller.status().analyzed, 7);
+
+  app.observe(['failed', ...Array.from({ length: 7 }, (_, i) => `more-${i}`)].map(id => artifact(id)));
+  await app.controller.whenIdle();
+  assert.equal(app.controller.status().reason, 'analysis_failed');
+  assert.equal(app.controller.status().withheld, 1);
+  assert.equal(app.controller.status().unavailable, 1);
+  recovered = true;
+  app.observe([artifact('failed', 2)]);
+  await app.controller.whenIdle();
+  assert.equal(app.controller.status().reason, 'source_withheld', 'only the recovered version loses its failure');
+  app.controller.request();
+  await app.controller.whenIdle();
+  assert.equal(app.controller.status().status, 'complete');
+  assert.equal(app.controller.status().withheld, 0);
+  assert.equal(app.controller.status().unavailable, 0);
+  assert.equal(app.controller.status().analyzed, 16);
+});
+
+test('budget-only deferrals are incomplete rather than attempted, analyzed or failed', async t => {
+  const diagnostics = [];
+  const app = fixture(t, {
+    onDiagnostic: value => diagnostics.push(value),
+    analyze: async input => result([], {
+      status: 'unavailable', diagnostics: { code: 'architecture_partial' },
+      coverage: { deferredArtifactIds: input.affectedArtifactIds },
+    }),
+  });
+  app.observe([artifact('large')]);
+  await app.controller.whenIdle();
+  const state = app.controller.status();
+  assert.equal(state.status, 'partial');
+  assert.equal(state.reason, 'partial_coverage');
+  assert.equal(state.inspected, 0);
+  assert.equal(state.attempted, 0);
+  assert.equal(state.analyzed, 0);
+  assert.equal(state.unavailable, 0);
+  assert.equal(state.failures, 0);
+  assert.equal(state.total, 1);
+  assert.equal(diagnostics[0].attempted, 0);
+  assert.equal(diagnostics[0].deferred, 1);
+});
+
+test('capture, analysis and commit exceptions emit fixed safe diagnostics and permit a bounded manual retry', async t => {
+  for (const stage of ['capture', 'analysis', 'commit']) await t.test(stage, async t => {
+    const diagnostics = [];
+    let fail = true, calls = 0;
+    const app = fixture(t, {
+      onDiagnostic: value => diagnostics.push(value),
+      [stage === 'analysis' ? 'analyze' : stage]: async () => {
+        calls++;
+        if (fail) throw new Error('SYNTHETIC_PRIVATE_EXCEPTION_BODY');
+        if (stage === 'capture') return [artifact('source')];
+        if (stage === 'analysis') return result(['source']);
+        return true;
+      },
+      ...(stage === 'commit' ? { analyze: async () => result(['source'], { affectedEntityIds: ['module'] }) } : {}),
+    });
+    app.observe([artifact('source')]);
+    await app.controller.whenIdle();
+    const last = diagnostics.at(-1);
+    assert.equal(last.stage, stage);
+    assert.equal(last.code, `architecture_${stage}_failed`);
+    assert.equal(last.attempted, 1);
+    assert.equal(last.unavailable, 1);
+    assert.equal(app.controller.status().reason, 'analysis_failed');
+    assert.equal(app.controller.status().pending, 0);
+    assert.equal(calls, 1);
+    assert.doesNotMatch(JSON.stringify(diagnostics), /SYNTHETIC_PRIVATE_EXCEPTION_BODY/);
+    fail = false;
+    app.controller.request();
+    await app.controller.whenIdle();
+    assert.equal(calls, 2);
+    assert.equal(app.controller.status().analyzed, 1);
+  });
 });
 
 test('persistent admission rejection stops after a bounded retry', async t => {

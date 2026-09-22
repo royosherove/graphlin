@@ -12,13 +12,18 @@ import {
 } from './profile.mjs';
 import {
   ARCHITECTURE_LIMITS as L, requireValue, indexModel, moduleForArtifact, requestedArtifacts,
-  candidatesForCapture, unionRefs, analysisEvent, unchanged, lineageOf, recordId,
+  candidatesForCapture, unsupportedCapture, unionRefs, analysisEvent, unchanged, lineageOf, recordId,
 } from './evidence.mjs';
 
 export { ARCHITECTURE_PROFILES, ARCHITECTURE_NAMESPACE, ARCHITECTURE_VERSION } from './profile.mjs';
 export { ARCHITECTURE_LIMITS } from './evidence.mjs';
 const capabilities = { boolean: { probability: true }, choice: { probabilities: true, confidence: true } };
 const knownKind = value => ['application', 'component'].includes(value);
+const FAILURE_CODES = new Set([
+  'authentication_failed', 'missing_key', 'deadline_exceeded', 'remote_cooldown', 'queue_full',
+  'request_too_large', 'response_too_large', 'transport_failure', 'http_error', 'request_rejected',
+  'unknown_profile', 'invalid_input', 'invalid_result', 'invalid_bundle', 'invalid_response',
+]);
 const currentPolicy = policy => createPolicy(typeof policy === 'function' ? policy() : policy);
 const versionRef = artifact => ({ artifactId: artifact.id, hash: artifact.hash, generation: artifact.generation });
 const supported = answer => isProbability(answer?.probability) && answer.probability >= thresholds.nodeSupportMin;
@@ -198,6 +203,7 @@ function membershipAnswers(result, evaluation) {
 export async function analyzeArchitecture({ model, artifacts = [], service, policy, signal, affectedArtifactIds } = {}) {
   const coverage = {
     requestedArtifactIds: [], analyzedArtifactIds: [], deferredArtifactIds: [], unavailableArtifactIds: [],
+    withheldArtifactIds: [], unsupportedArtifactIds: [], failedArtifactIds: [],
     missingArtifactIds: [], withdrawnEntityIds: [], deferredMembershipArtifactIds: [],
     unknownArtifactIds: [], omittedCandidates: 0, membershipProposals: 0, membershipChecks: 0,
     deferredMemberships: 0, supportedBoundaries: 0, supportedMemberships: 0, unknownMemberships: 0, complete: false,
@@ -251,6 +257,8 @@ export async function analyzeArchitecture({ model, artifacts = [], service, poli
       const size = typeof capture.text === 'string' ? Buffer.byteLength(capture.text) : 0;
       const selected = candidatesForCapture(capture, index, event, consent);
       if (!selected) {
+        if (capture.sourceReason === 'source_withheld' && capture.text === null) coverage.withheldArtifactIds.push(artifactId);
+        else if (unsupportedCapture(capture, index, consent)) coverage.unsupportedArtifactIds.push(artifactId);
         coverage.unavailableArtifactIds.push(artifactId); partial = true; continue;
       }
       if (sourceBytes + size > L.sourceBytes) {
@@ -269,11 +277,14 @@ export async function analyzeArchitecture({ model, artifacts = [], service, poli
           }));
           check(); countRequests(result);
           kind = roleAnswer(result, selected, event, consent);
+          if (kind === undefined) diagnostics.failureCode ??= FAILURE_CODES.has(result?.diagnostics?.code)
+            ? result.diagnostics.code : 'decision_failure';
         } catch {
-          check(); kind = undefined;
+          check(); kind = undefined; diagnostics.failureCode ??= 'decision_failure';
         }
       }
       if (kind === undefined) {
+        coverage.failedArtifactIds.push(artifactId);
         coverage.unavailableArtifactIds.push(artifactId); partial = true; continue;
       }
       coverage.analyzedArtifactIds.push(artifactId);
@@ -310,7 +321,7 @@ export async function analyzeArchitecture({ model, artifacts = [], service, poli
         check(); countRequests(result);
         answers = membershipAnswers(result, evaluation);
         coverage.membershipChecks = pairs.length;
-      } catch { check(); partial = true; }
+      } catch { check(); partial = true; diagnostics.failureCode ??= 'decision_failure'; }
       // Only validated answers establish a versioned observation. A transient
       // failure leaves no pair record, so a later Discover can retry it.
       if (answers) pairs.forEach((pair, i) => {
@@ -329,8 +340,12 @@ export async function analyzeArchitecture({ model, artifacts = [], service, poli
       && affected.every(id => fresh.entities.get(id)?.validity === 'current' || coverage.withdrawnEntityIds.includes(id))
       && interpretations.every(value => value.entityIds.every(id => fresh.entities.get(id)?.validity === 'current')));
     coverage.complete = !partial;
-    diagnostics.code = partial ? 'architecture_partial'
-      : interpretations.length ? 'architecture_complete' : 'architecture_unknown';
+    diagnostics.code = diagnostics.failureCode ? 'analysis_failed'
+      : coverage.withheldArtifactIds.length ? 'source_withheld'
+        : coverage.unavailableArtifactIds.length > coverage.unsupportedArtifactIds.length ? 'source_unavailable'
+          : coverage.unsupportedArtifactIds.length ? 'unsupported_source'
+            : partial ? 'architecture_partial'
+              : interpretations.length ? 'architecture_complete' : 'architecture_unknown';
     return freeze({
       status: partial ? (affected.length ? 'partial' : 'unavailable') : 'complete',
       interpretations, sourceRefs, affectedEntityIds: affected, coverage, diagnostics,

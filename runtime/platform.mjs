@@ -27,6 +27,14 @@ export function createPlatform({
   let lastError = null;
   let active = null, processing = null, closed = false, finishedScanAt = null;
   let dispatchCursor = 0, parserCursor = 0, retryCursor = 0;
+  const initialInventory = { status: 'waiting', startedAt: null, finishedAt: null };
+
+  function finishInitialInventory(complete) {
+    if (initialInventory.status !== 'scanning') return;
+    initialInventory.status = complete ? 'complete' : 'partial';
+    initialInventory.finishedAt = now();
+    notify();
+  }
 
   function notify() {
     try {
@@ -159,6 +167,11 @@ export function createPlatform({
     async discover({ limit = 64 } = {}) {
       if (closed) return [];
       const batchLimit = integer(limit, 1) ? Math.min(limit, 64) : 64;
+      if (initialInventory.status === 'waiting') {
+        initialInventory.status = 'scanning';
+        initialInventory.startedAt = now();
+        notify();
+      }
       try {
         if (finishedScanAt !== null) {
           if (now() - finishedScanAt < 5000) return dispatch(batchLimit);
@@ -168,16 +181,26 @@ export function createPlatform({
         }
         const result = await inventory.next({ limit: batchLimit });
         model.observeInventory(result);
-        if (!result.continuation) finishedScanAt = now();
+        if (!result.continuation) {
+          finishedScanAt = now();
+          finishInitialInventory(result.coverage.complete);
+        }
         for (const file of result.paths.filter(eligiblePath)) {
           if (undispatched.size < TRACKED_LIMIT) undispatched.add(path.join(projectRoot, file));
           else errors.omitted++;
         }
         return dispatch(batchLimit);
       } catch {
+        finishInitialInventory(false);
         failure('inventory.failed');
         return dispatch(batchLimit);
       }
+    },
+    getDiscoveryStatus() {
+      return {
+        inventory: { ...initialInventory },
+        sourceWithheld: [...latest.values()].filter(value => value.status === 'present' && value.withheld).length,
+      };
     },
     observeArtifacts(artifacts, event, { priority = false } = {}) {
       if (closed || !Array.isArray(artifacts)) return;
@@ -199,7 +222,8 @@ export function createPlatform({
         const effective = currentPolicy(policy);
         const name = relativePath(input.relativePath, effective);
         const artifact = { id: input.id, relativePath: name, hash: input.hash,
-          generation: input.generation, status: input.status, complete: input.complete === true, lineageId, lineageEpoch };
+          generation: input.generation, status: input.status, complete: input.complete === true, lineageId, lineageEpoch,
+          withheld: input.sourceReason === 'source_withheld' };
         latest.set(input.id, artifact);
         if (processing?.id === input.id && (processing.version !== version(artifact) || artifact.status !== 'present')) {
           processing.controller.abort();

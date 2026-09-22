@@ -3,6 +3,7 @@ import { LIMITS, hash, isHash, isId, integer, opaque } from '../core/common.mjs'
 import { createPolicy, metadataEvent, safeLabel, safeText } from '../core/privacy.mjs';
 import { buildModuleCandidates } from '../core/candidates.mjs';
 import { id, references, relativePath } from '../model/records.mjs';
+import { sourceLanguage } from '../discovery/structure.mjs';
 import { ARCHITECTURE_NAMESPACE } from './profile.mjs';
 
 export const ARCHITECTURE_LIMITS = Object.freeze({
@@ -45,7 +46,12 @@ export function indexModel(model, policy) {
   const relations = model.relations.filter(value => value?.validity === 'current'
     && value.basis === 'parsed' && entities.has(value.source) && entities.has(value.target)
     && ['contains', 'imports', 'calls', 'depends_on'].includes(value.kind) && currentRefs(value.sourceRefs));
-  return { entities, artifacts, byArtifact, relations, currentRefs };
+  const capabilities = new Map((model.coverage.enumerations ?? []).slice(0, 10_000).flatMap(value => {
+    const artifact = artifacts.get(value.artifactId);
+    return artifact?.hash === value.hash && artifact?.generation === value.generation
+      ? [[value.artifactId, value.capability]] : [];
+  }));
+  return { entities, artifacts, byArtifact, relations, currentRefs, capabilities };
 }
 
 export function moduleForArtifact(index, artifactId) {
@@ -90,6 +96,10 @@ export function candidatesForCapture(capture, index, event, policy) {
   const { candidates, omitted } = buildModuleCandidates({ event, artifact: capture, policy });
   return { anchor, candidates, omitted,
     sourceRef: { artifactId: capture.id, hash: capture.hash, generation: capture.generation } };
+}
+export function unsupportedCapture(capture, index, policy) {
+  return index.capabilities.get(capture.id) === 'unsupported'
+    || Boolean(relativePath(capture.relativePath, policy) && !sourceLanguage(capture.relativePath));
 }
 export function unionRefs(...groups) {
   const refs = new Map(groups.flat().map(ref => [JSON.stringify(ref), structuredClone(ref)]));

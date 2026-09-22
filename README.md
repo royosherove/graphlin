@@ -72,6 +72,49 @@ Try the offline demo—no key or agent required:
 npx --yes graphlin@latest demo
 ```
 
+## How it works
+
+The local diagram works without Jev. Optional requests require source consent
+and local filtering, which can withhold whole files containing detected secrets.
+
+```mermaid
+sequenceDiagram
+    box rgba(59,130,246,0.08) Your machine
+        participant H as Agent hooks / repo scan
+        participant P as Pipeline + local parser
+        participant V as Project model + viewer
+        participant D as DecisionService<br/>replaceable provider
+    end
+    box rgba(168,85,247,0.08) Optional external service
+        participant J as Jev / TypeSafe
+    end
+    H->>P: Tool events + changed files
+    P->>V: Parsed model + immediate exact-file activity
+    P->>D: Source consent + locally filtered input
+    alt Source analysis: classify / analyze
+        D->>J: A — filtered text; privacy + relevance
+        J-->>D: Intake verdicts
+        D->>D: Select approved candidates locally
+        opt Approved candidates remain
+            D->>J: B — approved text; roles, links or boundaries
+            J-->>D: Decisions
+        end
+    else Structured metadata: evaluate
+        D->>J: Bounded metadata — membership or activity targets
+        J-->>D: Decisions
+    end
+    D-->>P: Results + evidence references
+    P->>V: Revalidate, apply, stream authenticated snapshots / SSE
+```
+
+**Source and architecture:** session/tool captures, changed source and public
+messages can trigger `classify` for roles/links. Startup, source changes or
+**Discover** trigger `analyze` for architecture boundaries; `evaluate` can then
+check proposed membership pairs.
+
+**Read/Edit:** the exact file highlights immediately. A bounded `evaluate` call
+can add related symbols using filtered labels, ownership and safe line ranges.
+
 ## More
 
 [User guide](docs/usage.md) · [Views](docs/visualizer-views.md) · [Design](docs/graphlin-design.md) ·

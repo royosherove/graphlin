@@ -10,6 +10,7 @@ export const STRUCTURE_LIMITS = Object.freeze({
 });
 const LANGUAGES = { '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript', '.jsx': 'javascript',
   '.ts': 'typescript', '.mts': 'typescript', '.cts': 'typescript', '.tsx': 'tsx', '.py': 'python', '.pyi': 'python' };
+export const sourceLanguage = relativePath => LANGUAGES[path.posix.extname(relativePath).toLowerCase()] ?? null;
 const DECLARATIONS = {
   class_declaration: 'class', abstract_class_declaration: 'class', class_definition: 'class',
   function_declaration: 'function', generator_function_declaration: 'function',
@@ -50,7 +51,7 @@ export async function extractStructure({
       relativePath.split('/').some(part => !part || part === '..' || part === '.') || /[\\\0\r\n]/.test(relativePath) ||
       !Number.isSafeInteger(generation) || generation < 1 || !isHash(hash)) throw new TypeError('INVALID_STRUCTURE_INPUT');
   const limits = budget(options);
-  const language = LANGUAGES[path.posix.extname(relativePath).toLowerCase()] ?? null;
+  const language = sourceLanguage(relativePath);
   const scopeId = opaque('entity', IDENTITY_VERSION, artifactId, language, 'module');
   const omissions = [];
   const omit = reason => { if (!omissions.includes(reason)) omissions.push(reason); };

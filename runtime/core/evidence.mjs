@@ -93,9 +93,11 @@ export class EvidenceStore {
         return { status: 'partial', exists: true, complete: false, hash: hash(bytes), text: null, stamp };
       }
       if (text.includes('\0')) return { status: 'partial', exists: true, complete: false, hash: hash(bytes), text: null, stamp };
+      const withheld = privateText(text);
       return {
         status: 'present', exists: true, complete: true, hash: hash(bytes),
-        text: !privateText(text) ? text : null, stamp,
+        text: withheld ? null : text, stamp,
+        ...(withheld ? { sourceReason: 'source_withheld' } : {}),
       };
     } catch {
       // A disappearing/racing file during open/read is uncertainty. A subsequent
@@ -125,6 +127,7 @@ export class EvidenceStore {
       id, path: locator.absolute, relativePath: locator.relative,
       hash: observed.hash, generation, exists: observed.exists, status: observed.status,
       text: observed.text, complete: observed.complete,
+      ...(observed.sourceReason ? { sourceReason: observed.sourceReason } : {}),
     };
     // Registry retains no source bytes; returned captures are immutable private
     // snapshots. All path/cache cardinalities are bounded.
