@@ -28,7 +28,8 @@ files. These were added; none of those files had been tracked.
 
 Prevention now includes explicit local AWS commit hooks and a separate CI job
 using pinned, checksum-verified AWS git-secrets and Gitleaks. CI security checks
-gate npm publication. Existing package-content checks remain in place. See
+gate npm publication, including checks for merge resolutions and historical
+commit messages. Existing package-content checks remain in place. See
 [Contributing](../CONTRIBUTING.md) for installation and checks.
 
 No findings required credential rotation or Git history rewriting. Scanning

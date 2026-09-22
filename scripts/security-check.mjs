@@ -26,10 +26,11 @@ const baseEnv = () => ({
 });
 const gitOptions = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
   '-c', 'core.quotePath=false', '-c', 'log.showSignature=false'];
-// Upstream history uses git log -G. Keep that read from executing a repository's
-// diff/textconv program; scanner code and all arguments remain separately quoted.
+// Upstream history uses git log -G. Include merge diffs against each parent:
+// a resolution can introduce a credential absent from both parent commits.
+// Keep reads from executing diff/textconv programs; arguments stay quoted.
 const scannerShell = `git() {
-  if [ "$1" = log ]; then shift; command git -c log.showSignature=false log --no-ext-diff --no-textconv "$@";
+  if [ "$1" = log ]; then shift; command git -c log.showSignature=false log -m --full-history --no-ext-diff --no-textconv "$@";
   else command git "$@"; fi
 }
 source "$1" "\${@:2}"`;
@@ -189,8 +190,9 @@ export async function checkSecurity({ projectRoot = process.cwd(), mode = 'stage
       const history = await tool(['--scan-history']);
       if (history.code !== 0) {
         if (history.code !== 1) throw fail('security_check_unavailable');
-        const revisions = (await securityGit(temporary,
-          ['log', '--all', '--no-ext-diff', '--no-textconv', `-G${combined}`, '--format=%H'], env)).trim().split('\n');
+        const revisions = [...new Set((await securityGit(temporary,
+          ['log', '--all', '-m', '--full-history', '--no-ext-diff', '--no-textconv',
+            `-G${combined}`, '--format=%H'], env)).trim().split('\n'))];
         if (!revisions.length || revisions.some(value => !/^[a-f0-9]{40,64}$/.test(value))) throw fail('security_check_unavailable');
         for (let i = 0; i < revisions.length; i += 128) {
           findings.push(...await locations([...revisions.slice(i, i + 128), '--']));
@@ -226,7 +228,7 @@ export async function checkGenericSecurity({ projectRoot = process.cwd(), scanne
     // allowances/fingerprint baselines may suppress the required CI scan.
     await writeFile(config, '[extend]\nuseDefault = true\n', { mode: 0o600 });
     await writeFile(ignore, '', { mode: 0o600 });
-    const result = await runTool(scannerPath, ['git', repo.root, '--log-opts=--all --full-history --no-ext-diff --no-textconv --no-show-signature',
+    const result = await runTool(scannerPath, ['git', repo.root, '--log-opts=--all --full-history -m --no-ext-diff --no-textconv --no-show-signature',
       '--config', config, '--gitleaks-ignore-path', ignore, '--ignore-gitleaks-allow',
       '--no-banner', '--no-color', '--redact=100', '--timeout=120',
       '--report-format=json', '--report-path', report], { cwd: temporary, env: { ...baseEnv(), HOME: temporary } });

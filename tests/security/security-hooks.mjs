@@ -171,6 +171,32 @@ test('an empty history passes but a shallow history fails closed', async t => {
   await assert.rejects(scan(root, { mode: 'history' }), { code: 'security_shallow_history' });
 });
 
+test('history detects credentials introduced only by a merge resolution and later deleted', async t => {
+  const root = await repository(t);
+  await stage(root, 'README.md', 'clean base\n');
+  await git(root, 'commit', '--quiet', '-m', 'synthetic base');
+  const initialBranch = (await git(root, 'branch', '--show-current')).trim();
+  await git(root, 'checkout', '--quiet', '-b', 'fixture-feature');
+  await stage(root, 'feature.txt', 'clean feature\n');
+  await git(root, 'commit', '--quiet', '-m', 'synthetic feature');
+  await git(root, 'checkout', '--quiet', initialBranch);
+  await stage(root, 'main.txt', 'clean main\n');
+  await git(root, 'commit', '--quiet', '-m', 'synthetic main');
+  await git(root, 'merge', '--no-ff', '--no-commit', 'fixture-feature');
+  await stage(root, 'merge-only.txt', `${accessKey()}\ntoken=${npmToken()}\n`);
+  await git(root, 'commit', '--quiet', '-m', 'synthetic merge resolution');
+  const merge = (await git(root, 'rev-parse', 'HEAD')).trim();
+  assert.equal((await git(root, 'rev-list', '--parents', '-n', '1', merge)).trim().split(' ').length, 3);
+  await git(root, 'rm', '--', 'merge-only.txt');
+  await git(root, 'commit', '--quiet', '-m', 'clean merge result');
+  assert.deepEqual(await scan(root), []);
+  const aws = await scan(root, { mode: 'history' });
+  assert.ok(aws.some(row => row.file === securityFileId(`${merge}:merge-only.txt`) && row.rule === 'aws-access-key-id'));
+  const generic = await checkGenericSecurity({ projectRoot: root, scannerPath: genericScanner });
+  assert.ok(generic.some(row => row.file === securityFileId('merge-only.txt') && row.rule === 'npm-access-token'));
+  redacted([...aws, ...generic], [accessKey(), npmToken()]);
+});
+
 test('hook installation is opt-in and idempotent, preserves config and other hooks', async t => {
   const root = await repository(t);
   await mkdir(path.join(root, '.git', 'hooks'), { recursive: true });
