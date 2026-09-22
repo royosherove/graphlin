@@ -92,11 +92,11 @@ sequenceDiagram
     P->>V: Parsed model + immediate exact-file activity
     P->>D: Source consent + locally filtered input
     alt Source analysis: classify / analyze
-        D->>J: A — filtered text; privacy + relevance
+        D->>J: A — filtered text, privacy + relevance
         J-->>D: Intake verdicts
         D->>D: Select approved candidates locally
         opt Approved candidates remain
-            D->>J: B — approved text; roles, links or boundaries
+            D->>J: B — approved text, roles, links or boundaries
             J-->>D: Decisions
         end
     else Structured metadata: evaluate
