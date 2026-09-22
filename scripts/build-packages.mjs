@@ -64,15 +64,11 @@ export async function buildPackages({ outputDir = path.join(SOURCE, 'dist'), sou
   // Preflight every output before replacing even the first generated profile.
   // Parent links are rejected too, including links above outputDir.
   await assertDestination(output, { directory: true });
-  for (const profile of ['portable', 'claude', 'codex']) {
+  for (const profile of ['portable', 'claude', 'codex', 'kiro']) {
     const target = path.join(output, profile, 'graphlin');
     await assertDestination(target, { directory: true });
     await assertDestination(path.join(target, '.graphlin-package'));
   }
-  const kiro = path.join(output, 'kiro');
-  await assertDestination(kiro, { directory: true });
-  await assertDestination(path.join(kiro, 'profile.json'));
-  await assertDestination(path.join(kiro, 'README.md'));
   const marketplaceDirectory = path.join(output, 'codex', '.agents', 'plugins');
   const marketplaceFile = path.join(marketplaceDirectory, 'marketplace.json');
   await assertDestination(marketplaceDirectory, { directory: true });
@@ -86,7 +82,7 @@ export async function buildPackages({ outputDir = path.join(SOURCE, 'dist'), sou
   await validatePackage(source);
   await destinationDirectory(output);
   const built = [];
-  for (const profile of ['portable', 'claude', 'codex']) {
+  for (const profile of ['portable', 'claude', 'codex', 'kiro']) {
     const parent = path.join(output, profile), target = path.join(parent, 'graphlin');
     await destinationDirectory(parent);
     const temporary = path.join(parent, `.graphlin-${randomUUID()}`);
@@ -109,7 +105,21 @@ export async function buildPackages({ outputDir = path.join(SOURCE, 'dist'), sou
           mcpServers: { graphlin: { type: 'stdio', command: 'node', args: ['${PLUGIN_ROOT}/scripts/control.mjs'] } },
         }, null, 2)}\n`);
       }
-      if (profile === 'portable') {
+      if (profile === 'kiro') {
+        // Kiro loads MCP servers and hooks from the agent config, not a
+        // marketplace. Ship a mergeable agent-config fragment (hooks + MCP
+        // server) that references the package via ${GRAPHLIN_PLUGIN_ROOT},
+        // which the installer sets to this package's absolute path.
+        const kiroHooks = JSON.parse(await readFile(path.join(temporary, 'adapters/kiro/hooks.json'), 'utf8'));
+        await mkdir(path.join(temporary, '.kiro-plugin'), { recursive: true });
+        await writeFile(path.join(temporary, '.kiro-plugin', 'agent-config.json'), `${JSON.stringify({
+          mcpServers: {
+            graphlin: { command: 'node', args: ['${GRAPHLIN_PLUGIN_ROOT}/scripts/control.mjs'] },
+          },
+          ...kiroHooks,
+        }, null, 2)}\n`);
+      }
+      if (profile === 'portable' || profile === 'kiro') {
         const manifest = JSON.parse(await readFile(path.join(temporary, 'plugin.json'), 'utf8'));
         delete manifest.extensions;
         await writeFile(path.join(temporary, 'plugin.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -120,7 +130,7 @@ export async function buildPackages({ outputDir = path.join(SOURCE, 'dist'), sou
       await writeFile(path.join(temporary, 'PACKAGE-NOTES.md'),
         `# Graphlin ${profile} package\n\nNode.js 22.14+; macOS/Linux. Self-contained runtime and parser bundle; no dependency install.\n` +
         'Run scripts/graphlin.mjs --help for local controls. This package does not install itself.\n' +
-        'Hook activation/trust has not been certified. Kiro is inactive and experimental.\n' +
+        'Hook activation/trust has not been certified for any host.\n' +
         'See adapters/README.md and skills/graphlin/SKILL.md for privacy and coverage.\n');
       await validatePackage(temporary);
       await assertDestination(target, { directory: true });
@@ -138,9 +148,6 @@ export async function buildPackages({ outputDir = path.join(SOURCE, 'dist'), sou
       built.push({ profile, directory: target });
     } finally { await rm(temporary, { recursive: true, force: true }); }
   }
-  await destinationDirectory(kiro);
-  await publishFile(path.join(kiro, 'profile.json'), await readFile(path.join(source, 'adapters/kiro/profile.json')));
-  await publishFile(path.join(kiro, 'README.md'), '# Kiro: inactive experimental profile\n\nNo active hooks or installable plugin are generated. See profile.json.\n');
   await destinationDirectory(marketplaceDirectory);
   await publishFile(marketplaceFile, `${JSON.stringify({
     name: 'graphlin-local',

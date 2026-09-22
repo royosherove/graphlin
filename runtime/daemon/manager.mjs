@@ -285,10 +285,10 @@ export async function doctor({ projectRoot, dataDir } = {}) {
   const settings = settingsResult.value ?? {};
   const packages = settings.installation ? await inspectInstalledPackages({
     dataDir: (await projectPaths(projectRoot, dataDir)).dataDir, version: settings.installation.version,
-  }).catch(() => ({ claude: false, codex: false })) : {};
+  }).catch(() => ({ claude: false, codex: false, kiro: false })) : {};
   const credential = (process.env.TYPESAFE_API_KEY ?? settings.apiKey) ? 'configured_not_verified' : 'missing';
   const received = status.running ? status.observations?.hooks ?? {} : {};
-  const hosts = Object.fromEntries(Object.entries({ claude, codex }).map(([host, hostVersion]) => [host, {
+  const hosts = Object.fromEntries(Object.entries({ claude, codex, kiro }).map(([host, hostVersion]) => [host, {
     version: hostVersion,
     installation: settings.installation?.hosts.includes(host) ? 'recorded' : 'not_recorded',
     setupPending: settings.installation?.pendingHosts?.includes(host) ?? false,
@@ -318,8 +318,7 @@ export async function doctor({ projectRoot, dataDir } = {}) {
   return {
     runtime: { node: process.versions.node, supported: Number(process.versions.node.split('.')[0]) >= 22,
       platform: process.platform, privateIPC: process.platform !== 'win32' },
-    hosts: { ...hosts,
-      kiro: { version: kiro, activation: 'inactive_experimental' } },
+    hosts,
     daemon: status,
     coverage: Object.values(received).some(count => count > 0) ? 'hook_delivery_observed' : 'host_activation_unverified',
     credential, settings: settingsResult.error ?? 'readable', nextActions,

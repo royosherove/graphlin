@@ -1,8 +1,26 @@
 {
   "host": "kiro",
-  "enabled": false,
-  "experimental": true,
-  "activation": "not_certified",
-  "events": [],
-  "reason": "IDE and CLI trigger/payload and passive-launch contracts require separate release-specific certification."
+  "platforms": [
+    "darwin",
+    "linux"
+  ],
+  "events": [
+    "agentSpawn",
+    "userPromptSubmit",
+    "preToolUse",
+    "postToolUse",
+    "stop"
+  ],
+  "activation": "not_verified",
+  "capture": "bounded_private_ipc",
+  "automaticDaemonStart": false,
+  "config": {
+    "kind": "agent-hooks",
+    "location": "~/.kiro/agents/<agent>.json or .kiro/agents/<agent>.json",
+    "format": "object",
+    "trigger": "hooks",
+    "payloadOnStdin": true,
+    "cwdField": "cwd",
+    "note": "Kiro delivers a bounded JSON hook event on STDIN carrying cwd, hook_event_name, tool_name, tool_input and tool_response. The collector reads it and hands off through the private Unix socket, then exits 0."
+  }
 }

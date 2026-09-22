@@ -124,6 +124,12 @@ const EVENTS = Object.freeze({
   Interrupt: 'tool.interrupted', Stop: 'turn.stopped', SessionEnd: 'session.ended',
   SubagentStart: 'agent.started', SubagentStop: 'agent.stopped',
   AssistantMessage: 'intent.observed', PublicMessage: 'intent.observed',
+  // Kiro emits camelCase hook_event_name values (docs: features/hooks). Its
+  // agentSpawn is the session-start trigger and it has no failure trigger, so
+  // a failed tool is distinguished from the PostToolUse tool_response below.
+  agentSpawn: 'session.started', userPromptSubmit: 'turn.prompted',
+  preToolUse: 'tool.requested', postToolUse: 'tool.succeeded',
+  stop: 'turn.stopped',
 });
 const TOOLS = new Map([
   ['read', 'read'], ['read_file', 'read'], ['readfile', 'read'],
@@ -133,6 +139,11 @@ const TOOLS = new Map([
   ['shell', 'shell'], ['terminal', 'shell'], ['test', 'test'],
   ['grep', 'search'], ['glob', 'search'], ['search', 'search'],
   ['webfetch', 'other'], ['websearch', 'other'],
+  // Kiro built-in tool names (docs: features/hooks tool matching table).
+  ['fs_read', 'read'], ['fsread', 'read'],
+  ['fs_write', 'write'], ['fswrite', 'write'],
+  ['execute_cmd', 'shell'], ['executebash', 'shell'], ['executecmd', 'shell'],
+  ['web_fetch', 'other'], ['web_search', 'other'],
 ]);
 const boundedString = (value, max = 1024) => typeof value === 'string' && value.length <= max ? value : '';
 const safeIdentity = (value, prefix, ...scope) => isId(value) ? value : opaque(prefix, ...scope, boundedString(value));

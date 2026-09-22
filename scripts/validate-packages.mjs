@@ -149,9 +149,18 @@ export async function validatePackage(root) {
     assert.equal(manifest.extensions['com.openai'].hooks, './adapters/codex/hooks.json');
     assert.ok(manifest.extensions['com.openai'].interface.displayName);
   }
-  const kiro = await json('adapters/kiro/profile.json');
-  assert.equal(kiro.enabled, false);
-  assert.deepEqual(kiro.events, []);
+  const kiro = await json('adapters/kiro/profile.json'), kiroHooks = await json('adapters/kiro/hooks.json');
+  assert.equal(kiro.activation, 'not_verified', 'kiro_profile_activation');
+  assert.deepEqual(Object.keys(kiroHooks.hooks).sort(), [...kiro.events].sort(), 'kiro_hooks_match_events');
+  // Kiro uses the object hook format (command + timeout_ms directly), not the
+  // nested {hooks:[{type,command}]} shape Claude/Codex use.
+  for (const group of Object.values(kiroHooks.hooks)) for (const hook of group) {
+    assert.equal(typeof hook.command, 'string', 'kiro_hook_command_string');
+    assert.equal(hook.timeout_ms, 2000, 'kiro_hook_timeout');
+    assert.match(hook.command, /if \[ -r /);
+    assert.match(hook.command, />\/dev\/null 2>&1; exit 0$/);
+    assert.ok(hook.command.includes('/scripts/collect.sh" kiro'), 'kiro_hook_invokes_collector');
+  }
   return { valid: true, profile: 'graphlin-local-manifests', hostActivationVerified: false };
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

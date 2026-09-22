@@ -12,7 +12,7 @@ import { workspace } from './helpers.mjs';
 const exec = promisify(execFile);
 
 test('package preflight rejects linked output files and destination ancestors without writes', async t => {
-  for (const destination of ['kiro/README.md', 'kiro/profile.json', 'kiro', 'portable',
+  for (const destination of ['kiro', 'kiro/graphlin', 'kiro/graphlin/.graphlin-package', 'portable',
     'claude/graphlin', 'codex/graphlin/.graphlin-package', 'codex/.agents', 'codex/.agents/plugins',
     'codex/.agents/plugins/marketplace.json', 'output', 'ancestor']) {
     await t.test(destination, async t => {
@@ -41,17 +41,19 @@ test('package preflight rejects linked output files and destination ancestors wi
   }
 });
 
-test('repeat builds include a portable local Codex marketplace and an inactive Kiro profile', async t => {
+test('repeat builds include a portable local Codex marketplace and an activated Kiro package', async t => {
   const { base } = await workspace(t), outputDir = path.join(base, 'packages with spaces');
   for (let generation = 0; generation < 2; generation++) {
     const packages = await buildPackages({ outputDir });
-    assert.equal(packages.length, 3);
+    assert.equal(packages.length, 4);
     for (const { directory } of packages) assert.equal((await validatePackage(directory)).valid, true);
-    const kiro = path.join(outputDir, 'kiro');
-    assert.equal((await lstat(path.join(kiro, 'README.md'))).isSymbolicLink(), false);
-    assert.match(await readFile(path.join(kiro, 'README.md'), 'utf8'), /inactive experimental/);
-    assert.equal(JSON.parse(await readFile(path.join(kiro, 'profile.json'), 'utf8')).enabled, false);
-    assert.deepEqual((await readdir(kiro)).sort(), ['README.md', 'profile.json']);
+    const kiro = path.join(outputDir, 'kiro', 'graphlin');
+    assert.equal((await lstat(path.join(kiro, '.kiro-plugin/agent-config.json'))).isSymbolicLink(), false);
+    const kiroProfile = JSON.parse(await readFile(path.join(kiro, 'adapters/kiro/profile.json'), 'utf8'));
+    assert.equal(kiroProfile.activation, 'not_verified');
+    const kiroConfig = JSON.parse(await readFile(path.join(kiro, '.kiro-plugin/agent-config.json'), 'utf8'));
+    assert.deepEqual(Object.keys(kiroConfig.hooks).sort(), [...kiroProfile.events].sort());
+    assert.equal(await readFile(path.join(kiro, '.graphlin-package'), 'utf8'), 'kiro');
     const marketplace = JSON.parse(await readFile(path.join(outputDir, 'codex/.agents/plugins/marketplace.json'), 'utf8'));
     assert.deepEqual(marketplace, {
       name: 'graphlin-local', interface: { displayName: 'Graphlin local' },

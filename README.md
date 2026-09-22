@@ -47,9 +47,22 @@ claude
 codex
 ```
 
+**Kiro**
+
+Kiro loads hooks and MCP servers from its agent config rather than a plugin
+marketplace. The built package ships a mergeable fragment at
+`kiro/graphlin/.kiro-plugin/agent-config.json` (the `hooks` block plus the
+Graphlin MCP server). Merge its `hooks` and `mcpServers` into your Kiro agent
+config (`~/.kiro/agents/<agent>.json` or `.kiro/agents/<agent>.json`), and set
+`GRAPHLIN_PLUGIN_ROOT` to the absolute path of that `kiro/graphlin` directory so
+the hook and MCP commands resolve. Start a new Kiro session and use **`/hooks`**
+to confirm Graphlin's five triggers are configured. Then ask:
+
+> Orient yourself in this project: read its main files and explain how the components connect.
+
 Accept the host's project trust prompt. In Claude, use **`/plugin`** to confirm
-Graphlin is enabled. In Codex, use **`/hooks`** to review and trust Graphlin's
-hooks. Start a new agent session after installation. Then ask either agent:
+Graphlin is enabled. In Codex or Kiro, use **`/hooks`** to review and trust
+Graphlin's hooks. Start a new agent session after installation. Then ask either agent:
 
 > Orient yourself in this project: read its main files and explain how the components connect.
 

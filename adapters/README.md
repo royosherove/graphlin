@@ -7,9 +7,9 @@ The native Claude manifest references its own hook profile and `.mcp.json`
 uses Claude's root-variable substitution.
 
 `scripts/build-packages.mjs` generates self-contained `portable/graphlin`,
-`claude/graphlin`, and `codex/graphlin` directories from this source tree.
-No package contains machine-specific paths, a credential, installed config,
-or a marketplace. The portable package contains skills and an MCP server;
+`claude/graphlin`, `codex/graphlin`, and `kiro/graphlin` directories from this
+source tree. No package contains machine-specific paths, a credential, installed
+config, or a marketplace. The portable package contains skills and an MCP server;
 native hook behavior is an extension, not a portable observation guarantee.
 
 All hook commands call the same guarded POSIX launcher with their host name.
@@ -27,6 +27,15 @@ private-pipe ACLs and launch behavior are not certified. Default data is
 Package tests exercise fixtures, launcher outages, local IPC, MCP, and relocated
 package paths. They do not certify that host hooks are loaded, trusted, or active.
 
-Kiro has only an inactive experimental profile. The builder emits that profile
-and this scope note, not an active Kiro plugin or hooks. Nothing in this
-repository installs or edits the user's host configuration.
+Kiro is an active adapter. It uses Kiro's agent-hook contract (docs:
+features/hooks): hooks live in the agent config JSON (`~/.kiro/agents/<agent>.json`
+or `.kiro/agents/<agent>.json`) under a `hooks` object keyed by trigger
+(`agentSpawn`, `userPromptSubmit`, `preToolUse`, `postToolUse`, `stop`). Kiro
+delivers a bounded JSON hook event on STDIN carrying `cwd`, `hook_event_name`,
+`tool_name`, `tool_input`, and `tool_response`; each hook command calls the same
+guarded `collect.sh kiro` launcher, which hands off through the private Unix
+socket and exits 0. The builder emits a `kiro/graphlin` package plus a mergeable
+`.kiro-plugin/agent-config.json` fragment (hooks + the Graphlin MCP server) that
+references the package through `${GRAPHLIN_PLUGIN_ROOT}`. As with every host,
+activation/trust is the user's responsibility and is not certified by the package
+fixtures. Nothing in this repository edits the user's Kiro configuration.

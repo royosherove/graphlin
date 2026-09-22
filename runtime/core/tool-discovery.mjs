@@ -145,6 +145,9 @@ export function toolActivityTargets({ toolCategory, input = {} } = {}) {
   for (const key of ['paths', 'files']) {
     for (const value of Array.isArray(input[key]) ? input[key].slice(0, LIMITS.paths) : []) add(filePath(value));
   }
+  // Kiro's fs_read/fs_write tool_input nests targets in an operations[] array,
+  // each carrying a path (docs: features/hooks). Other hosts omit it.
+  for (const value of Array.isArray(input.operations) ? input.operations.slice(0, LIMITS.paths) : []) add(filePath(value));
   if (toolCategory === 'edit') {
     const patch = input.patch ?? input.input;
     if (typeof patch === 'string' && patch.length <= LIMITS.rawChars) {

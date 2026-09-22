@@ -36,16 +36,16 @@ test('MCP initializes, lists and calls all four controls without extra stdout', 
   assert.deepEqual(output[1].result.tools.map(tool => tool.name), ['start', 'stop', 'status', 'doctor']);
   assert.match(JSON.parse(output[2].result.content[0].text).url, /^http:\/\/127\.0\.0\.1:\d+\/#token=/);
   assert.equal(JSON.parse(output[3].result.content[0].text).status.classifier, 'metadata_only');
-  assert.equal(JSON.parse(output[4].result.content[0].text).hosts.kiro.activation, 'inactive_experimental');
+  assert.equal(JSON.parse(output[4].result.content[0].text).hosts.kiro.activation, 'not_verified');
   assert.equal(output[5].error.code, -32602);
   assert.equal(JSON.parse(output[6].result.content[0].text).stopped, true);
   assert.equal(result.stdout.includes('SENTINEL_NOT_FOR_METADATA'), false);
 });
 
-test('portable, Claude, and Codex bundles run after relocation outside the checkout', async t => {
+test('portable, Claude, Codex, and Kiro bundles run after relocation outside the checkout', async t => {
   const setup = await workspace(t);
   const packages = await buildPackages({ outputDir: path.join(setup.base, 'relocated packages with spaces') });
-  assert.equal(packages.length, 3);
+  assert.equal(packages.length, 4);
   for (const bundle of packages) {
     const root = bundle.directory;
     assert.equal((await validatePackage(root)).valid, true);
@@ -78,9 +78,13 @@ test('portable, Claude, and Codex bundles run after relocation outside the check
       bundle.profile === 'codex' ? '${PLUGIN_ROOT}/scripts/control.mjs' : '${CLAUDE_PLUGIN_ROOT}/scripts/control.mjs');
     assert.equal(JSON.stringify(portable).includes(setup.base), false);
   }
-  const kiro = JSON.parse(await readFile(path.join(setup.base, 'relocated packages with spaces/kiro/profile.json'), 'utf8'));
-  assert.equal(kiro.enabled, false);
-  await assert.rejects(stat(path.join(setup.base, 'relocated packages with spaces/kiro/plugin.json')));
+  const kiroProfile = JSON.parse(await readFile(path.join(setup.base,
+    'relocated packages with spaces/kiro/graphlin/adapters/kiro/profile.json'), 'utf8'));
+  assert.equal(kiroProfile.activation, 'not_verified');
+  const kiroConfig = JSON.parse(await readFile(path.join(setup.base,
+    'relocated packages with spaces/kiro/graphlin/.kiro-plugin/agent-config.json'), 'utf8'));
+  assert.deepEqual(Object.keys(kiroConfig.hooks).sort(), [...kiroProfile.events].sort());
+  assert.equal(kiroConfig.mcpServers.graphlin.args[0], '${GRAPHLIN_PLUGIN_ROOT}/scripts/control.mjs');
 });
 
 test('CLI demo creates only fixture state, exports it, and stops without remote credentials', async t => {

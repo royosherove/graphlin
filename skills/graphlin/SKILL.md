@@ -98,8 +98,9 @@ remain. Current project source/persistence consent resets, but a running viewer
 keeps its active policy until stopped. Do not delete data to uninstall.
 
 `doctor` reports versions and runtime connectivity; it does not
-claim hook activation or trust. Kiro's profile is inactive and experimental.
-Real host activation has not been certified by the package fixtures.
+claim hook activation or trust. Kiro is an active adapter alongside Claude and
+Codex; as with every host, real activation/trust has not been certified by the
+package fixtures and must be confirmed by the user.
 
 Explain diagram limits: source observations are not proof of runtime
 connectivity, generic successful commands do not verify architecture, missing

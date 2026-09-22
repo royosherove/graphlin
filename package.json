@@ -44,7 +44,8 @@
     "visualization",
     "mcp",
     "claude",
-    "codex"
+    "codex",
+    "kiro"
   ],
   "os": [
     "darwin",
@@ -65,6 +66,7 @@
     "./adapters/claude/profile.json",
     "./adapters/codex/hooks.json",
     "./adapters/codex/profile.json",
+    "./adapters/kiro/hooks.json",
     "./adapters/kiro/profile.json",
     "./docs/decision-service.md",
     "./docs/extension-authoring.md",

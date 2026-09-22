@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "agentSpawn": [
+      {
+        "command": "if [ -r \"${GRAPHLIN_PLUGIN_ROOT}/scripts/collect.sh\" ]; then /bin/sh \"${GRAPHLIN_PLUGIN_ROOT}/scripts/collect.sh\" kiro; fi >/dev/null 2>&1; exit 0",
+        "timeout_ms": 2000
+      }
+    ],
+    "userPromptSubmit": [
+      {
+        "command": "if [ -r \"${GRAPHLIN_PLUGIN_ROOT}/scripts/collect.sh\" ]; then /bin/sh \"${GRAPHLIN_PLUGIN_ROOT}/scripts/collect.sh\" kiro; fi >/dev/null 2>&1; exit 0",
+        "timeout_ms": 2000
+      }
+    ],
+    "preToolUse": [
+      {
+        "matcher": "*",
+        "command": "if [ -r \"${GRAPHLIN_PLUGIN_ROOT}/scripts/collect.sh\" ]; then /bin/sh \"${GRAPHLIN_PLUGIN_ROOT}/scripts/collect.sh\" kiro; fi >/dev/null 2>&1; exit 0",
+        "timeout_ms": 2000
+      }
+    ],
+    "postToolUse": [
+      {
+        "matcher": "*",
+        "command": "if [ -r \"${GRAPHLIN_PLUGIN_ROOT}/scripts/collect.sh\" ]; then /bin/sh \"${GRAPHLIN_PLUGIN_ROOT}/scripts/collect.sh\" kiro; fi >/dev/null 2>&1; exit 0",
+        "timeout_ms": 2000
+      }
+    ],
+    "stop": [
+      {
+        "command": "if [ -r \"${GRAPHLIN_PLUGIN_ROOT}/scripts/collect.sh\" ]; then /bin/sh \"${GRAPHLIN_PLUGIN_ROOT}/scripts/collect.sh\" kiro; fi >/dev/null 2>&1; exit 0",
+        "timeout_ms": 2000
+      }
+    ]
+  }
+}
