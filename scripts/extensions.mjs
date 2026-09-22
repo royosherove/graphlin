@@ -1,11 +1,11 @@
 import path from 'node:path';
-import { projectPaths, defaultDataDir } from '../runtime/daemon/paths.mjs';
+import { projectPaths } from '../runtime/daemon/paths.mjs';
 import { createExtensionRegistry, extensionError } from '../runtime/extensions/index.mjs';
 
 /** Parent CLI dispatches its already-parsed extension arguments here. This
  * module neither parses global CLI options nor starts/stops the daemon. */
 export async function runExtensions(args, {
-  projectRoot, dataDir = defaultDataDir(), signal, transport, output = process.stdout,
+  projectRoot, dataDir, signal, transport, output = process.stdout,
   registry: suppliedRegistry,
 } = {}) {
   if (!Array.isArray(args) || args.some(value => typeof value !== 'string')) throw extensionError('invalid_extension_arguments');
@@ -16,7 +16,7 @@ export async function runExtensions(args, {
   }
   let registry = suppliedRegistry;
   if (!registry) {
-    const paths = await projectPaths(projectRoot ?? process.cwd(), dataDir);
+    const paths = await projectPaths(projectRoot ?? process.cwd(), dataDir, { create: true });
     registry = await createExtensionRegistry({ dataDir: paths.dataDir, projectId: paths.projectId, transport });
   }
   const resolveSource = value => value.startsWith('.') || path.isAbsolute(value)

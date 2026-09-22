@@ -4,6 +4,8 @@ import { toolActivityTargets, toolResultPaths } from './tool-discovery.mjs';
 
 const DEFAULT_EXCLUDES = Object.freeze([
   '**/.git/**', '**/node_modules/**', '**/.env*', '**/.ssh/**', '**/.aws/**',
+  '**/.graphlin/**', '**/.graphlin-data/**', '**/.graphlin-local/**',
+  '**/.visualive/**', '**/.visualive-data/**',
   '**/.npmrc*', '**/.pypirc*', '**/.netrc*', '**/_netrc*', '**/.yarnrc*',
   '**/.gitconfig', '**/.dockercfg', '**/.docker/config.json', '**/.kube/config',
   '**/.config/gcloud/**', '**/.config/gh/hosts.yml', '**/.boto', '**/.s3cfg',

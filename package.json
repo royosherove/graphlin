@@ -1,6 +1,6 @@
 {
   "name": "graphlin",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Live architecture and activity diagrams from observable coding-agent work.",
   "private": false,
   "type": "module",
@@ -95,6 +95,7 @@
     "./runtime/daemon/lineage.mjs",
     "./runtime/daemon/lock.mjs",
     "./runtime/daemon/manager.mjs",
+    "./runtime/daemon/migration.mjs",
     "./runtime/daemon/model-api.mjs",
     "./runtime/daemon/model-persistence.mjs",
     "./runtime/daemon/paths.mjs",

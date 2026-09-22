@@ -29,7 +29,7 @@ prompt when no key is available. Keys never belong in command arguments or chat.
 
 Graphlin registers its local marketplaces and installs through the native host
 CLIs for your user account. It preserves unrelated host configuration. Versioned
-packages live under `~/.local/state/graphlin/plugins/graphlin/<version>`, outside
+packages live under `<repo>/.graphlin/plugins/graphlin/<version>`, outside
 the npm cache. The viewer opens automatically and stays in the foreground;
 **Ctrl+C** stops it. `--no-open` suppresses browser opening.
 
@@ -73,8 +73,8 @@ boundaries remain unknown.
 
 ## Consent and keys
 
-Consent belongs to the canonical project. The key and installed host list are
-shared within the data directory. The key is kept in a private user settings
+Consent, saved keys, and installation records belong to the canonical repository.
+The key is kept in `.graphlin/settings.json`, a private settings
 file (0600) in a private directory (0700), separate from evidence and exports.
 Source-enabled `init` also saves an environment-provided key for later launches.
 `TYPESAFE_API_KEY` overrides the saved key; an explicitly empty value disables
@@ -190,10 +190,49 @@ node scripts/graphlin.mjs export --project /path/to/your/app
 node scripts/graphlin.mjs stop --project /path/to/your/app
 ```
 
-State lives under `~/.local/state/graphlin` by default. Set
-`GRAPHLIN_DATA_DIR` or use `--data-dir` to choose another location.
+Graphlin keeps its writable data in **`.graphlin/` at the repository root**:
+saved keys and setup, session diagrams, the project model, diagnostic logs,
+versioned plugin packages, extension bundles, and extension approvals.
+Starting from a subdirectory or a symlink to the same checkout uses the same
+folder. Each Git worktree has its own folder. Outside Git, the directory you
+start in is the project root.
+
+Graphlin adds `/.graphlin/` to the root `.gitignore` before writing data.
+It also puts an ignore file inside `.graphlin/`, and excludes the directory from
+source discovery and explicit agent file captures. Directories are private (0700) and saved files are
+private (0600). Read-only status checks and passive hooks do not create storage.
+If `.graphlin/` files were already tracked, Graphlin refuses to write state:
+ignore rules do not remove files from Git's index. Review those files and remove
+them from the index while keeping your local copies before starting again.
+
+Set `GRAPHLIN_DATA_DIR` or use `--data-dir` for an explicit custom location.
+Use the same override in the viewer and agent terminals. Host-owned plugin
+registrations and caches remain managed by Claude Code or Codex; Graphlin's
+project data does not go there. Short-lived Unix sockets stay under the system
+temporary directory to support repositories with long paths.
+
 Source excerpts are ephemeral unless persistence is enabled. Retention and
 payload sizes are bounded.
+
+### Upgrading from home-directory storage
+
+Stop the old viewer with **Ctrl+C**, then run `npx --yes graphlin@latest` in the
+project. On its first setup or start, Graphlin copies that repository's validated
+state, model, settings, and complete diagnostic logs from the former
+`~/.local/state/graphlin` location. Existing local files win. The old data remains
+as a backup, and a completion record prevents repeated copying. A running old
+viewer must stop before migration; hooks and status checks never migrate data.
+
+Guided setup rebuilds plugin packages in `.graphlin/` and updates the host
+registration. Legacy extension packages need reinstalling and fresh approval.
+Their recovery inventory and this project's previous grants are retained in
+`.graphlin/<project-id>/legacy-extensions.json`; executable extension code and
+other projects' grants are not copied. Incomplete old diagnostic files remain in
+the backup and are listed in the migration record.
+
+Explicit `--data-dir` or `GRAPHLIN_DATA_DIR` overrides keep using the selected
+location and skip automatic migration. Unset an old override to use repository-local
+storage.
 
 ## Investigate a missing shape
 

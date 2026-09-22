@@ -42,7 +42,8 @@ async function readFile(filename, allowed) {
 }
 
 /**
- * User credentials/installation are shared by projects in one data directory.
+ * Credentials/installation live in the repository-local data directory.
+ * An explicit shared data-directory override can share them across projects.
  * Consent is scoped to the canonical project. Never serialize this result into
  * a diagnostic, MCP response, snapshot, browser payload, or subprocess argument.
  */

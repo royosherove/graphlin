@@ -57,9 +57,12 @@ the real pipeline using labeled offline answers. It never uses the paid API.
 Export prints the currently displayed, sanitized snapshot as JSON.
 
 The runtime supports private Unix sockets on macOS/Linux. Writable data defaults
-to `~/.local/state/graphlin`, outside the installed bundle; `GRAPHLIN_DATA_DIR`
-or CLI `--data-dir` can select another private directory. Hooks and controls
-must use the same data directory. Snapshots are atomically written with mode
+to `.graphlin/` in the canonical repository root, automatically ignored by Git
+and source discovery. This includes saved keys, settings, diagrams, logs, plugin
+packages, and extensions. Subdirectories of one checkout share this folder;
+worktrees keep separate state. Outside Git, the launch directory is the root.
+`GRAPHLIN_DATA_DIR` or CLI `--data-dir` can select another private directory.
+Hooks and controls must use the same data directory. Snapshots are atomically written with mode
 0600 and bounded to 2 MiB. Replay entries expire after seven days; an expired
 stopped-daemon snapshot is deleted on the next startup, not by a background job.
 Credentials, environment files, binary/oversized files, excluded paths, and

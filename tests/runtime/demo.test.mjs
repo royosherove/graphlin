@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readdir, readFile, stat, writeFile, mkdir, symlink } from 'node:fs/promises';
+import { mkdtemp, rm, readdir, readFile, stat, writeFile, mkdir, symlink, realpath, link } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -9,6 +9,7 @@ import {
 } from '../../runtime/daemon/demo.mjs';
 import { createPipeline } from '../../runtime/pipeline.mjs';
 import { ROLES, ROLE_SHAPES } from '../../runtime/core/common.mjs';
+import { canonicalProjectRoot, projectPaths } from '../../runtime/daemon/paths.mjs';
 
 async function setup(t, { onChange = () => {} } = {}) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'graphlin-demo-test-'));
@@ -133,7 +134,11 @@ test('parent can trigger the live change through the existing IPC capture-messag
 
 test('fixture files are private and reset excludes the optional live nodes; unmarked roots and unsafe action names are refused', async t => {
   const { projectRoot, dataDir, pipeline } = await setup(t);
-  for (const name of await readdir(projectRoot)) assert.equal((await stat(path.join(projectRoot, name))).mode & 0o777, 0o600);
+  for (const name of await readdir(projectRoot)) {
+    assert.equal((await stat(path.join(projectRoot, name))).mode & 0o777, name === '.git' ? 0o700 : 0o600);
+  }
+  for (const name of ['objects', 'refs']) assert.equal((await stat(path.join(projectRoot, '.git', name))).mode & 0o777, 0o700);
+  assert.equal((await stat(path.join(projectRoot, '.git/HEAD'))).mode & 0o777, 0o600);
   const live = await prepareDemoChange(projectRoot, { action: 'add' });
   await createDemoProject(dataDir);
   await assert.rejects(stat(live.payload.tool_input.file_path), { code: 'ENOENT' });
@@ -149,4 +154,109 @@ test('fixture files are private and reset excludes the optional live nodes; unma
   await assert.rejects(replayDemoChange({ getState: () => ({ mode: 'live' }) }, projectRoot, { action: 'remove' }),
     { code: 'demo_mode_required' });
   assert.equal(pipeline.getState().graph.nodes.length, 0);
+});
+
+test('default demo from a nested checkout uses ignored repo-local storage and scans only its own fixture', async t => {
+  const base = await mkdtemp(path.join(await realpath(tmpdir()), 'graphlin-demo-local-'));
+  let pipeline;
+  const previous = process.env.GRAPHLIN_DATA_DIR;
+  delete process.env.GRAPHLIN_DATA_DIR;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.GRAPHLIN_DATA_DIR;
+    else process.env.GRAPHLIN_DATA_DIR = previous;
+    await pipeline?.close();
+    await rm(base, { recursive: true, force: true });
+  });
+  const root = path.join(base, 'checkout'), nested = path.join(root, 'src/nested');
+  await mkdir(nested, { recursive: true });
+  await mkdir(path.join(root, '.git'));
+  await writeFile(path.join(root, '.gitignore'), 'keep-existing-rule\n');
+  await writeFile(path.join(root, 'outer.mjs'), 'export const EnclosingApplication = true;');
+  const project = await createDemoProject(undefined, { projectRoot: nested });
+  assert.equal(project, path.join(root, '.graphlin/demo-project'));
+  assert.equal(await canonicalProjectRoot(project), project);
+  assert.equal(await canonicalProjectRoot(nested), root);
+  const ignore = await readFile(path.join(root, '.gitignore'), 'utf8');
+  assert.equal(ignore, 'keep-existing-rule\n/.graphlin/\n');
+  assert.equal(await readFile(path.join(root, '.graphlin/.gitignore'), 'utf8'), '*\n');
+  assert.equal(await createDemoProject(undefined, { projectRoot: root }), project);
+  assert.equal(await readFile(path.join(root, '.gitignore'), 'utf8'), ignore);
+  await assert.rejects(stat(path.join(nested, '.graphlin')), { code: 'ENOENT' });
+  const paths = await projectPaths(project, path.join(root, '.graphlin'));
+  assert.equal(paths.projectRoot, project);
+  assert.equal(paths.dataDir, path.join(root, '.graphlin'));
+  pipeline = createPipeline({ projectRoot: project, mode: 'demo', policy: { readSource: true } });
+  await pipeline.reconcile();
+  await pipeline.whenIdle();
+  const model = pipeline.getModelState();
+  assert.ok(model.coverage.artifacts.some(value => value.relativePath === 'database.mjs'));
+  assert.ok(model.coverage.artifacts.every(value => !value.relativePath.includes('outer.mjs')));
+  assert.equal(model.entities.some(value => value.label === 'EnclosingApplication'), false);
+  assert.equal(await readFile(path.join(root, 'outer.mjs'), 'utf8'), 'export const EnclosingApplication = true;');
+});
+
+test('an empty owned demo directory and a verified legacy fixture can acquire the isolated Git boundary', async t => {
+  const dataDir = await mkdtemp(path.join(await realpath(tmpdir()), 'graphlin-demo-migrate-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const project = path.join(dataDir, 'demo-project');
+  await mkdir(project, { mode: 0o700 });
+  assert.equal(await createDemoProject(dataDir), project);
+  const fixture = await readFile(path.join(project, 'notes.mjs'), 'utf8');
+  await rm(path.join(project, '.git'), { recursive: true });
+  assert.equal(await createDemoProject(dataDir), project);
+  assert.equal(await readFile(path.join(project, 'notes.mjs'), 'utf8'), fixture);
+  assert.equal(await canonicalProjectRoot(project), project);
+  assert.equal(await readFile(path.join(project, '.git/HEAD'), 'utf8'), 'ref: refs/heads/graphlin-demo\n');
+});
+
+test('an unmarked existing demo directory is refused before its files, mode or Git scope are changed', async t => {
+  const dataDir = await mkdtemp(path.join(await realpath(tmpdir()), 'graphlin-demo-unowned-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const project = path.join(dataDir, 'demo-project');
+  await mkdir(project, { mode: 0o755 });
+  await writeFile(path.join(project, 'notes.mjs'), 'keep this preexisting project', { mode: 0o600 });
+  const before = (await stat(project)).mode;
+  await assert.rejects(createDemoProject(dataDir));
+  assert.equal((await stat(project)).mode, before);
+  assert.equal(await readFile(path.join(project, 'notes.mjs'), 'utf8'), 'keep this preexisting project');
+  assert.deepEqual(await readdir(project), ['notes.mjs']);
+});
+
+test('demo reset refuses foreign entries, changed content, and redirected fixture or Git paths', async t => {
+  for (const kind of ['foreign', 'changed', 'directory-link', 'file-link', 'hardlink', 'marker-link', 'git-link', 'git-config']) {
+    await t.test(kind, async t => {
+      const dataDir = await mkdtemp(path.join(await realpath(tmpdir()), 'graphlin-demo-unsafe-'));
+      t.after(() => rm(dataDir, { recursive: true, force: true }));
+      const project = await createDemoProject(dataDir);
+      const notes = path.join(project, 'notes.mjs'), original = await readFile(notes, 'utf8');
+      const outside = path.join(dataDir, 'outside.mjs');
+      await writeFile(outside, original, { mode: 0o600 });
+      if (kind === 'foreign') await writeFile(path.join(project, 'foreign.mjs'), 'keep');
+      if (kind === 'changed') await writeFile(notes, 'keep changed contents');
+      if (kind === 'directory-link') {
+        await rm(project, { recursive: true });
+        await mkdir(path.join(dataDir, 'outside'), { mode: 0o700 });
+        await symlink(path.join(dataDir, 'outside'), project);
+      }
+      if (kind === 'file-link' || kind === 'hardlink') {
+        await rm(notes);
+        await (kind === 'hardlink' ? link : symlink)(outside, notes);
+      }
+      if (kind === 'marker-link') {
+        await rm(path.join(project, '.graphlin-demo-fixture'));
+        await symlink(outside, path.join(project, '.graphlin-demo-fixture'));
+      }
+      if (kind === 'git-link') {
+        await rm(path.join(project, '.git'), { recursive: true });
+        await symlink(dataDir, path.join(project, '.git'));
+      }
+      if (kind === 'git-config') await writeFile(path.join(project, '.git/config'), '[core]\nbare = true\n');
+      await assert.rejects(createDemoProject(dataDir));
+      await assert.rejects(prepareDemoChange(project, { action: 'add' }));
+      assert.equal(await readFile(outside, 'utf8'), original);
+      if (kind === 'directory-link') assert.deepEqual(await readdir(path.join(dataDir, 'outside')), []);
+      if (kind === 'changed') assert.equal(await readFile(notes, 'utf8'), 'keep changed contents');
+      if (kind === 'foreign') assert.equal(await readFile(path.join(project, 'foreign.mjs'), 'utf8'), 'keep');
+    });
+  }
 });

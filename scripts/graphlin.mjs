@@ -4,6 +4,7 @@ import { parseArguments } from './arguments.mjs';
 import { initOnboarding, uninstallOnboarding, needsOnboarding, openViewer, agentInstructions } from './onboarding.mjs';
 import { readSettings } from '../runtime/daemon/settings.mjs';
 import { projectPaths } from '../runtime/daemon/paths.mjs';
+import { prepareProjectState } from '../runtime/daemon/migration.mjs';
 import { runExtensions } from './extensions.mjs';
 
 const HELP = `Graphlin — local architecture and activity viewer (Node.js 22.14+, macOS/Linux).
@@ -25,6 +26,9 @@ const HELP = `Graphlin — local architecture and activity viewer (Node.js 22.14
   extensions remove ID
   extensions doctor
 All commands accept --project PATH and --data-dir PATH (or GRAPHLIN_DATA_DIR).
+Writable data defaults to .graphlin/ at the canonical repository root, ignored
+by Git. Subfolders share that root; worktrees have separate state. Keys, settings,
+diagrams, logs, plugin packages and extensions stay there unless overridden.
 init installs for your user account using the host CLIs; it saves project consent
 and offers a masked key prompt only in a terminal. Non-interactive init requires
 --host and one source mode; remote source also needs a saved/environment key.
@@ -77,6 +81,16 @@ try {
       const interrupt = () => controller.abort();
       for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, interrupt);
       try {
+        if (['start', 'open', 'init'].includes(options.command)) {
+          const { migration } = await prepareProjectState(options);
+          if (migration.status === 'migrated') {
+            process.stderr.write('Repository state migrated into .graphlin/. Existing local files were preserved; the old data remains as a backup.\n');
+            if (migration.extensionsToReinstall) process.stderr.write(
+              'Legacy visualizer extensions need reinstalling and approval in this repository. A recovery inventory is saved in .graphlin/.\n');
+            if (migration.skipped?.length) process.stderr.write(
+              'Some incomplete legacy diagnostic logs were left in the backup; the migration record lists them.\n');
+          }
+        }
         if (options.command === 'init') result = await initOnboarding({ ...options, signal: controller.signal });
         else if (options.command === 'uninstall') result = await uninstallOnboarding({ ...options, signal: controller.signal });
         else {
@@ -86,7 +100,9 @@ try {
           }
           if (options.command === 'demo') {
             const { createDemoProject } = await import('../runtime/daemon/demo.mjs');
-            options.projectRoot = await createDemoProject(options.dataDir);
+            const caller = await projectPaths(options.projectRoot, options.dataDir, { create: true });
+            options.dataDir = caller.dataDir;
+            options.projectRoot = await createDemoProject(caller.dataDir, { projectRoot: caller.projectRoot });
             options.mode = 'demo'; options.allowSource = true;
           }
           let browser = Promise.resolve();
@@ -124,7 +140,13 @@ try {
   const argumentErrors = new Set(['duplicate_argument', 'invalid_argument', 'invalid_port', 'conflicting_arguments',
     'unknown_argument', 'invalid_host', 'unknown_command']);
   const message = error?.onboarding ? error.message : argumentErrors.has(error?.message) ? error.message : publicError(error);
-  const nextStep = message === 'policy_restart_required'
+  const nextStep = message === 'legacy_daemon_running'
+    ? 'Stop the existing viewer with Ctrl+C, then run Graphlin again to migrate this repository into .graphlin/.'
+    : message === 'tracked_state_directory'
+      ? 'Graphlin could not verify that .graphlin/ is untracked. Make Git available and review any tracked files there; remove them from the index while keeping local copies before retrying.'
+    : /legacy|migration/.test(message)
+      ? 'The previous data remains in its original location. Stop older viewers and retry, or use --data-dir PATH to inspect that location.'
+    : message === 'policy_restart_required'
     ? 'Stop the current viewer with Ctrl+C or graphlin stop, then run Graphlin again to apply the saved settings.'
     : 'Run with --help for usage.';
   process.stderr.write(`Graphlin: ${message}. ${nextStep}\n`);

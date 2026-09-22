@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { buildPackages } from '../../scripts/build-packages.mjs';
 import { stopDaemon } from '../../runtime/daemon/manager.mjs';
@@ -109,4 +109,49 @@ test('CLI demo creates only fixture state, exports it, and stops without remote 
   const stopped = await run(process.execPath, [entry, 'stop', '--project', details.projectRoot, '--data-dir', setup.dataDir]);
   assert.equal(stopped.code, 0, stopped.stderr);
   assert.equal(JSON.parse(stopped.stdout).stopped, true);
+});
+
+test('CLI demo from a nested checkout needs no Git executable and keeps state in the caller repo-local base', async t => {
+  const setup = await workspace(t), entry = path.resolve('scripts/graphlin.mjs');
+  const nested = path.join(setup.projectRoot, 'src/nested'), dataDir = path.join(setup.projectRoot, '.graphlin');
+  const projectRoot = path.join(dataDir, 'demo-project');
+  const isolatedHome = path.join(setup.base, 'isolated-home'), emptyPath = path.join(setup.base, 'empty-path');
+  await mkdir(nested, { recursive: true });
+  await mkdir(path.join(setup.projectRoot, '.git'));
+  await mkdir(isolatedHome);
+  await mkdir(emptyPath);
+  const env = { ...process.env, PATH: emptyPath, HOME: isolatedHome, XDG_STATE_HOME: path.join(isolatedHome, 'state'),
+    GRAPHLIN_DATA_DIR: '', TYPESAFE_API_KEY: 'MUST_NOT_LEAVE_DEMO' };
+  try {
+    const started = await run(process.execPath, [entry, 'demo', '--background'], { cwd: nested, env });
+    assert.equal(started.code, 0, started.stderr);
+    const details = JSON.parse(started.stdout);
+    assert.equal(details.projectRoot, projectRoot);
+    assert.equal(details.mode, 'demo');
+    assert.equal(path.dirname(path.dirname(details.logPath)), dataDir, 'daemon uses the caller base');
+    assert.equal(await readFile(path.join(setup.projectRoot, '.gitignore'), 'utf8'), '/.graphlin/\n');
+    assert.equal(await readFile(path.join(dataDir, '.gitignore'), 'utf8'), '*\n');
+    await assert.rejects(stat(path.join(nested, '.graphlin')), { code: 'ENOENT' });
+    await assert.rejects(stat(path.join(projectRoot, '.graphlin')), { code: 'ENOENT' });
+    let snapshot;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const exported = await run(process.execPath,
+        [entry, 'export', '--project', projectRoot, '--data-dir', dataDir], { cwd: nested, env });
+      assert.equal(exported.code, 0, exported.stderr);
+      snapshot = JSON.parse(exported.stdout);
+      if (snapshot.status.pending === 0 && snapshot.activity.some(event => event.kind === 'turn.stopped')) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.equal(snapshot.mode, 'demo');
+    assert.ok(snapshot.activity.some(event => event.kind === 'turn.stopped'));
+    assert.ok(snapshot.graph.edges.some(edge => edge.relation === 'writes'));
+    assert.equal(JSON.stringify(snapshot).includes('MUST_NOT_LEAVE_DEMO'), false);
+    assert.deepEqual(await readdir(isolatedHome), [], 'demo creates no home state');
+    const stopped = await run(process.execPath,
+      [entry, 'stop', '--project', projectRoot, '--data-dir', dataDir], { cwd: nested, env });
+    assert.equal(stopped.code, 0, stopped.stderr);
+    assert.equal(JSON.parse(stopped.stdout).stopped, true);
+  } finally {
+    await stopDaemon({ projectRoot, dataDir }).catch(() => {});
+  }
 });

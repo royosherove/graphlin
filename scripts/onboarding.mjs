@@ -2,11 +2,13 @@ import { spawn } from 'node:child_process';
 import { createInterface, emitKeypressEvents } from 'node:readline';
 import { readFile, lstat, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildPackages } from './build-packages.mjs';
 import { validatePackage } from './validate-packages.mjs';
-import { projectPaths, privateDirectory, atomicJSON, readPrivateJSON } from '../runtime/daemon/paths.mjs';
+import { projectPaths, canonicalProjectRoot, privateDirectory, atomicJSON, readPrivateJSON, uid } from '../runtime/daemon/paths.mjs';
+import { prepareProjectState } from '../runtime/daemon/migration.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const HOSTS = ['claude', 'codex'];
@@ -191,44 +193,93 @@ async function hostList(host, kind, run, context) {
   }
 }
 
-// Read only our generated catalogue, never arbitrary host config or project
-// source. Refuse symlinks, devices, oversized files, and marketplaces that have
-// acquired other plugins rather than rebinding somebody else's marketplace.
-async function verifyManagedMarketplace(root, host, paths, saved) {
-  const parent = path.join(paths.dataDir, 'plugins', 'graphlin');
-  const relative = path.relative(parent, root).split(path.sep);
-  if (relative.length !== 2 || !/^\d+\.\d+\.\d+$/.test(relative[0]) || relative[1] !== host) {
-    throw fail('marketplace_conflict', 'graphlin-local belongs to a different installation. Its configuration was left unchanged; inspect your host marketplaces before retrying.');
+async function managedDirectories(directory, ownershipRoot) {
+  let current = path.parse(directory).root;
+  for (const part of directory.slice(current.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    const info = await lstat(current);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('unsafe_marketplace_directory');
+    if ((current === ownershipRoot || current.startsWith(ownershipRoot + path.sep)) &&
+        ((uid() !== undefined && info.uid !== uid()) || (info.mode & 0o022))) {
+      throw new Error('unsafe_marketplace_owner');
+    }
   }
-  const filename = path.join(root, host === 'claude' ? '.claude-plugin/marketplace.json' : '.agents/plugins/marketplace.json');
+}
+
+async function managedText(filename, limit = 16 * 1024) {
   let file;
   try {
-    let directory = parent;
-    for (const part of [...relative, ...(host === 'claude' ? ['.claude-plugin'] : ['.agents', 'plugins'])]) {
-      directory = path.join(directory, part);
-      if (!(await lstat(directory)).isDirectory()) throw new Error();
-    }
     file = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const info = await file.stat();
-    if (!info.isFile() || info.size > 16 * 1024) throw new Error();
-    const bytes = Buffer.alloc(16 * 1024 + 1);
-    const { bytesRead } = await file.read(bytes);
-    const catalog = JSON.parse(bytes.subarray(0, bytesRead).toString());
-    const source = catalog.plugins?.[0]?.source;
-    if (catalog.name !== 'graphlin-local' || catalog.plugins?.length !== 1 ||
-        catalog.plugins[0].name !== 'graphlin' ||
-        (host === 'claude' ? source !== './graphlin' : source?.source !== 'local' || source.path !== './graphlin')) throw new Error();
-  } catch (error) {
-    // A recorded installation with deleted files can still be recovered, but
-    // an existing modified/foreign catalogue cannot be silently replaced.
-    if (error.code === 'ENOENT' && saved.installation?.version === relative[0] &&
-        saved.installation.hosts.includes(host)) return;
-    throw fail('marketplace_conflict', 'The existing graphlin-local catalogue could not be verified as Graphlin-only. Inspect its host registration before retrying; no replacement was attempted.');
+    if (!info.isFile() || info.size > limit || info.nlink !== 1 ||
+        (info.mode & 0o022) || (uid() !== undefined && info.uid !== uid())) throw new Error('unsafe_marketplace_file');
+    const bytes = Buffer.alloc(limit + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const { bytesRead } = await file.read(bytes, length, bytes.length - length, null);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    if (length > limit) throw new Error('marketplace_file_too_large');
+    return bytes.subarray(0, length).toString('utf8');
   } finally { await file?.close(); }
 }
 
-async function configureMarketplace(host, outputDir, paths, saved, run, context, onRemoved) {
-  const root = path.join(outputDir, host);
+// Host registrations are shared, but their Graphlin-owned packages may belong
+// to another repo or the former home default. Read only generated metadata:
+// a familiar marketplace name or directory layout alone is not ownership.
+async function verifyManagedMarketplace(root, host, paths, saved, env) {
+  const outputDir = path.dirname(root), version = path.basename(outputDir);
+  const dataDir = path.dirname(path.dirname(path.dirname(outputDir)));
+  const home = typeof env.HOME === 'string' && path.isAbsolute(env.HOME) ? env.HOME : homedir();
+  const sameDataDir = dataDir === paths.dataDir;
+  const repoLocal = !sameDataDir && path.basename(dataDir) === '.graphlin';
+  const legacy = !sameDataDir && dataDir === path.resolve(home, '.local/state/graphlin');
+  try {
+    if (version.length > 80 || !/^\d+\.\d+\.\d+$/.test(version) ||
+        root !== path.join(dataDir, 'plugins', 'graphlin', version, host) ||
+        !(sameDataDir || repoLocal || legacy)) throw new Error('foreign_marketplace');
+    const ownershipRoot = repoLocal ? path.dirname(dataDir) : legacy ? path.resolve(home) : dataDir;
+    await managedDirectories(dataDir, ownershipRoot);
+    if ((await lstat(dataDir)).mode & 0o077) throw new Error('unsafe_marketplace_data');
+    if (repoLocal && await canonicalProjectRoot(path.dirname(dataDir)) !== path.dirname(dataDir)) {
+      throw new Error('noncanonical_marketplace_project');
+    }
+    try {
+      await managedDirectories(outputDir, ownershipRoot);
+    } catch (error) {
+      // Only this data directory's saved installation can authorize recovery
+      // of a deleted version. Missing cross-repo markers never prove ownership.
+      if (error.code === 'ENOENT' && sameDataDir &&
+          saved.installation?.version === version && saved.installation.hosts?.includes(host)) return;
+      throw error;
+    }
+    const completion = await readPrivateJSON(path.join(outputDir, '.onboarding.json'), 1024);
+    if (completion?.version !== version) throw new Error('unmarked_marketplace');
+    const catalogDirectory = path.join(root, host === 'claude' ? '.claude-plugin' : '.agents/plugins');
+    await managedDirectories(catalogDirectory, ownershipRoot);
+    const catalog = JSON.parse(await managedText(path.join(catalogDirectory, 'marketplace.json')));
+    const source = catalog.plugins?.[0]?.source;
+    if (catalog.name !== 'graphlin-local' || !Array.isArray(catalog.plugins) || catalog.plugins.length !== 1 ||
+        catalog.plugins[0].name !== 'graphlin' ||
+        (host === 'claude'
+          ? source !== './graphlin' || catalog.owner?.name !== 'Graphlin contributors' || catalog.plugins[0].version !== version
+          : source?.source !== 'local' || source.path !== './graphlin' || catalog.interface?.displayName !== 'Graphlin local')) {
+      throw new Error('foreign_marketplace_catalog');
+    }
+    const plugin = path.join(root, 'graphlin');
+    await managedDirectories(path.join(plugin, `.${host}-plugin`), ownershipRoot);
+    if (await managedText(path.join(plugin, '.graphlin-package'), 64) !== host) throw new Error('foreign_package');
+    for (const filename of ['plugin.json', `.${host}-plugin/plugin.json`]) {
+      const manifest = JSON.parse(await managedText(path.join(plugin, filename)));
+      if (manifest?.name !== 'graphlin' || manifest.version !== version) throw new Error('foreign_package_manifest');
+    }
+  } catch {
+    throw fail('marketplace_conflict', 'The existing graphlin-local catalogue could not be verified as Graphlin-only. Inspect its host registration before retrying; no replacement was attempted.');
+  }
+}
+
+async function registeredMarketplace(host, paths, saved, run, context) {
   const entries = (await hostList(host, 'marketplace', run, context)).filter(item => item.name === 'graphlin-local');
   if (entries.length > 1) throw fail('marketplace_conflict', 'Multiple graphlin-local marketplaces are configured. Resolve them in your host before retrying.');
   const entry = entries[0];
@@ -236,10 +287,22 @@ async function configureMarketplace(host, outputDir, paths, saved, run, context,
     const oldRoot = host === 'claude' && entry.source === 'directory' ? entry.path :
       host === 'codex' && entry.marketplaceSource?.sourceType === 'local' &&
         entry.marketplaceSource.source === entry.root ? entry.root : null;
-    if (typeof oldRoot !== 'string' || !path.isAbsolute(oldRoot)) throw fail('marketplace_conflict',
+    if (typeof oldRoot !== 'string' || oldRoot.length > 4096 || !path.isAbsolute(oldRoot) ||
+        oldRoot !== path.resolve(oldRoot) || /[\u0000-\u001f\u007f-\u009f]/.test(oldRoot)) throw fail('marketplace_conflict',
       'graphlin-local is not a verified local marketplace. Inspect the host registration before retrying.');
-    await verifyManagedMarketplace(path.resolve(oldRoot), host, paths, saved);
-    if (path.resolve(oldRoot) === root) return;
+    await verifyManagedMarketplace(oldRoot, host, paths, saved, context.env);
+    return oldRoot;
+  }
+  return null;
+}
+
+async function configureMarketplace(host, outputDir, paths, saved, run, context, onRemoved) {
+  const root = path.join(outputDir, host);
+  // Package preparation can take time; re-read the host registration before
+  // changing it instead of relying on the preflight's earlier source.
+  const oldRoot = await registeredMarketplace(host, paths, saved, run, context);
+  if (oldRoot) {
+    if (oldRoot === root) return;
     if (host === 'codex') {
       await run(host, ['plugin', 'marketplace', 'remove', 'graphlin-local'], context);
       await onRemoved();
@@ -257,28 +320,47 @@ async function configureMarketplace(host, outputDir, paths, saved, run, context,
 
 export function agentInstructions({ projectRoot, dataDir, hosts = HOSTS }) {
   // Printed commands are for a second terminal; execution always uses argv.
+  const customDataDir = dataDir !== path.join(projectRoot, '.graphlin');
   if (/[\u0000-\u001f\u007f-\u009f]/.test(projectRoot + dataDir)) {
-    return 'Start your chosen agent in the same project with GRAPHLIN_DATA_DIR set to the same data directory. Review and trust Graphlin in the host; use /hooks in Codex.\n';
+    return `Start your chosen agent in the same project${customDataDir ? ' with GRAPHLIN_DATA_DIR set to the same data directory' : ''}. Review and trust Graphlin in the host; use /hooks in Codex.\n`;
   }
   return 'Keep Graphlin running. In a second terminal, start a new agent session:\n' +
-    hosts.map(host => `  cd ${quote(projectRoot)} && GRAPHLIN_DATA_DIR=${quote(dataDir)} ${host}\n` +
+    hosts.map(host => `  cd ${quote(projectRoot)} && ${customDataDir ? `GRAPHLIN_DATA_DIR=${quote(dataDir)} ` : ''}${host}\n` +
       (host === 'claude' ? '  Claude: accept the project trust prompt; use /plugin to confirm Graphlin is enabled.\n' :
         '  Codex: accept project trust, then use /hooks to review and trust Graphlin hooks.\n')).join('') +
+    (customDataDir ? '' : 'Repo-local state uses .graphlin in this project. Unset GRAPHLIN_DATA_DIR in both terminals to use it.\n') +
     'Ask: “Orient yourself in this project and explain how its components connect.”\n' +
     'Installation does not verify hook activation. Use graphlin doctor and the viewer hook feed to diagnose missing events.\n';
 }
 
-export async function needsOnboarding(options, { readSettings, version = packageVersion, inspect } = {}) {
+export async function needsOnboarding(options, {
+  readSettings, version = packageVersion, inspect, run = runHost, env = process.env,
+} = {}) {
   readSettings ??= (await settingsAPI()).readSettings;
   const saved = await readSettings(options);
   if (!saved.policy || !saved.installation?.hosts?.length || saved.installation.pendingHosts?.length ||
     saved.installation.version !== await version() ||
-    ((options.allowSource ?? saved.policy.allowSource) && !(process.env.TYPESAFE_API_KEY ?? saved.apiKey)) ||
+    ((options.allowSource ?? saved.policy.allowSource) && !(env.TYPESAFE_API_KEY ?? saved.apiKey)) ||
     options.host !== undefined) return true;
   inspect ??= (await import('../runtime/daemon/connection-info.mjs')).inspectInstalledPackages;
   const paths = await projectPaths(options.projectRoot, options.dataDir);
   const packages = await inspect({ dataDir: paths.dataDir, version: saved.installation.version });
-  return saved.installation.hosts.some(host => !packages[host]);
+  if (saved.installation.hosts.some(host => !HOSTS.includes(host) || !packages[host])) return true;
+  // Repo receipts survive a global host uninstall from another repo. Verify
+  // the host's current installation; local packages alone cannot prove it.
+  const installed = await Promise.all(saved.installation.hosts.map(async host => {
+    try {
+      const plugins = await hostList(host, 'plugin', run, {
+        cwd: paths.projectRoot, env, signal: options.signal, timeout: 1500,
+      });
+      return plugins.some(plugin => host === 'claude'
+        ? plugin.id === PLUGIN && plugin.scope === 'user' : plugin.pluginId === PLUGIN);
+    } catch {
+      if (options.signal?.aborted) throw cancelled();
+      return false;
+    }
+  }));
+  return installed.some(present => !present);
 }
 
 export async function initOnboarding(options, dependencies = {}) {
@@ -288,7 +370,7 @@ export async function initOnboarding(options, dependencies = {}) {
   const prompt = dependencies.prompt ?? ((label, extra) => terminalPrompt(label, { ...extra, signal: options.signal }));
   const env = dependencies.env ?? process.env;
   const run = dependencies.run ?? runHost;
-  const paths = await projectPaths(options.projectRoot, options.dataDir);
+  const paths = await prepareProjectState(options);
   const saved = await readSettings(paths);
   const previousPending = saved.installation?.pendingHosts ?? [];
   const resuming = previousPending.length > 0 && options.host === undefined;
@@ -309,7 +391,10 @@ export async function initOnboarding(options, dependencies = {}) {
     ...previousPending, ...(upgrading ? saved.installation.hosts : [])])];
   if (hosts.some(host => !detected.includes(host))) throw fail('missing_host',
     'A selected host CLI is unavailable. Install it and add it to PATH, then run graphlin init again.');
-  write('Graphlin installs its plugin for your user account, across projects. Source consent applies only to this canonical project.\n');
+  write(paths.dataDir === path.join(paths.projectRoot, '.graphlin')
+    ? 'Graphlin keeps state, settings, saved keys, and plugin packages in this repo’s .graphlin directory.\n'
+    : 'Graphlin keeps state, settings, saved keys, and plugin packages in your selected data directory.\n');
+  write('Your host manages plugin registrations and caches across projects. Source consent applies only to this canonical project.\n');
   write(`Project: ${JSON.stringify(paths.projectRoot)}\n`);
   if (upgrading) write('Updating every recorded Graphlin host to keep the installed version consistent.\n');
   let allowSource = options.allowSource ?? (resuming ? saved.policy?.allowSource : undefined);
@@ -334,11 +419,19 @@ export async function initOnboarding(options, dependencies = {}) {
   if (options.replaceKey || allowSource && !(env.TYPESAFE_API_KEY ?? saved.apiKey)) {
     if (!interactive) throw fail('key_required',
       'Source mode needs a key. Run graphlin init in a terminal for the masked prompt, provide TYPESAFE_API_KEY through your environment, or choose --no-source.');
-    apiKey = await prompt('TypeSafe API key (masked; saved privately): ', { secret: true });
+    apiKey = await prompt('TypeSafe API key (masked; saved in this Graphlin data directory): ', { secret: true });
     if (!apiKey) throw fail('key_required', 'No key was supplied. Run init again or choose --no-source.');
     if (env.TYPESAFE_API_KEY !== undefined) write('The environment key still takes precedence. Unset TYPESAFE_API_KEY to use the newly saved key.\n');
   }
   if (options.signal?.aborted) throw cancelled();
+  const context = { cwd: paths.projectRoot, env, signal: options.signal };
+  // Verify registrations before preparing packages: a rebuild must not turn
+  // a foreign catalogue at the desired destination into apparent ownership.
+  for (const host of hosts) {
+    await registeredMarketplace(host, paths, saved, run, context);
+  }
+  // Protect repo-local output before preparing packages or saving credentials.
+  await projectPaths(paths.projectRoot, paths.dataDir, { create: true });
   const outputDir = await (dependencies.prepare ?? preparePackages)(paths.dataDir, version);
   if (options.signal?.aborted) throw cancelled();
   const installed = new Set(saved.installation?.hosts ?? []);
@@ -350,7 +443,6 @@ export async function initOnboarding(options, dependencies = {}) {
   apiKey = undefined;
   for (const host of hosts) {
     write(`Installing Graphlin for ${host}…\n`);
-    const context = { cwd: paths.projectRoot, env, signal: options.signal };
     await configureMarketplace(host, outputDir, paths, saved, run, context, async () => {
       installed.delete(host);
       await saveSettings(paths, { installation: installation() });

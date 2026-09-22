@@ -1,6 +1,5 @@
 import { constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import path from 'node:path';
 
 const PROFILES = new Set(['claude', 'codex', 'portable']);
@@ -104,7 +103,7 @@ function format({ projectRoot, dataDir, mode }) {
   const demo = mode === 'demo';
   // defaultDataDir() includes the daemon's environment override. Comparing to
   // it would wrongly hide custom directories needed by a second terminal.
-  const customDataDir = !demo && dataDir !== path.resolve(homedir(), '.local/state/graphlin');
+  const customDataDir = !demo && dataDir !== path.join(projectRoot, '.graphlin');
   const terminal = words => `${demo ? '' : `cd ${quote(projectRoot)} && `}${customDataDir ? `GRAPHLIN_DATA_DIR=${quote(dataDir)} ` : ''}${words}`;
   const instruction = (id, title, description, steps) => ({ id, title, description, steps });
   const entries = [
@@ -134,16 +133,16 @@ function format({ projectRoot, dataDir, mode }) {
     result.notes.push('Connection commands are too long to display safely. Use shorter project or data directory paths.');
   }
   if (demo) {
-    result.notes.push('This demo uses fixture classifications. Run the commands in your own project; its setup uses the normal data directory, not this demo’s custom directory.');
+    result.notes.push('This demo uses fixture classifications. Run the commands in your own project; its setup uses that repo’s .graphlin directory, not this demo’s custom directory.');
   } else {
     result.notes.push('Next time: npx --yes graphlin@latest in this project, then claude or codex in a second terminal. Keep the viewer running.');
     result.notes.push('Consent or key changes require stopping and restarting this project’s viewer with the same data directory. Until then, its current policy and classifier configuration stay in effect.');
   }
   result.notes.push(customDataDir
     ? 'Commands preserve this viewer’s custom data directory. Use the same GRAPHLIN_DATA_DIR for future viewer launches.'
-    : 'Default data: ~/.local/state/graphlin. Unset GRAPHLIN_DATA_DIR in both terminals to use it.' +
+    : 'Default state, settings, saved keys, and Graphlin plugin packages are repo-local: .graphlin at the canonical project root. Unset GRAPHLIN_DATA_DIR in both terminals to use it.' +
       (demo ? ' For an intentional custom location, set the same GRAPHLIN_DATA_DIR in both terminals.' : ''));
-  result.notes.push('Plugins install across projects; source consent is per project. Source mode sends locally filtered source excerpts, user prompts, and public agent messages to TypeSafe.');
+  result.notes.push('Your host manages plugin registrations and caches across projects; source consent is per project. Source mode sends locally filtered source excerpts, user prompts, and public agent messages to TypeSafe.');
   result.notes.push('Installation does not confirm hook activation. After setup and trust, ask: “Orient yourself in this project: read its main files and explain how the components connect.” Watch for hook delivery and diagram updates.');
   return result;
 }

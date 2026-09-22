@@ -188,6 +188,23 @@ test('update command quotes hostile project and custom data paths literally with
   assert.deepEqual(result.stdout.split('\0').slice(0, -1), [projectRoot, dataDir, '--yes', 'graphlin@latest']);
 });
 
+test('repo-local updates omit the data override while legacy home updates preserve it', async t => {
+  const setup = await workspace(t);
+  const local = { projectRoot: setup.projectRoot, dataDir: path.join(setup.projectRoot, '.graphlin') };
+  const info = await createDashboardInfoProvider(local, dependencies())();
+  assert.equal(info.update.command, `cd '${setup.projectRoot}' && npx --yes graphlin@latest`);
+  assert.match(info.update.instructions.join(' '), /State is repo-local in \.graphlin.*Unset GRAPHLIN_DATA_DIR/);
+  const result = await promisify(execFile)('/bin/sh', ['-c',
+    "npx() { printf '%s\\0' \"$PWD\" \"$GRAPHLIN_DATA_DIR\" \"$@\"; }\n" + info.update.command], {
+    cwd: setup.base, env: { PATH: '/usr/bin:/bin' }, timeout: 1000,
+  });
+  assert.deepEqual(result.stdout.split('\0').slice(0, -1), [setup.projectRoot, '', '--yes', 'graphlin@latest']);
+  const legacy = { ...local, dataDir: path.join(setup.base, '.local/state/graphlin') };
+  const formerDefault = await createDashboardInfoProvider(legacy, dependencies())();
+  assert.ok(formerDefault.update.command.includes(`GRAPHLIN_DATA_DIR='${legacy.dataDir}'`));
+  assert.doesNotMatch(formerDefault.update.instructions.join(' '), /State is repo-local/);
+});
+
 test('demo update restarts the offline demo from any directory with quoted custom data and no agent instructions', async t => {
   const setup = await workspace(t);
   const dataDir = path.join(setup.base, `data ' " $HOME \`echo PRIVATE\` $(echo PRIVATE)`);

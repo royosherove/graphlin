@@ -24,6 +24,9 @@ project, and accepts your key at a **masked prompt** if needed. It stores the ke
 privately and builds stable plugins outside the npm cache. The browser opens
 automatically. Keep this terminal running; **Ctrl+C** stops the viewer.
 
+State, logs, saved keys, plugins, and extensions stay in **`<repo>/.graphlin/`**,
+automatically ignored by Git. Starting in a subfolder uses the same repository root.
+
 Source mode permits locally filtered source excerpts, user prompts, and public
 agent messages to be sent to TypeSafe for classification.
 Local mode parses JavaScript, TypeScript, TSX, and Python on your machine.

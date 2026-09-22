@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, writeFile, readFile, chmod, stat, symlink, rm } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, chmod, stat, symlink, link, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { spawn } from 'node:child_process';
@@ -14,6 +14,29 @@ import { initOnboarding, uninstallOnboarding, needsOnboarding, runHost, terminal
 
 const entry = path.resolve('scripts/graphlin.mjs');
 const metadata = { allowSource: false, persistEvidence: false, displayEvidence: true };
+
+async function managedPackages(dataDir, version = '0.1.0') {
+  await mkdir(dataDir, { recursive: true, mode: 0o700 });
+  const output = path.join(dataDir, 'plugins', 'graphlin', version);
+  for (const host of ['claude', 'codex']) {
+    const folder = path.join(output, host, host === 'claude' ? '.claude-plugin' : '.agents/plugins');
+    await mkdir(folder, { recursive: true });
+    await writeFile(path.join(folder, 'marketplace.json'), JSON.stringify({
+      name: 'graphlin-local',
+      ...(host === 'claude' ? { owner: { name: 'Graphlin contributors' } } : { interface: { displayName: 'Graphlin local' } }),
+      plugins: [{ name: 'graphlin', ...(host === 'claude' ? { version } : {}),
+        source: host === 'claude' ? './graphlin' : { source: 'local', path: './graphlin' } }],
+    }));
+    const plugin = path.join(output, host, 'graphlin');
+    await mkdir(path.join(plugin, `.${host}-plugin`), { recursive: true });
+    await writeFile(path.join(plugin, '.graphlin-package'), host);
+    for (const filename of ['plugin.json', `.${host}-plugin/plugin.json`]) {
+      await writeFile(path.join(plugin, filename), JSON.stringify({ name: 'graphlin', version }));
+    }
+  }
+  await writeFile(path.join(output, '.onboarding.json'), JSON.stringify({ version }), { mode: 0o600 });
+  return output;
+}
 
 function harness(overrides = {}) {
   let state = structuredClone(overrides.state ?? {});
@@ -46,16 +69,7 @@ function harness(overrides = {}) {
         } else if (['install', 'update', 'add'].includes(args[1])) installed.add(host);
         else if (['uninstall', 'remove'].includes(args[1])) installed.delete(host);
       },
-      prepare: async (dataDir, version = '0.1.0') => {
-        const output = path.join(dataDir, 'plugins', 'graphlin', version);
-        for (const host of ['claude', 'codex']) {
-          const folder = path.join(output, host, host === 'claude' ? '.claude-plugin' : '.agents/plugins');
-          await mkdir(folder, { recursive: true });
-          await writeFile(path.join(folder, 'marketplace.json'), JSON.stringify({ name: 'graphlin-local',
-            plugins: [{ name: 'graphlin', source: host === 'claude' ? './graphlin' : { source: 'local', path: './graphlin' } }] }));
-        }
-        return output;
-      },
+      prepare: managedPackages,
       write: value => output.push(value),
     },
   };
@@ -257,7 +271,190 @@ test('same-name unrelated marketplace is not replaced and malformed host output 
   await assert.rejects(initOnboarding({ ...setup, host: 'codex', allowSource: false },
     { ...invalid.dependencies, run: async (_, args) => args.includes('list') ? 'not JSON' : undefined }),
   { code: 'host_metadata_invalid' });
-  assert.deepEqual(invalid.state().installation, { hosts: [], version: '0.1.0', pendingHosts: ['codex'] });
+  assert.equal(invalid.state().installation, undefined, 'unverified host metadata fails before saving an installation');
+});
+
+test('repo A to repo B rebinds both hosts while keeping repo settings and keys separate', async t => {
+  const setup = await workspace(t), h = harness();
+  const first = { projectRoot: setup.projectRoot, dataDir: path.join(setup.projectRoot, '.graphlin') };
+  const projectRoot = path.join(setup.base, 'repo B');
+  await mkdir(projectRoot);
+  const second = { projectRoot, dataDir: path.join(projectRoot, '.graphlin') };
+  const dependencies = { ...h.dependencies, settings: { readSettings, saveSettings } };
+  await initOnboarding({ ...first, host: 'both', allowSource: false }, dependencies);
+  await saveSettings(first, { apiKey: 'SYNTHETIC_REPO_A_KEY' });
+  const savedFirst = await readSettings(first);
+  const firstCatalog = await readFile(path.join(first.dataDir, 'plugins/graphlin/0.1.0/claude/.claude-plugin/marketplace.json'), 'utf8');
+  h.calls.length = 0;
+  h.output.length = 0;
+  await initOnboarding({ ...second, host: 'both', allowSource: false }, dependencies);
+  assert.deepEqual(await readSettings(first), savedFirst);
+  assert.equal(await readFile(path.join(first.dataDir, 'plugins/graphlin/0.1.0/claude/.claude-plugin/marketplace.json'), 'utf8'), firstCatalog);
+  assert.deepEqual(await readSettings(second), {
+    policy: metadata, installation: { hosts: ['claude', 'codex'], version: '0.1.0' },
+  });
+  for (const host of ['claude', 'codex']) {
+    const registration = h.calls.find(call => call.host === host && call.args[1] === 'marketplace' && call.args[2] === 'add');
+    assert.equal(registration.args[3], path.join(second.dataDir, 'plugins/graphlin/0.1.0', host));
+    assert.equal(h.calls.some(call => call.host === host && call.args[2] === 'remove'), host === 'codex');
+  }
+  assert.ok(h.calls.some(call => call.host === 'claude' && call.args[1] === 'update'));
+  assert.match(h.output.join(''), /state, settings, saved keys, and plugin packages in this repo’s \.graphlin/);
+  assert.match(h.output.join(''), /host manages plugin registrations and caches across projects/);
+  assert.doesNotMatch(h.output.join(''), /SYNTHETIC_REPO_A_KEY|GRAPHLIN_DATA_DIR=|user account/);
+});
+
+test('verified legacy home marketplaces rebind to a repo without importing legacy settings', async t => {
+  const setup = await workspace(t), legacy = path.join(setup.base, '.local/state/graphlin');
+  const output = await managedPackages(legacy, '0.0.9');
+  const h = harness({ marketplaces: Object.fromEntries(['claude', 'codex'].map(host => [host, path.join(output, host)])) });
+  const dataDir = path.join(setup.projectRoot, '.graphlin');
+  await initOnboarding({ ...setup, dataDir, host: 'both', allowSource: false },
+    { ...h.dependencies, env: { HOME: setup.base } });
+  assert.deepEqual(h.state().installation, { hosts: ['claude', 'codex'], version: '0.1.0' });
+  for (const host of ['claude', 'codex']) {
+    const registration = h.calls.find(call => call.host === host && call.args[2] === 'add');
+    assert.equal(registration.args[3], path.join(dataDir, 'plugins/graphlin/0.1.0', host));
+    assert.equal(h.calls.some(call => call.host === host && call.args[2] === 'remove'), host === 'codex');
+  }
+  assert.equal(JSON.parse(await readFile(path.join(output, '.onboarding.json'), 'utf8')).version, '0.0.9');
+});
+
+test('cross-repo marketplace verification rejects unsafe or foreign metadata before host mutations', async t => {
+  const linked = async filename => {
+    await rename(filename, filename + '.fixture');
+    await symlink(filename + '.fixture', filename);
+  };
+  const cases = [
+    ['missing completion marker', ({ output }) => rm(path.join(output, '.onboarding.json'))],
+    ['mismatched completion version', ({ output }) => writeFile(path.join(output, '.onboarding.json'), '{"version":"99.0.0"}')],
+    ['public completion marker', ({ output }) => chmod(path.join(output, '.onboarding.json'), 0o644)],
+    ['missing host profile', ({ plugin }) => rm(path.join(plugin, '.graphlin-package'))],
+    ['wrong host profile', ({ plugin }) => writeFile(path.join(plugin, '.graphlin-package'), 'portable')],
+    ['mismatched native version', ({ plugin, host }) => writeFile(path.join(plugin, `.${host}-plugin/plugin.json`), '{"name":"graphlin","version":"99.0.0"}')],
+    ['foreign portable manifest', ({ plugin }) => writeFile(path.join(plugin, 'plugin.json'), '{"name":"foreign","version":"0.1.0"}')],
+    ['unrelated plugin in catalog', async ({ catalog }) => {
+      const value = JSON.parse(await readFile(catalog, 'utf8'));
+      value.plugins.push({ name: 'foreign', source: './foreign' });
+      await writeFile(catalog, JSON.stringify(value));
+    }],
+    ['foreign source path', async ({ catalog }) => {
+      const value = JSON.parse(await readFile(catalog, 'utf8'));
+      value.plugins[0].source = { source: 'local', path: '../foreign' };
+      await writeFile(catalog, JSON.stringify(value));
+    }],
+    ['missing catalog identity', async ({ catalog }) => {
+      const value = JSON.parse(await readFile(catalog, 'utf8'));
+      delete value.owner; delete value.interface;
+      await writeFile(catalog, JSON.stringify(value));
+    }],
+    ['oversized catalog', ({ catalog }) => writeFile(catalog, ' '.repeat(16 * 1024 + 1))],
+    ['non-file catalog', async ({ catalog }) => { await rm(catalog); await mkdir(catalog); }],
+    ['linked catalog', ({ catalog }) => linked(catalog)],
+    ['linked completion marker', ({ output }) => linked(path.join(output, '.onboarding.json'))],
+    ['linked package directory', ({ plugin }) => linked(plugin)],
+    ['linked native metadata directory', ({ plugin, host }) => linked(path.join(plugin, `.${host}-plugin`))],
+    ['linked repo ancestor', ({ repo }) => linked(repo)],
+    ['hard-linked catalog', ({ catalog }) => link(catalog, catalog + '.fixture')],
+    ['writable catalog', ({ catalog }) => chmod(catalog, 0o666)],
+    ['writable repo ancestor', ({ repo }) => chmod(repo, 0o777)],
+    ['public data directory', ({ dataDir }) => chmod(dataDir, 0o755)],
+    ['missing foreign version despite current receipt', ({ output }) => rm(output, { recursive: true })],
+  ];
+  for (const host of ['claude', 'codex']) for (const [name, corrupt] of cases) {
+    await t.test(`${host}: ${name}`, async t => {
+      const setup = await workspace(t), repo = path.join(setup.base, 'repo A');
+      const dataDir = path.join(repo, '.graphlin');
+      const output = await managedPackages(dataDir), root = path.join(output, host);
+      const catalog = path.join(root, host === 'claude' ? '.claude-plugin/marketplace.json' : '.agents/plugins/marketplace.json');
+      await corrupt({ dataDir, repo, output, root, host, catalog, plugin: path.join(root, 'graphlin') });
+      const h = harness({ marketplaces: { [host]: root },
+        state: { policy: metadata, installation: { hosts: [host], version: '0.1.0' } } });
+      await assert.rejects(initOnboarding({ ...setup, host, allowSource: false }, h.dependencies), { code: 'marketplace_conflict' });
+      assert.equal(h.calls.some(call => call.args[0] === 'plugin' && !call.args.includes('list')), false,
+        'no marketplace or plugin mutation after failed ownership verification');
+    });
+  }
+});
+
+test('matching generated markers do not authorize unrelated custom roots or a nested noncanonical repo directory', async t => {
+  const setup = await workspace(t);
+  await mkdir(path.join(setup.projectRoot, '.git'));
+  for (const dataDir of [
+    path.join(setup.base, 'other custom data'),
+    path.join(setup.base, 'not-the-home', '.local/state/graphlin'),
+    path.join(setup.projectRoot, 'nested', '.graphlin'),
+  ]) {
+    const output = await managedPackages(dataDir);
+    for (const host of ['claude', 'codex']) {
+      const h = harness({ marketplaces: { [host]: path.join(output, host) } });
+      await assert.rejects(initOnboarding({ ...setup, host, allowSource: false },
+        { ...h.dependencies, env: { HOME: setup.base } }), { code: 'marketplace_conflict' });
+      assert.equal(h.calls.some(call => call.args[0] === 'plugin' && !call.args.includes('list')), false);
+    }
+  }
+});
+
+test('an explicit current data override named .graphlin can still upgrade outside the canonical repo root', async t => {
+  const setup = await workspace(t);
+  await mkdir(path.join(setup.projectRoot, '.git'));
+  const dataDir = path.join(setup.projectRoot, 'custom', '.graphlin');
+  const output = await managedPackages(dataDir, '0.0.9');
+  const h = harness({ state: { policy: metadata, installation: { hosts: ['claude', 'codex'], version: '0.0.9' } },
+    marketplaces: { claude: path.join(output, 'claude'), codex: path.join(output, 'codex') } });
+  await initOnboarding({ ...setup, dataDir, host: 'both', allowSource: false }, h.dependencies);
+  assert.deepEqual(h.state().installation, { hosts: ['claude', 'codex'], version: '0.1.0' });
+  assert.match(h.output.join(''), /GRAPHLIN_DATA_DIR=/);
+});
+
+test('a saved installation can recover its deleted version only within the current data directory', async t => {
+  const setup = await workspace(t), oldRoot = path.join(setup.dataDir, 'plugins/graphlin/0.0.9');
+  await managedPackages(setup.dataDir, '0.0.9');
+  await rm(oldRoot, { recursive: true });
+  const h = harness({ state: { policy: metadata, installation: { hosts: ['claude', 'codex'], version: '0.0.9' } },
+    marketplaces: { claude: path.join(oldRoot, 'claude'), codex: path.join(oldRoot, 'codex') } });
+  await initOnboarding({ ...setup, host: 'both', allowSource: false }, h.dependencies);
+  assert.deepEqual(h.state().installation, { hosts: ['claude', 'codex'], version: '0.1.0' });
+});
+
+test('a registered foreign catalog at the desired destination fails before package preparation or settings writes', async t => {
+  const setup = await workspace(t), output = await managedPackages(setup.dataDir);
+  for (const host of ['claude', 'codex']) {
+    const root = path.join(output, host);
+    const catalog = path.join(root, host === 'claude' ? '.claude-plugin/marketplace.json' : '.agents/plugins/marketplace.json');
+    const foreign = '{"name":"graphlin-local","plugins":[{"name":"unrelated","source":"./unrelated"}]}';
+    await writeFile(catalog, foreign);
+    const h = harness({ marketplaces: { [host]: root } });
+    await assert.rejects(initOnboarding({ ...setup, host, allowSource: false }, {
+      ...h.dependencies, prepare: () => assert.fail('must verify the registered destination before preparing packages'),
+    }), { code: 'marketplace_conflict' });
+    assert.equal(await readFile(catalog, 'utf8'), foreign);
+    assert.equal(h.patches.length, 0);
+    assert.equal(h.calls.some(call => call.args[0] === 'plugin' && !call.args.includes('list')), false);
+  }
+});
+
+test('a registration changed during package preparation is verified again before any host mutation', async t => {
+  const setup = await workspace(t), output = await managedPackages(path.join(setup.base, 'repo A', '.graphlin'));
+  for (const host of ['claude', 'codex']) {
+    let prepared = false;
+    const h = harness({ marketplaces: { [host]: path.join(output, host) } });
+    await assert.rejects(initOnboarding({ ...setup, host, allowSource: false }, {
+      ...h.dependencies,
+      prepare: async (...args) => { prepared = true; return managedPackages(...args); },
+      run: async (command, args, options) => {
+        if (prepared && args[1] === 'marketplace' && args[2] === 'list') {
+          const root = path.join(setup.base, 'foreign marketplace');
+          const entries = [{ name: 'graphlin-local', source: 'directory', path: root, root,
+            marketplaceSource: { sourceType: 'local', source: root } }];
+          return JSON.stringify(host === 'claude' ? entries : { marketplaces: entries });
+        }
+        return h.dependencies.run(command, args, options);
+      },
+    }), { code: 'marketplace_conflict' });
+    assert.equal(prepared, true);
+    assert.equal(h.calls.some(call => call.args[0] === 'plugin' && !call.args.includes('list')), false);
+  }
 });
 
 test('a failed or cancelled install does not claim success for that host', async t => {
@@ -313,21 +510,97 @@ test('explicit uninstall preserves other pending hosts and cancels verified abse
 });
 
 test('bare command needs setup only when project consent or current installation is missing', async t => {
-  const setup = await workspace(t);
+  const setup = await workspace(t), stubs = await stubHosts(setup);
+  await writeFile(stubs.env.STUB_STATE, JSON.stringify({ codex: { installed: true } }));
+  const needs = options => needsOnboarding(options, { env: stubs.env });
   const version = await packageVersion();
-  assert.equal(await needsOnboarding(setup), true);
+  assert.equal(await needs(setup), true);
   await saveSettings(setup, { policy: metadata, installation: { hosts: ['codex'], version } });
-  assert.equal(await needsOnboarding(setup), true, 'missing installed packages need recovery');
+  assert.equal(await needs(setup), true, 'missing installed packages need recovery');
   await preparePackages(setup.dataDir, version);
-  assert.equal(await needsOnboarding(setup), false);
+  assert.equal(await needs(setup), false);
   await rm(path.join(setup.dataDir, 'plugins/graphlin', version, 'codex/graphlin/scripts/control.mjs'));
-  assert.equal(await needsOnboarding(setup), true, 'deleted control entry point needs repair');
+  assert.equal(await needs(setup), true, 'deleted control entry point needs repair');
   await preparePackages(setup.dataDir, version);
-  assert.equal(await needsOnboarding(setup), false);
-  assert.equal(await needsOnboarding({ ...setup, host: 'claude' }), true);
+  assert.equal(await needs(setup), false);
+  assert.equal(await needs({ ...setup, host: 'claude' }), true);
   const other = path.join(setup.base, 'other project');
   await mkdir(other);
-  assert.equal(await needsOnboarding({ ...setup, projectRoot: other }), true);
+  assert.equal(await needs({ ...setup, projectRoot: other }), true);
+});
+
+test('repo A requires onboarding after a global uninstall from repo B even while A receipts and packages remain', async t => {
+  const setup = await workspace(t), stubs = await stubHosts(setup);
+  const first = { projectRoot: setup.projectRoot, dataDir: path.join(setup.projectRoot, '.graphlin') };
+  const projectRoot = path.join(setup.base, 'repo B');
+  await mkdir(projectRoot);
+  const second = { projectRoot, dataDir: path.join(projectRoot, '.graphlin') };
+  const dependencies = { env: { ...stubs.env, TYPESAFE_API_KEY: 'SYNTHETIC_NOT_FOR_HOSTS' },
+    interactive: false, write() {} };
+  for (const context of [first, second]) {
+    await initOnboarding({ ...context, host: 'both', allowSource: false }, dependencies);
+  }
+  const savedFirst = await readSettings(first);
+  assert.equal(await needsOnboarding(first, dependencies), false);
+  await uninstallOnboarding({ ...second, host: 'claude' }, dependencies);
+  assert.equal(await needsOnboarding(first, dependencies), true, 'one missing host invalidates a two-host receipt');
+  const partial = JSON.parse(await readFile(stubs.env.STUB_STATE, 'utf8'));
+  assert.equal(partial.claude.installed, false);
+  assert.equal(partial.codex.installed, true);
+  await uninstallOnboarding({ ...second, host: 'codex' }, dependencies);
+  assert.equal(await needsOnboarding(first, dependencies), true);
+  const bare = await runCLI(process.execPath,
+    [entry, '--project', first.projectRoot, '--data-dir', first.dataDir, '--no-open'], { env: stubs.env });
+  assert.equal(bare.code, 1, 'bare startup requires setup instead of launching with absent host plugins');
+  assert.match(bare.stderr, /--host claude\|codex\|both --no-source/);
+  assert.equal(bare.stdout, '');
+  assert.deepEqual(await readSettings(first), savedFirst, 'verification never rewrites the other repo receipt');
+  const { inspectInstalledPackages } = await import('../../runtime/daemon/connection-info.mjs');
+  assert.deepEqual(await inspectInstalledPackages({ dataDir: first.dataDir, version: savedFirst.installation.version }),
+    { claude: true, codex: true }, 'repo packages still exist after the host removed its installation');
+  assert.equal((await stubs.events()).some(event => event.keyInherited), false);
+});
+
+test('current receipts require every recorded host to report the exact installed plugin in bounded read-only checks', async t => {
+  const setup = await workspace(t);
+  const valid = {
+    claude: [{ id: 'graphlin@graphlin-local', scope: 'user' }],
+    codex: { installed: [{ pluginId: 'graphlin@graphlin-local' }] },
+  };
+  const dependencies = {
+    readSettings: async () => ({ policy: metadata, installation: { hosts: ['claude', 'codex'], version: '0.1.0' } }),
+    version: async () => '0.1.0', inspect: async () => ({ claude: true, codex: true }), env: {},
+  };
+  for (const [host, value, expected] of [
+    ['claude', valid.claude, false],
+    ['claude', [], true],
+    ['codex', { installed: [] }, true],
+    ['claude', [{ id: 'graphlin@other-market', scope: 'user' }], true],
+    ['claude', [{ id: 'graphlin@graphlin-local', scope: 'project' }], true],
+    ['codex', { installed: [{ pluginId: 'graphlin@other-market' }] }, true],
+    ['claude', { installed: valid.claude }, true],
+    ['codex', [valid.codex.installed[0]], true],
+    ['claude', 'PRIVATE_MALFORMED_HOST_OUTPUT', true],
+    ['codex', { installed: [null] }, true],
+    ['claude', Object.assign(new Error('PRIVATE_UNAVAILABLE_HOST'), { code: 'host_unavailable' }), true],
+    ['codex', Object.assign(new Error('PRIVATE_TIMEOUT'), { code: 'host_timeout' }), true],
+  ]) {
+    const calls = [];
+    const result = await needsOnboarding(setup, { ...dependencies,
+      run: async (command, args, options) => {
+        calls.push(command);
+        assert.deepEqual(args, ['plugin', 'list', '--json']);
+        assert.equal(options.cwd, setup.projectRoot);
+        assert.equal(options.capture, true);
+        assert.equal(options.timeout, 1500);
+        if (command === host && value instanceof Error) throw value;
+        const payload = command === host ? value : valid[command];
+        return typeof payload === 'string' ? payload : JSON.stringify(payload);
+      },
+    });
+    assert.equal(result, expected);
+    assert.deepEqual(calls.sort(), ['claude', 'codex']);
+  }
 });
 
 test('masked terminal input handles deletion and Ctrl+C without echoing secrets, restoring raw mode', async () => {
@@ -465,6 +738,47 @@ test('non-TTY CLI offers actionable setup and explicit init/uninstall work entir
   assert.equal((sourceInit.stdout + sourceInit.stderr).includes('SYNTHETIC_PERSISTED_KEY'), false);
 });
 
+test('actual CLI rebinds legacy home to canonical repo A then repo B with repo-local default paths', async t => {
+  const setup = await workspace(t), stubs = await stubHosts(setup);
+  const legacy = path.join(setup.base, '.local/state/graphlin');
+  await mkdir(path.join(setup.projectRoot, '.git'));
+  const nested = path.join(setup.projectRoot, 'src', 'nested');
+  await mkdir(nested, { recursive: true });
+  const alias = path.join(setup.base, 'repo alias');
+  await symlink(setup.projectRoot, alias);
+  const second = path.join(setup.base, 'repo B');
+  await mkdir(path.join(second, '.git'), { recursive: true });
+  const inputs = [
+    { projectRoot: setup.projectRoot, args: ['--data-dir', legacy], dataDir: legacy },
+    { projectRoot: path.join(alias, 'src', 'nested'), args: [], dataDir: path.join(setup.projectRoot, '.graphlin') },
+    { projectRoot: second, args: [], dataDir: path.join(second, '.graphlin') },
+  ];
+  const version = await packageVersion();
+  for (const [index, input] of inputs.entries()) {
+    const initialized = await runCLI(process.execPath,
+      [entry, 'init', '--project', input.projectRoot, ...input.args, '--host', 'both', '--no-source'],
+      { env: stubs.env, timeout: 25_000 });
+    assert.equal(initialized.code, 0, initialized.stderr);
+    assert.deepEqual(JSON.parse(initialized.stdout).installed, ['claude', 'codex']);
+    const registered = JSON.parse(await readFile(stubs.env.STUB_STATE, 'utf8'));
+    for (const host of ['claude', 'codex']) {
+      assert.equal(registered[host].root, path.join(input.dataDir, 'plugins/graphlin', version, host));
+      assert.equal(registered[host].installed, true);
+    }
+    assert.match(initialized.stderr, index ? /repo’s \.graphlin directory/ : /selected data directory/);
+    if (index) assert.doesNotMatch(initialized.stderr, /GRAPHLIN_DATA_DIR=/);
+    const canonicalRoot = index === 2 ? second : setup.projectRoot;
+    const paths = await projectPaths(canonicalRoot, input.dataDir);
+    assert.equal(JSON.parse(await readFile(path.join(paths.directory, 'settings.json'), 'utf8')).policy.allowSource, false);
+    assert.deepEqual((await readSettings({ projectRoot: canonicalRoot, dataDir: input.dataDir })).installation,
+      { hosts: ['claude', 'codex'], version });
+  }
+  const events = await stubs.events();
+  assert.equal(events.filter(event => event.host === 'codex' && event.args[2] === 'remove').length, 2);
+  assert.equal(events.some(event => event.host === 'claude' && event.args[2] === 'remove'), false);
+  assert.equal(events.some(event => event.cwd.includes('repo alias')), false);
+});
+
 test('agent instructions quote paths for copying and disclose hook trust and custom data directory', () => {
   const text = agentInstructions({ projectRoot: "/tmp/synthetic 'project", dataDir: '/tmp/private data', hosts: ['codex'] });
   assert.match(text, /GRAPHLIN_DATA_DIR='\/tmp\/private data' codex/);
@@ -473,6 +787,15 @@ test('agent instructions quote paths for copying and disclose hook trust and cus
   assert.match(text, /does not verify hook activation/);
 });
 
+test('repo-local agent commands need only the canonical project and host; legacy home is now an explicit override', () => {
+  const projectRoot = "/synthetic/repo 'quoted";
+  const local = agentInstructions({ projectRoot, dataDir: path.join(projectRoot, '.graphlin') });
+  for (const host of ['claude', 'codex']) assert.ok(local.includes(`cd '/synthetic/repo '\"'\"'quoted' && ${host}`));
+  assert.doesNotMatch(local, /GRAPHLIN_DATA_DIR=/);
+  assert.match(local, /Repo-local state uses \.graphlin.*Unset GRAPHLIN_DATA_DIR/);
+  const legacy = agentInstructions({ projectRoot, dataDir: '/synthetic/home/.local/state/graphlin' });
+  assert.match(legacy, /GRAPHLIN_DATA_DIR='\/synthetic\/home\/\.local\/state\/graphlin' claude/);
+});
 test('guided metadata consent cannot silently rejoin a running source-enabled viewer', async t => {
   const setup = await workspace(t), stubs = await stubHosts(setup);
   const args = ['--project', setup.projectRoot, '--data-dir', setup.dataDir];

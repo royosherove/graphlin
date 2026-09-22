@@ -223,7 +223,7 @@ and 12 MiB compressed or expanded archive size. Hashes are SHA-256 hex strings
 prefixed with `sha256-`. The bundle digest also covers the canonical manifest,
 so changes to capabilities, profiles, or labels create a different identity.
 
-Installed assets live under the private data directory at
+Installed assets live under the repository's private `.graphlin/` directory at
 `extensions/bundles/<id>/<version>/<digest>/`. The runtime never edits a stored
 bundle. An atomic catalogue write activates a verified bundle. Failed validation,
 cancelled transport, or a failed catalogue write leaves the active version and

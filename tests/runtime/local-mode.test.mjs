@@ -105,13 +105,21 @@ function onboardingFixture() {
       prompt: async () => assert.fail('Local mode must not request a key or repeat saved consent'),
       write: value => output.push(value),
       prepare: async (dataDir, version) => {
+        await mkdir(dataDir, { recursive: true, mode: 0o700 });
         const root = path.join(dataDir, 'plugins', 'graphlin', version);
         const catalog = path.join(root, 'codex', '.agents', 'plugins');
         await mkdir(catalog, { recursive: true });
         await writeFile(path.join(catalog, 'marketplace.json'), JSON.stringify({
-          name: 'graphlin-local',
+          name: 'graphlin-local', interface: { displayName: 'Graphlin local' },
           plugins: [{ name: 'graphlin', source: { source: 'local', path: './graphlin' } }],
         }));
+        const plugin = path.join(root, 'codex', 'graphlin');
+        await mkdir(path.join(plugin, '.codex-plugin'), { recursive: true });
+        await writeFile(path.join(plugin, '.graphlin-package'), 'codex');
+        for (const filename of ['plugin.json', '.codex-plugin/plugin.json']) {
+          await writeFile(path.join(plugin, filename), JSON.stringify({ name: 'graphlin', version }));
+        }
+        await writeFile(path.join(root, '.onboarding.json'), JSON.stringify({ version }), { mode: 0o600 });
         return root;
       },
       run: async (host, args) => {
@@ -153,6 +161,11 @@ test('guided onboarding saves local consent without requesting a key', async t =
   assert.equal(saved.apiKey, undefined);
   assert.equal(await needsOnboarding(setup, {
     version: fixture.dependencies.version, inspect: async () => ({ codex: true }),
+    env: {}, run: async (host, args) => {
+      assert.equal(host, 'codex');
+      assert.deepEqual(args, ['plugin', 'list', '--json']);
+      return JSON.stringify({ installed: [{ pluginId: 'graphlin@graphlin-local' }] });
+    },
   }), false, 'a completed local installation needs no key');
 });
 

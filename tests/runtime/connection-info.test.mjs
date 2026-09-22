@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, realpath, symlink } from 'node:fs/promises';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -78,7 +78,7 @@ test('guide explains README onboarding, consent, custom data directory and curre
   assert.match(text, /masked prompt.*Metadata mode needs no key/);
   assert.match(text, /current policy and classifier configuration stay in effect/);
   assert.match(text, /stopping and restarting.*same data directory/);
-  assert.match(text, /Plugins install across projects; source consent is per project/);
+  assert.match(text, /host manages plugin registrations and caches across projects; source consent is per project/);
   assert.match(text, /locally filtered source excerpts, user prompts, and public agent messages.*TypeSafe/);
   assert.match(text, /custom data directory/);
   assert.match(text, /Installation does not confirm hook activation/);
@@ -97,7 +97,7 @@ test('demo starts guided onboarding in the user project and never launches agent
   assert.match(info.notes.join(' '), /fixture classifications.*own project.*not this demo’s custom directory/);
 });
 
-test('standard home data uses short commands even when the daemon environment has an override', async t => {
+test('repo-local data uses short commands even when the daemon environment has an override', async t => {
   const setup = await fixture(t);
   const original = process.env.GRAPHLIN_DATA_DIR;
   process.env.GRAPHLIN_DATA_DIR = setup.dataDir;
@@ -105,16 +105,21 @@ test('standard home data uses short commands even when the daemon environment ha
     if (original === undefined) delete process.env.GRAPHLIN_DATA_DIR;
     else process.env.GRAPHLIN_DATA_DIR = original;
   });
-  const info = await createConnectionInfo({ ...setup, dataDir: path.join(homedir(), '.local/state/graphlin') });
+  const info = await createConnectionInfo({ ...setup, dataDir: path.join(setup.projectRoot, '.graphlin') });
   assert.equal(byId(info, 'npm-setup').steps[0].command, `cd ${quote(setup.projectRoot)} && npx --yes graphlin@latest init`);
   for (const host of ['claude', 'codex']) {
     assert.equal(byId(info, `${host}-new`).steps[0].command, `cd ${quote(setup.projectRoot)} && ${host}`);
   }
   assert.ok(commands(info).every(command => !command.includes('GRAPHLIN_DATA_DIR')));
+  assert.match(info.notes.join(' '), /repo-local: \.graphlin at the canonical project root/);
+  assert.doesNotMatch(info.notes.join(' '), /\.local\/state|user.home|shared key/);
   assert.match(info.notes.join(' '), /Unset GRAPHLIN_DATA_DIR in both terminals/);
   const custom = await createConnectionInfo(setup);
   assert.equal(byId(custom, 'npm-setup').steps[0].command, terminal(setup, 'npx --yes graphlin@latest init'),
     'an environment-selected custom directory still needs an explicit assignment');
+  const legacy = { ...setup, dataDir: path.join(setup.base, '.local/state/graphlin') };
+  assert.equal(byId(await createConnectionInfo(legacy), 'claude-new').steps[0].command, terminal(legacy, 'claude'),
+    'the former home default now requires an explicit override');
 });
 
 test('shell commands preserve hostile paths as literal arguments and match the CLI setup behavior', async t => {

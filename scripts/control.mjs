@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { readFile } from 'node:fs/promises';
 import { startDaemon, stopDaemon, daemonStatus, doctor, publicError } from '../runtime/daemon/manager.mjs';
 
+const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const METHODS = { start: input => startDaemon({ ...input, background: true }),
   stop: stopDaemon, status: daemonStatus, doctor };
 const SCHEMA = { type: 'object', properties: { projectRoot: { type: 'string', minLength: 1, maxLength: 4096 } },
@@ -39,7 +41,7 @@ async function handle(line) {
     const supported = ['2024-11-05', '2025-03-26', '2025-06-18'];
     return result({ protocolVersion: supported.includes(message.params?.protocolVersion) ? message.params.protocolVersion : '2025-06-18',
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: 'graphlin', version: '0.2.2' },
+      serverInfo: { name: 'graphlin', version },
       instructions: 'Controls only. Passive host hooks provide observations when separately activated. No drawing calls after each action.' });
   }
   if (message.method === 'ping') return result({});

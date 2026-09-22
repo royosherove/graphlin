@@ -1,6 +1,6 @@
 {
   "name": "graphlin",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Local architecture and activity viewer with passive, bounded event hooks.",
   "author": {
     "name": "Graphlin contributors"

@@ -154,11 +154,13 @@ export function createDashboardInfoProvider({ projectRoot, dataDir, mode = 'live
     if (!['live', 'demo'].includes(mode)) throw new Error('dashboard_info_unavailable');
     const root = absolute(projectRoot), directory = absolute(dataDir);
     const demo = mode === 'demo';
-    const command = `${demo ? '' : `cd ${quote(root)} && `}GRAPHLIN_DATA_DIR=${quote(directory)} npx --yes graphlin@latest${demo ? ' demo' : ''}`;
+    const customDataDir = demo || directory !== path.join(root, '.graphlin');
+    const command = `${demo ? '' : `cd ${quote(root)} && `}${customDataDir ? `GRAPHLIN_DATA_DIR=${quote(directory)} ` : ''}npx --yes graphlin@latest${demo ? ' demo' : ''}`;
     // Never truncate a shell argument or offer instructions without a usable
     // command. Quoting can expand otherwise valid paths beyond the UI limit.
     const guide = Buffer.byteLength(command) <= MAX_COMMAND_BYTES
-      ? { command, instructions: [...(demo ? DEMO_INSTRUCTIONS : INSTRUCTIONS)] } : {};
+      ? { command, instructions: [...(demo ? DEMO_INSTRUCTIONS : INSTRUCTIONS),
+        ...(!customDataDir ? ['State is repo-local in .graphlin. Unset GRAPHLIN_DATA_DIR in this terminal to keep using it.'] : [])] } : {};
     const [current, branch, latest] = await Promise.all([
       version, branchInfo(root, execute), latestVersion(),
     ]);

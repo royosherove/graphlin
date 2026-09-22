@@ -1,19 +1,22 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { projectPaths, defaultDataDir, MAX_STATE_BYTES, runtimeError, readPrivateJSON } from './paths.mjs';
+import { projectPaths, MAX_STATE_BYTES, runtimeError, readPrivateJSON } from './paths.mjs';
 import { health } from './lock.mjs';
 import { requestIPC } from './ipc.mjs';
 import { diagnosticArtifactId, readPersistedDiagnostics, DIAGNOSTIC_LIMITS } from './diagnostics.mjs';
 import { readSettings, resolvePolicy } from './settings.mjs';
 import { inspectInstalledPackages } from './connection-info.mjs';
+import { prepareProjectState } from './migration.mjs';
 
 const worker = fileURLToPath(new URL('../../scripts/daemon.mjs', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const safeCodes = new Set(['already_running', 'daemon_busy', 'invalid_project', 'unsupported_platform',
-  'unsafe_data_directory', 'policy_restart_required', 'port_restart_required', 'port_in_use',
+  'unsafe_data_directory', 'unsafe_ignore_file', 'tracked_state_directory', 'policy_restart_required', 'port_restart_required', 'port_in_use',
   'daemon_start_failed', 'daemon_start_timeout', 'shutdown_failed', 'shutdown_pending',
-  'restart_required', 'diagnostics_unavailable', 'invalid_log_filter', 'unsafe_settings', 'invalid_settings', 'settings_busy']);
+  'restart_required', 'diagnostics_unavailable', 'invalid_log_filter', 'unsafe_settings', 'invalid_settings', 'settings_busy',
+  'legacy_daemon_running', 'local_daemon_running', 'unsafe_legacy_state', 'legacy_state_changed',
+  'invalid_legacy_state', 'invalid_legacy_extensions', 'migration_busy', 'legacy_migration_failed']);
 
 export function publicError(error) {
   return safeCodes.has(error?.code) ? error.code : 'runtime_unavailable';
@@ -90,11 +93,12 @@ async function stopInstance(paths, instanceId) {
  * onReady receives the one-use URL once; this promise stays pending until that
  * instance closes or the caller aborts. Abort never stops a replacement owner.
  */
-export async function runForeground({ projectRoot, dataDir = defaultDataDir(), signal,
+export async function runForeground({ projectRoot, dataDir, signal,
   allowSource, localSource, persistEvidence, displayEvidence, mode = 'live', port = 0 } = {}, onReady = () => {}) {
   validateRuntime();
   if (signal?.aborted) return;
-  const paths = await projectPaths(projectRoot, dataDir);
+  const paths = mode === 'demo' ? await projectPaths(projectRoot, dataDir)
+    : await prepareProjectState({ projectRoot, dataDir });
   const options = { allowSource, localSource, persistEvidence, displayEvidence, mode, port };
   let server, launch, interrupted;
   const interruption = new Promise(resolve => { interrupted = resolve; });
@@ -156,11 +160,12 @@ export async function runForeground({ projectRoot, dataDir = defaultDataDir(), s
 
 // Detached operation is reserved for an explicit CLI --background request or
 // MCP. The normal interactive CLI uses runForeground instead.
-export async function startDaemon({ projectRoot, dataDir = defaultDataDir(), background = true,
+export async function startDaemon({ projectRoot, dataDir, background = true,
   allowSource, localSource, persistEvidence, displayEvidence, mode = 'live', port = 0 } = {}) {
   validateRuntime();
   if (background !== true) throw runtimeError('background_required');
-  const paths = await projectPaths(projectRoot, dataDir);
+  const paths = mode === 'demo' ? await projectPaths(projectRoot, dataDir)
+    : await prepareProjectState({ projectRoot, dataDir });
   const options = { allowSource, localSource, persistEvidence, displayEvidence, mode, port };
   const existing = await daemonStatus({ projectRoot: paths.projectRoot, dataDir: paths.dataDir });
   if (existing.running) return { ...await existingLaunch(paths, existing, options), foreground: false };

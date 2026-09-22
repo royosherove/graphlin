@@ -1,10 +1,10 @@
 import path from 'node:path';
-import { open, unlink } from 'node:fs/promises';
+import { open, unlink, mkdir, lstat, opendir, realpath, chmod } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createDecisionService, createFixtureTransport } from '../jev/index.mjs';
 import { materializeBundle, buildRelationProposals } from '../core/index.mjs';
-import { defaultDataDir, privateDirectory, canonicalProjectRoot, runtimeError } from './paths.mjs';
+import { projectPaths, canonicalProjectRoot, runtimeError, uid } from './paths.mjs';
 
 const DATABASE = `// Offline source fixture. This code never connects to a database.
 export const PostgreSQL = {
@@ -71,6 +71,7 @@ export const LivePreviewBrowser = { render() { return 'offline preview'; } };
 `;
 const MARKER_FILE = '.graphlin-demo-fixture';
 const MARKER = 'graphlin-offline-demo-v1\n';
+const GIT_HEAD = 'ref: refs/heads/graphlin-demo\n';
 export const DEMO_SESSION_ID = 'graphlin-offline-demo';
 
 const RECORDED_ROLES = Object.freeze({
@@ -115,28 +116,101 @@ export function demoDecisionService() {
   });
 }
 
+function ownedFile(stat) {
+  return stat.isFile() && stat.nlink === 1 && (stat.mode & 0o077) === 0
+    && (uid() === undefined || stat.uid === uid());
+}
+
+async function verifyFile(filename, content) {
+  const file = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = await file.stat();
+    if (!ownedFile(before) || before.size !== Buffer.byteLength(content)) throw runtimeError('invalid_demo_directory');
+    const bytes = Buffer.alloc(before.size + 1);
+    const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+    if (bytesRead !== before.size || bytes.subarray(0, bytesRead).toString('utf8') !== content) {
+      throw runtimeError('invalid_demo_directory');
+    }
+    const after = await lstat(filename);
+    if (!ownedFile(after) || before.ino !== after.ino || before.dev !== after.dev) throw runtimeError('invalid_demo_directory');
+  } finally { await file.close(); }
+}
+
 async function writeFixture(projectRoot, name, content) {
-  const file = await open(path.join(projectRoot, name),
-    constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
-  try { await file.chmod(0o600); await file.writeFile(content); } finally { await file.close(); }
+  const filename = path.join(projectRoot, name);
+  let file;
+  try {
+    // Never truncate an existing path: only the exact, private fixture may be
+    // reused, and a hard link or symlink cannot redirect an overwrite.
+    file = await open(filename, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    await file.writeFile(content);
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    await verifyFile(filename, content);
+  } finally { await file?.close(); }
+}
+
+async function directoryEntries(directory) {
+  const stat = await lstat(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (uid() !== undefined && stat.uid !== uid())
+    || await realpath(directory) !== directory) throw runtimeError('invalid_demo_directory');
+  const entries = [];
+  for await (const entry of await opendir(directory)) {
+    entries.push(entry.name);
+    if (entries.length > Object.keys(FIXTURES).length + 3) throw runtimeError('invalid_demo_directory');
+  }
+  return entries;
+}
+
+async function verifyGitBoundary(projectRoot) {
+  const git = path.join(projectRoot, '.git');
+  const entries = await directoryEntries(git);
+  if (entries.length !== 3 || entries.some(name => !['HEAD', 'objects', 'refs'].includes(name))) {
+    throw runtimeError('invalid_demo_directory');
+  }
+  await verifyFile(path.join(git, 'HEAD'), GIT_HEAD);
+  for (const name of ['objects', 'refs']) {
+    if ((await directoryEntries(path.join(git, name))).length) throw runtimeError('invalid_demo_directory');
+  }
+}
+
+async function verifyContents(projectRoot, entries) {
+  await verifyFile(path.join(projectRoot, MARKER_FILE), MARKER);
+  for (const name of entries) {
+    if (name === '.git') await verifyGitBoundary(projectRoot);
+    else if (name === MARKER_FILE) continue;
+    else if (Object.hasOwn(FIXTURES, name)) await verifyFile(path.join(projectRoot, name), FIXTURES[name]);
+    else if (name === LIVE_FILE) await verifyFile(path.join(projectRoot, name), LIVE_SOURCE);
+    else throw runtimeError('invalid_demo_directory');
+  }
 }
 
 async function verifyDemoProject(projectRoot) {
   const resolved = path.resolve(projectRoot);
+  const entries = await directoryEntries(resolved);
   if (await canonicalProjectRoot(resolved) !== resolved) throw runtimeError('invalid_demo_directory');
-  const file = await open(path.join(resolved, MARKER_FILE), constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    if ((await file.stat()).size !== Buffer.byteLength(MARKER) || await file.readFile('utf8') !== MARKER) {
-      throw runtimeError('invalid_demo_directory');
-    }
-  } finally { await file.close(); }
+  await verifyContents(resolved, entries);
   return resolved;
 }
 
-export async function createDemoProject(dataDir = defaultDataDir()) {
-  const base = await privateDirectory(path.resolve(dataDir));
-  const project = await privateDirectory(path.join(base, 'demo-project'));
-  // Never let an enclosing real checkout become the demo's project scope.
+export async function createDemoProject(dataDir, { projectRoot = process.cwd() } = {}) {
+  const { dataDir: base } = await projectPaths(projectRoot, dataDir, { create: true });
+  const project = path.join(base, 'demo-project');
+  await mkdir(project, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+  const entries = await directoryEntries(project);
+  // Empty directories can be initialized; nonempty ones must be our exact
+  // recording before changing any file or adding a repository boundary.
+  if (entries.length) await verifyContents(project, entries);
+  await chmod(project, 0o700);
+  if (!entries.includes('.git')) {
+    const git = path.join(project, '.git');
+    await mkdir(git, { mode: 0o700 });
+    await mkdir(path.join(git, 'objects'), { mode: 0o700 });
+    await mkdir(path.join(git, 'refs'), { mode: 0o700 });
+    await writeFixture(git, 'HEAD', GIT_HEAD);
+  }
+  // This unborn repository is sufficient for Git and our canonical scope
+  // lookup. Creating it never executes Git, hooks, or project configuration.
   if (await canonicalProjectRoot(project) !== project) throw runtimeError('invalid_demo_directory');
   for (const [name, content] of Object.entries(FIXTURES)) await writeFixture(project, name, content);
   await writeFixture(project, MARKER_FILE, MARKER);
