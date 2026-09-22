@@ -12,6 +12,39 @@ permissions:
   contents: read
 
 jobs:
+  security:
+    name: Secret scans
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: node scripts/security-check.mjs setup
+      - name: Install checksum-pinned Gitleaks 8.30.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          scanner_dir="$RUNNER_TEMP/graphlin-gitleaks"
+          mkdir -m 700 "$scanner_dir"
+          curl --fail --silent --show-error --location --max-time 60 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$scanner_dir/gitleaks.tar.gz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $scanner_dir/gitleaks.tar.gz" | sha256sum --check --status
+          tar -xzf "$scanner_dir/gitleaks.tar.gz" -C "$scanner_dir" gitleaks
+      - run: node --test --test-timeout=90000 tests/security/*.mjs
+        env:
+          GRAPHLIN_TEST_GITLEAKS: ${{ runner.temp }}/graphlin-gitleaks/gitleaks
+      - run: node scripts/security-check.mjs staged
+      - run: node scripts/security-check.mjs history
+      - run: node scripts/security-check.mjs generic-history "$RUNNER_TEMP/graphlin-gitleaks/gitleaks"
+
   test:
     name: Node ${{ matrix.node }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

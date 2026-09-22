@@ -1,0 +1,5 @@
+#!/bin/sh
+# Graphlin AWS security guard. Installed only by explicit contributor choice.
+set -eu
+root=$(git rev-parse --show-toplevel)
+exec node "$root/scripts/security-check.mjs" staged

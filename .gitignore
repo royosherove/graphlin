@@ -11,6 +11,10 @@ coverage/
 !.env.example
 *.pem
 *.key
+*.p12
+*.pfx
+.aws/
+.ssh/
 credentials.json
 .npmrc
 *.tgz

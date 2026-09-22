@@ -53,5 +53,29 @@ Use generic paths, generated identifiers, and synthetic source in fixtures.
 Never commit credentials, environment files, local state, agent transcripts, or
 machine-specific setup. Report vulnerabilities using [SECURITY.md](SECURITY.md).
 
+Opt in to staged-file and commit-message checks with
+`npm run security:install`. The installer downloads AWS
+[git-secrets](https://github.com/awslabs/git-secrets) at commit
+`7d6b970cbd3c216353cb22b383b70c150140662e`, verifies its SHA-256, and keeps it in
+Git's local metadata directory. Existing hooks and `core.hooksPath` are preserved;
+if installation reports a conflict, run `node scripts/security-check.mjs setup`
+and explicitly chain `.githooks/pre-commit` and `.githooks/commit-msg` from your
+hook manager. Scans are offline, use AWS regex rules without credential-file
+providers, and report only opaque file ID, rule, and line—not matched values
+or filenames that might themselves contain secrets. File IDs are `file-` plus
+the first 20 hex characters of SHA-256 of the repository-relative path (AWS
+historical results prefix the path with `commitSHA:`; messages use `COMMIT_EDITMSG`).
+They do not read `~/.aws/credentials` or use repository/global allowances. No baseline or
+exclusions are configured; discuss false positives before adding exceptions.
+Run `npm run security:check` to check the index, or
+`npm run security:history` in a complete checkout to check
+reachable history and commit messages. One separate CI job requires both
+git-secrets and checksum-pinned Gitleaks 8.30.1 (its built-in generic-provider
+rules), plus `node --test --test-timeout=90000 tests/security/*.mjs`. Both scanners
+fail closed when unavailable; Gitleaks ignores inline allowances and uses no
+baseline. Release publication depends on that full CI workflow. Local hooks
+require git-secrets; Gitleaks is required in CI. To run the security tests locally,
+set `GRAPHLIN_TEST_GITLEAKS` to your verified Gitleaks 8.30.1 binary after tool setup.
+
 Release maintainers should follow [the release guide](docs/releasing.md).
 Contributions are provided under the repository's [MIT license](LICENSE).
