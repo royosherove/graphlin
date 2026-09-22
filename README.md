@@ -2,7 +2,9 @@
 
 Live architecture diagrams while **Claude Code or Codex** explores and builds your code.
 
-![Graphlin showing function calls, a cache write, and a browser-to-service connection](docs/images/graphlin-preview.png)
+![Claude Code builds a checkout app while Graphlin draws its files and connections, starting from an empty canvas](docs/images/graphlin-live.gif)
+
+*Recorded Claude Code output beside Graphlin's live file map, accelerated. [Still image](docs/images/graphlin-preview.png).*
 
 ## Get started
 
