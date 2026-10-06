@@ -216,7 +216,7 @@ test('the composition root runs one decider job at a time; an aborted queued job
   assert.equal(service.stats().queued, 0);
 });
 
-test('the decider limits are the final values', () => {
+test('the decider limits have the expected values', () => {
   assert.deepEqual({ ...DECIDER_LIMITS }, { eventDeadlineMs: 5000, concurrency: 1, maxCandidates: 7, maxRequestBytes: 65536,
     activityTargetDeadlineMs: 5000 });
   // The target deadline comes from the provider limits. Jev keeps 1500 ms.

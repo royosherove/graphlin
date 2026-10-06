@@ -17,7 +17,7 @@ export { DEFAULT_DECIDER_ENDPOINT, DEFAULT_DECIDER_MODEL };
 // activityTargetDeadlineMs is the deadline of an activity target. The
 // pipeline gives it to the target path. The decision service does not get it.
 export const JEV_LIMITS = Object.freeze({ eventDeadlineMs: 5000, activityTargetDeadlineMs: 1500 });
-// Final values. With these limits, most requests fit in the 4096-token window.
+// With these limits, a request usually fits in the 4096-token window.
 // This is the only place for these numbers. The byte cap does not protect the
 // 4096-token window: the server answers 422 when a request is too long.
 // With concurrency 1, a target waits behind the event classifications. A hook

@@ -129,8 +129,9 @@ The Decider server listens only on the loopback interface of its instance.
 Graphlin connects to it through an AWS Systems Manager port forward:
 
 1. Start the Decider instance. Wait until its `GET /ready` check answers 200.
-2. Start the tunnel from local port 8099 to port 8000 on the instance, for
-   example with `decider-aws tunnel start` from the infrastructure tools.
+2. Start the tunnel from local port 8099 to port 8000 on the instance. For
+   example, use `bin/decider-aws tunnel start` from
+   [graphlin-decider-infra](https://github.com/royosherove/graphlin-decider-infra).
 3. Select the provider for the Graphlin data directory:
 
    ```sh
@@ -214,12 +215,14 @@ the source. Stop Graphlin before you stop the tunnel, or use metadata mode.
   went to your instance, the event fails closed (`request_too_large`), and the
   graph gets no update for that event. A 422 does not start a cooldown.
 - HTTP 429 or 503 starts a cooldown with the `Retry-After` value
-  (`remote_cooldown`). HTTP 401, 403, 500 and other codes give `http_error`.
+  (`remote_cooldown`). HTTP 400, and HTTP 422 for a different reason, give
+  `request_rejected`. HTTP 401, 403, 500 and other codes give `http_error`.
   A tunnel that is down gives `transport_failure`. Hooks continue to fail open.
 - A client abort does not stop the GPU work on the server.
 - Decider uses the Jev thresholds with the policy version
-  `admission-policy-v1-decider-experimental`. Decider confidence for a choice
-  is (N × pmax − 1) / (N − 1), thus the role confidence threshold adds no
+  `admission-policy-v1-decider-experimental`. Decider gives the confidence of
+  a choice as (N × pmax − 1) / (N − 1). N is the number of options. pmax is
+  the highest option probability. Thus the role confidence threshold adds no
   check. Later evaluation data will set decider thresholds.
 - Decider has its own intake policy, `intake-policy-v1-decider-experimental`:
   `relevantMin` 0.5 and `sensitiveMax` 0.16. For normal source, the decider

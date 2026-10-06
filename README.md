@@ -122,8 +122,8 @@ can add related symbols using filtered labels, ownership and safe line ranges.
 
 **Experimental decider provider:** Graphlin can send its decision requests to a
 Strands Decider server instead of Jev ([user guide](docs/usage.md#decider-provider-experimental)).
-[graphlin-decider-infra](https://github.com/royosherove/graphlin-decider-infra)
-hosts Strands Decider on your own AWS account.
+The tools in [graphlin-decider-infra](https://github.com/royosherove/graphlin-decider-infra)
+run Strands Decider in your own AWS account.
 
 ## More
 
