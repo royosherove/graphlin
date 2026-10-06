@@ -126,8 +126,11 @@ both finite probabilities in [0,1], sensitivity <= maximum, relevance >= minimum
 and an exact digest match. Missing, duplicate, mismatched or invalid verdicts
 exclude the entire candidate. These are experimental thresholds.
 The decider provider uses `intake-policy-v1-decider-experimental`
-(`sensitiveMax:0.3`, `relevantMin:0.5`, provisional) from
-`runtime/daemon/providers.mjs`. Jev keeps intake policy v1.
+(`sensitiveMax:0.16`, `relevantMin:0.5`) from `runtime/daemon/providers.mjs`.
+The value 0.16 is experimental. It comes from a calibration with Strands
+Decider v19, and it applies only to that model. A different model needs a new
+calibration. At each value, the local secret filter runs first. Jev keeps
+intake policy v1.
 
 ## Jev worker — `runtime/jev/index.mjs`
 

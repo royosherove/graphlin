@@ -34,6 +34,10 @@ const deciderService = { provider: { id: 'decider', version: '1' }, model: DEFAU
 const jevService = { provider: { id: 'jev', version: '1' }, model: 'jev-1.13.0',
   limits: { concurrency: 2, eventDeadlineMs: 5000, maxCandidates: 12, maxRequestBytes: 65536 },
   intakePolicyVersion: 'intake-policy-v1', admissionPolicyVersion: 'admission-policy-v1' };
+// The exact decider intake policy. The tests of the doctor output and the
+// graphlin provider output use these literal values, not the module value.
+const deciderIntakePolicy = Object.freeze({
+  version: 'intake-policy-v1-decider-experimental', relevantMin: 0.5, sensitiveMax: 0.16 });
 
 async function deciderSetup(t, extra = {}) {
   const setup = await workspace(t);
@@ -344,10 +348,33 @@ async function intakeRun(t, { provider = 'decider', sensitive, relevant = 0.85 }
     decisions: logs.records.filter(row => row.diagnostics?.intakePolicyVersion) };
 }
 
+// The intake tests below follow DECIDER_INTAKE_POLICY. This test asserts the
+// exact values, thus an accidental change of a value makes a test fail.
+test('the decider intake policy is sensitiveMax 0.16 and relevantMin 0.5 with its experimental version', () => {
+  assert.deepEqual({ ...DECIDER_INTAKE_POLICY }, { ...deciderIntakePolicy });
+  assert.equal(DECIDER_INTAKE_POLICY.sensitiveMax, 0.16);
+  assert.equal(DECIDER_INTAKE_POLICY.relevantMin, 0.5);
+  assert.equal(DECIDER_INTAKE_POLICY.version, 'intake-policy-v1-decider-experimental');
+});
+
 test('decider intake: sensitive below the decider sensitiveMax gives the writes edge of a Postgres write', async t => {
   const run = await intakeRun(t, { sensitive: DECIDER_INTAKE_POLICY.sensitiveMax - 0.02 });
   assert.deepEqual(run.edges, [['saveNote', 'writes', 'db']], JSON.stringify(run.decisions.map(row => row.diagnostics.code)));
   assert.ok(run.nodes.includes('saveNote') && run.nodes.includes('db'), JSON.stringify(run.nodes));
+});
+
+// The intake rule is sensitive <= sensitiveMax. Thus a candidate with the
+// value 0.16 is approved.
+test('decider intake: sensitive equal to sensitiveMax 0.16 is approved and gives the writes edge', async t => {
+  const run = await intakeRun(t, { sensitive: 0.16 });
+  assert.deepEqual(run.edges, [['saveNote', 'writes', 'db']], JSON.stringify(run.decisions.map(row => row.diagnostics.code)));
+  assert.ok(run.nodes.includes('saveNote') && run.nodes.includes('db'), JSON.stringify(run.nodes));
+  const intake = run.decisions.flatMap(row => row.diagnostics.trace?.intake ?? []);
+  assert.ok(intake.length >= 1, JSON.stringify(run.decisions.map(row => row.diagnostics.code)));
+  for (const entry of intake) {
+    assert.equal(entry.sensitive, 0.16);
+    assert.equal(entry.approved, true);
+  }
 });
 
 test('decider intake: sensitive above the decider sensitiveMax gives no node', async t => {
@@ -425,7 +452,7 @@ test('a decider activity target waits behind 3 changed files and still gets a de
 
 test('doctor and graphlin provider show the decider limits and the policy versions', async t => {
   const setup = await deciderSetup(t);
-  const details = { ...described, limits: { ...DECIDER_LIMITS }, intakePolicy: { ...DECIDER_INTAKE_POLICY },
+  const details = { ...described, limits: { ...DECIDER_LIMITS }, intakePolicy: { ...deciderIntakePolicy },
     admissionPolicyVersion: 'admission-policy-v1-decider-experimental' };
   let result = await cli(setup, ['doctor'], { PATH: setup.base });
   assert.equal(result.code, 0, result.stderr);
@@ -450,7 +477,7 @@ test('graphlin provider shows and saves the provider; doctor needs no key and se
   assert.equal(result.code, 0, result.stderr);
   const shown = JSON.parse(result.stdout);
   assert.deepEqual(shown.provider, { id: 'decider', experimental: true, endpoint: 'http://127.0.0.1:9/v1/systemone',
-    model: DEFAULT_DECIDER_MODEL, limits: { ...DECIDER_LIMITS }, intakePolicy: { ...DECIDER_INTAKE_POLICY },
+    model: DEFAULT_DECIDER_MODEL, limits: { ...DECIDER_LIMITS }, intakePolicy: { ...deciderIntakePolicy },
     admissionPolicyVersion: 'admission-policy-v1-decider-experimental' });
   assert.match(shown.note, /Experimental/);
   assert.match(shown.note, /all projects that use this Graphlin data directory/);

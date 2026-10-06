@@ -31,11 +31,12 @@ export const DECIDER_LIMITS = Object.freeze({
 export const DECIDER_ADMISSION_POLICY = Object.freeze({
   ...DEFAULT_ADMISSION_POLICY, version: 'admission-policy-v1-decider-experimental',
 });
-// Decider intake policy. For normal source, the decider model gives sensitive
-// values above the Jev value 0.1, thus the Jev value refuses each candidate.
-// The value 0.3 is provisional: later evaluation data must set the final value.
+// Decider intake policy. The sensitiveMax value is experimental. It comes from
+// a calibration with the model Strands Decider v19, and it applies only to
+// that model. A different model needs a new calibration. At each value, the
+// local secret filter runs first, thus the decider gets only filtered source.
 export const DECIDER_INTAKE_POLICY = Object.freeze({
-  version: 'intake-policy-v1-decider-experimental', relevantMin: 0.5, sensitiveMax: 0.3,
+  version: 'intake-policy-v1-decider-experimental', relevantMin: 0.5, sensitiveMax: 0.16,
 });
 
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);

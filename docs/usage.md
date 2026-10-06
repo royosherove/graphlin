@@ -222,12 +222,18 @@ the source. Stop Graphlin before you stop the tunnel, or use metadata mode.
   is (N × pmax − 1) / (N − 1), thus the role confidence threshold adds no
   check. Later evaluation data will set decider thresholds.
 - Decider has its own intake policy, `intake-policy-v1-decider-experimental`:
-  `relevantMin` 0.5 and `sensitiveMax` 0.3. For normal source, the decider
+  `relevantMin` 0.5 and `sensitiveMax` 0.16. For normal source, the decider
   model gives `sensitive` values above the Jev value 0.1. The Jev value thus
-  refuses each candidate, and the graph gets no update. The value 0.3 is
-  provisional. Later evaluation data will set the final value. Jev keeps
-  `intake-policy-v1` (`sensitiveMax` 0.1). The decision records show the
-  version of the intake policy.
+  refuses each candidate, and the graph gets no update. The value 0.16 is
+  experimental. It comes from a calibration with the model Strands Decider
+  v19, and it applies only to that model. A different model needs a new
+  calibration. At each value, the local secret filter runs first, thus the
+  decider gets only filtered source. Jev keeps `intake-policy-v1`
+  (`sensitiveMax` 0.1). The decision records show the version of the intake
+  policy.
+- With Strands Decider v19, the graph gets few or no updates, because the
+  model does not give useful answers to the Graphlin questions. The provider
+  is experimental.
 
 ### Older Graphlin versions
 
