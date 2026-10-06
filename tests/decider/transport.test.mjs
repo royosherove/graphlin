@@ -33,6 +33,7 @@ async function childWithProxy(proxyURL, source, extraEnv = {}) {
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => { stdout += chunk; });
   child.stderr.on('data', chunk => { stderr += chunk; });
+  // A safety limit only. Each child must stop by itself before this time.
   const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
   const [code] = await once(child, 'close');
   clearTimeout(timer);
@@ -40,7 +41,21 @@ async function childWithProxy(proxyURL, source, extraEnv = {}) {
   return JSON.parse(stdout.trim());
 }
 
-const refusingProxy = t => fakeDeciderServer(t, (_entry, res) => { res.writeHead(502); res.end(); });
+// The proxy listener refuses each request with 502. Node.js 22 and 24 send
+// global fetch through the environment proxy as a CONNECT request, also for an
+// http URL. Without a 'connect' listener, node:http closes that socket and
+// sends no response. Then undici connects again and again, and the child does
+// not stop. Thus the listener also records each CONNECT request and refuses it
+// with 502.
+async function refusingProxy(t) {
+  const proxy = await fakeDeciderServer(t, (_entry, res) => { res.writeHead(502); res.end(); });
+  proxy.server.on('connect', (req, socket) => {
+    proxy.requests.push({ method: req.method, url: req.url, headers: { ...req.headers }, body: '' });
+    socket.on('error', () => {});
+    socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
+  });
+  return proxy;
+}
 
 test('an environment proxy gets no decider request: the provider connects to the loopback endpoint', async t => {
   const decider = await fakeDeciderServer(t, (entry, res) => {
@@ -70,17 +85,28 @@ test('control: in the same environment, global fetch goes to the proxy listener'
   const decider = await fakeDeciderServer(t);
   const proxy = await refusingProxy(t);
   const result = await childWithProxy(`http://127.0.0.1:${proxy.port}`, `
+    let line;
     try {
       const response = await fetch(process.env.DECIDER_ENDPOINT, { method: 'POST', body: '{}',
         signal: AbortSignal.timeout(5000) });
-      console.log(JSON.stringify({ status: response.status }));
-    } catch { console.log(JSON.stringify({ status: 0 })); }
+      line = JSON.stringify({ status: response.status });
+    } catch { line = JSON.stringify({ status: 0 }); }
+    // Stop after the line is fully written. An open socket must not keep the child alive.
+    process.stdout.write(line + '\\n', () => process.exit(0));
   `, { DECIDER_ENDPOINT: decider.endpoint });
   if (proxy.requests.length === 0) {
     t.skip('this Node.js version does not use NODE_USE_ENV_PROXY; the test above is then not a proof');
     return;
   }
-  assert.equal(result.status, 502);
+  // A CONNECT request names the decider as host:port. An absolute-form request
+  // names the full decider URL. The proxy listener refuses the two forms with 502.
+  const tunnel = proxy.requests[0].method === 'CONNECT';
+  for (const request of proxy.requests) {
+    assert.deepEqual([request.method, request.url],
+      tunnel ? ['CONNECT', `127.0.0.1:${decider.port}`] : ['POST', decider.endpoint]);
+  }
+  assert.equal(result.status, tunnel ? 0 : 502);
+  assert.equal(decider.connections, 0);
   assert.equal(decider.requests.length, 0);
 });
 
