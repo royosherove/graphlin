@@ -5,16 +5,18 @@ import { projectPaths, MAX_STATE_BYTES, runtimeError, readPrivateJSON } from './
 import { health } from './lock.mjs';
 import { requestIPC } from './ipc.mjs';
 import { diagnosticArtifactId, readPersistedDiagnostics, DIAGNOSTIC_LIMITS } from './diagnostics.mjs';
-import { readSettings, resolvePolicy } from './settings.mjs';
+import { readSettings, resolvePolicy, UNSAFE_SETTINGS_STEP } from './settings.mjs';
 import { inspectInstalledPackages } from './connection-info.mjs';
 import { prepareProjectState } from './migration.mjs';
+import { resolveProviderConfig, providerArguments, providerNeedsKey, sameProvider, describeProviderDetails,
+  JEV_PROVIDER, INVALID_PROVIDER_STEP } from './providers.mjs';
 
 const worker = fileURLToPath(new URL('../../scripts/daemon.mjs', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const safeCodes = new Set(['already_running', 'daemon_busy', 'invalid_project', 'unsupported_platform',
   'unsafe_data_directory', 'unsafe_ignore_file', 'tracked_state_directory', 'policy_restart_required', 'port_restart_required', 'port_in_use',
   'daemon_start_failed', 'daemon_start_timeout', 'shutdown_failed', 'shutdown_pending',
-  'restart_required', 'diagnostics_unavailable', 'invalid_log_filter', 'unsafe_settings', 'invalid_settings', 'settings_busy',
+  'restart_required', 'provider_restart_required', 'invalid_provider', 'diagnostics_unavailable', 'invalid_log_filter', 'unsafe_settings', 'invalid_settings', 'settings_busy',
   'legacy_daemon_running', 'local_daemon_running', 'unsafe_legacy_state', 'legacy_state_changed',
   'invalid_legacy_state', 'invalid_legacy_extensions', 'migration_busy', 'legacy_migration_failed']);
 
@@ -43,6 +45,14 @@ function validateExisting(current, options) {
       current.policy.persistEvidence !== Boolean(persistEvidence) ||
       current.policy.displayEvidence !== Boolean(displayEvidence)) throw runtimeError('policy_restart_required');
   if (port && port !== current.port) throw runtimeError('port_restart_required');
+  // A daemon from an older version reports no provider: it runs Jev.
+  if (!sameProvider(current.provider ?? JEV_PROVIDER, options.provider)) throw runtimeError('provider_restart_required');
+}
+
+// Demo mode reads no settings and makes no provider request.
+async function savedConfiguration(paths, mode) {
+  const settings = mode === 'demo' ? {} : await readSettings(paths);
+  return { settings, provider: resolveProviderConfig(settings.decisionProvider) };
 }
 
 async function existingLaunch(paths, current, options) {
@@ -99,7 +109,10 @@ export async function runForeground({ projectRoot, dataDir, signal,
   if (signal?.aborted) return;
   const paths = mode === 'demo' ? await projectPaths(projectRoot, dataDir)
     : await prepareProjectState({ projectRoot, dataDir });
-  const options = { allowSource, localSource, persistEvidence, displayEvidence, mode, port };
+  // Read the provider choice first: a running daemon with a different
+  // provider needs a restart, the same as a different policy.
+  const { settings, provider } = await savedConfiguration(paths, mode);
+  const options = { allowSource, localSource, persistEvidence, displayEvidence, mode, port, provider };
   let server, launch, interrupted;
   const interruption = new Promise(resolve => { interrupted = resolve; });
   const interrupt = () => interrupted();
@@ -108,7 +121,6 @@ export async function runForeground({ projectRoot, dataDir, signal,
     const current = await daemonStatus(paths);
     if (current.running) launch = await existingLaunch(paths, current, options);
     else if (!signal?.aborted) {
-      const settings = mode === 'demo' ? {} : await readSettings(paths);
       const policy = resolvePolicy(options, { saved: settings.policy });
       await projectPaths(projectRoot, dataDir, { create: true });
       const { startServer } = await import('./server.mjs');
@@ -118,7 +130,9 @@ export async function runForeground({ projectRoot, dataDir, signal,
           policy: { readSource: Boolean(policy.localSource || policy.allowSource),
             transmitSource: policy.allowSource, persistEvidence: policy.persistEvidence,
             displayEvidence: policy.displayEvidence },
-          apiKey: policy.allowSource ? process.env.TYPESAFE_API_KEY ?? settings.apiKey : undefined,
+          provider,
+          // Only Jev gets a key.
+          apiKey: policy.allowSource && providerNeedsKey(provider) ? process.env.TYPESAFE_API_KEY ?? settings.apiKey : undefined,
           decisionService: demo?.demoDecisionService() });
       } catch (error) {
         if (['daemon_busy', 'already_running'].includes(error.code)) launch = await waitForExisting(paths, options, signal);
@@ -166,10 +180,10 @@ export async function startDaemon({ projectRoot, dataDir, background = true,
   if (background !== true) throw runtimeError('background_required');
   const paths = mode === 'demo' ? await projectPaths(projectRoot, dataDir)
     : await prepareProjectState({ projectRoot, dataDir });
-  const options = { allowSource, localSource, persistEvidence, displayEvidence, mode, port };
+  const { settings, provider } = await savedConfiguration(paths, mode);
+  const options = { allowSource, localSource, persistEvidence, displayEvidence, mode, port, provider };
   const existing = await daemonStatus({ projectRoot: paths.projectRoot, dataDir: paths.dataDir });
   if (existing.running) return { ...await existingLaunch(paths, existing, options), foreground: false };
-  const settings = mode === 'demo' ? {} : await readSettings(paths);
   const policy = resolvePolicy(options, { saved: settings.policy });
   await projectPaths(projectRoot, dataDir, { create: true });
   const args = [worker, '--project', paths.projectRoot, '--data-dir', paths.dataDir, '--mode', mode, '--port', String(port)];
@@ -177,9 +191,10 @@ export async function startDaemon({ projectRoot, dataDir, background = true,
   else if (policy.localSource) args.push('--local-source');
   if (policy.persistEvidence) args.push('--persist-evidence');
   if (!policy.displayEvidence) args.push('--no-display-evidence');
+  args.push(...providerArguments(provider));
   const env = { ...process.env };
-  // A metadata-only or fixture daemon does not inherit the paid-service key.
-  if (!policy.allowSource || mode !== 'live') delete env.TYPESAFE_API_KEY;
+  // A metadata-only, fixture or decider daemon does not inherit the paid-service key.
+  if (!policy.allowSource || mode !== 'live' || !providerNeedsKey(provider)) delete env.TYPESAFE_API_KEY;
   else if (env.TYPESAFE_API_KEY === undefined && settings.apiKey) env.TYPESAFE_API_KEY = settings.apiKey;
   const child = spawn(process.execPath, args, {
     detached: true, stdio: 'ignore', env, cwd: paths.projectRoot,
@@ -286,7 +301,14 @@ export async function doctor({ projectRoot, dataDir } = {}) {
   const packages = settings.installation ? await inspectInstalledPackages({
     dataDir: (await projectPaths(projectRoot, dataDir)).dataDir, version: settings.installation.version,
   }).catch(() => ({ claude: false, codex: false })) : {};
-  const credential = (process.env.TYPESAFE_API_KEY ?? settings.apiKey) ? 'configured_not_verified' : 'missing';
+  // Settings that cannot be read give no provider: doctor does not guess Jev.
+  // A saved value that this version refuses (an [::1] endpoint) gives invalid_provider.
+  let provider = null, providerError = null;
+  if (!settingsResult.error) {
+    try { provider = resolveProviderConfig(settings.decisionProvider); } catch { providerError = 'invalid_provider'; }
+  }
+  const credential = !provider ? 'unknown' : !providerNeedsKey(provider) ? 'not_required'
+    : (process.env.TYPESAFE_API_KEY ?? settings.apiKey) ? 'configured_not_verified' : 'missing';
   const received = status.running ? status.observations?.hooks ?? {} : {};
   const hosts = Object.fromEntries(Object.entries({ claude, codex }).map(([host, hostVersion]) => [host, {
     version: hostVersion,
@@ -298,7 +320,8 @@ export async function doctor({ projectRoot, dataDir } = {}) {
   }]));
   const policy = resolvePolicy({}, { current: status.running ? status.policy : undefined, saved: settings.policy });
   const nextActions = [];
-  if (settingsResult.error) nextActions.push('Settings could not be safely read. Check permissions on the Graphlin data directory.');
+  if (settingsResult.error) nextActions.push(`Settings could not be safely read. ${UNSAFE_SETTINGS_STEP}`);
+  if (providerError) nextActions.push(`The saved decision provider is not valid. ${INVALID_PROVIDER_STEP}`);
   if (!settings.installation?.hosts.length) nextActions.push('Run graphlin init in this project to install an agent plugin.');
   if (settings.installation?.pendingHosts?.length) nextActions.push('Agent setup is incomplete. Run graphlin again to resume the requested installations.');
   else if (settings.installation?.hosts.some(host => !packages[host])) {
@@ -307,8 +330,17 @@ export async function doctor({ projectRoot, dataDir } = {}) {
   if (!status.running) nextActions.push('Run graphlin in this project and keep that terminal open.');
   if (!policy.allowSource) nextActions.push('Architecture classification needs source-sharing consent. Run graphlin init to choose it.');
   if (policy.allowSource && credential === 'missing') nextActions.push('Run graphlin init to save your TypeSafe key at its hidden prompt.');
+  if (provider?.id === 'decider') {
+    nextActions.push('The decider provider is experimental. Start the SSM tunnel to your Decider instance before you start Graphlin. Graphlin sends no probe.');
+  }
+  if (provider && status.running && !sameProvider(status.provider ?? JEV_PROVIDER, provider)) {
+    nextActions.push('The running viewer uses a different decision provider. Stop it and start Graphlin again to apply the saved provider.');
+  }
   if (['unavailable', 'timeout'].includes(status.status?.classifier)) {
-    nextActions.push('Run graphlin logs for the classifier failure reason. If authentication failed, run graphlin init --replace-key, then restart Graphlin.');
+    nextActions.push(!provider ? 'Run graphlin logs for the classifier failure reason.'
+      : provider.id === 'decider'
+        ? 'Run graphlin logs for the classifier failure reason. A transport_failure usually means that the tunnel is down: start the tunnel again.'
+        : 'Run graphlin logs for the classifier failure reason. If authentication failed, run graphlin init --replace-key, then restart Graphlin.');
   }
   if (status.running && !Object.values(received).some(count => count > 0)) {
     nextActions.push('Start Claude Code or Codex with Graphlin installed, review its hook permissions, and ask it to explore this project.');
@@ -322,7 +354,9 @@ export async function doctor({ projectRoot, dataDir } = {}) {
       kiro: { version: kiro, activation: 'inactive_experimental' } },
     daemon: status,
     coverage: Object.values(received).some(count => count > 0) ? 'hook_delivery_observed' : 'host_activation_unverified',
-    credential, settings: settingsResult.error ?? 'readable', nextActions,
+    // For decider, doctor also shows the limits and the policy versions.
+    credential, provider: provider ? describeProviderDetails(provider) : providerError ?? 'unknown',
+    settings: settingsResult.error ?? 'readable', nextActions,
     note: 'No remote credential check was sent. An observed hook confirms delivery, not every host permission or runtime connectivity.',
   };
 }

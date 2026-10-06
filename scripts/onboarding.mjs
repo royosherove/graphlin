@@ -9,12 +9,15 @@ import { buildPackages } from './build-packages.mjs';
 import { validatePackage } from './validate-packages.mjs';
 import { projectPaths, canonicalProjectRoot, privateDirectory, atomicJSON, readPrivateJSON, uid } from '../runtime/daemon/paths.mjs';
 import { prepareProjectState } from '../runtime/daemon/migration.mjs';
+import { providerNeedsKey } from '../runtime/daemon/providers.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const HOSTS = ['claude', 'codex'];
 const PLUGIN = 'graphlin@graphlin-local';
 const defaults = { allowSource: false, persistEvidence: false, displayEvidence: true };
 const settingsAPI = () => import('../runtime/daemon/settings.mjs');
+// Only the Jev provider uses a key. The decider provider needs none.
+const needsKey = saved => providerNeedsKey(saved.decisionProvider);
 const fail = (code, message) => Object.assign(new Error(message), { onboarding: true, code });
 const cancelled = () => fail('cancelled', 'Setup cancelled. Any completed host changes remain recorded; run init again to continue.');
 const quote = value => `'${value.replaceAll("'", "'\"'\"'")}'`;
@@ -340,7 +343,7 @@ export async function needsOnboarding(options, {
   const saved = await readSettings(options);
   if (!saved.policy || !saved.installation?.hosts?.length || saved.installation.pendingHosts?.length ||
     saved.installation.version !== await version() ||
-    ((options.allowSource ?? saved.policy.allowSource) && !(env.TYPESAFE_API_KEY ?? saved.apiKey)) ||
+    ((options.allowSource ?? saved.policy.allowSource) && needsKey(saved) && !(env.TYPESAFE_API_KEY ?? saved.apiKey)) ||
     options.host !== undefined) return true;
   inspect ??= (await import('../runtime/daemon/connection-info.mjs')).inspectInstalledPackages;
   const paths = await projectPaths(options.projectRoot, options.dataDir);
@@ -378,7 +381,7 @@ export async function initOnboarding(options, dependencies = {}) {
     'Replacing a key requires a terminal: run graphlin init --replace-key and enter it at the masked prompt.');
   if (!interactive && ((!options.host && !resuming) ||
       (options.allowSource === undefined && !(resuming && saved.policy)))) {
-    throw fail('setup_required', 'Setup needs a terminal, or explicit options: graphlin init --host claude|codex|both --no-source (or --allow-source with a saved key or TYPESAFE_API_KEY).');
+    throw fail('setup_required', 'Setup needs a terminal, or explicit options: graphlin init --host claude|codex|both --no-source (or --allow-source with a saved key or TYPESAFE_API_KEY; with the experimental decider provider, --allow-source needs no key).');
   }
   const detected = await detectHosts({ run, env, cwd: paths.projectRoot, signal: options.signal });
   write(`Detected host CLIs: ${detected.join(', ') || 'none'}.\n`);
@@ -401,7 +404,9 @@ export async function initOnboarding(options, dependencies = {}) {
   let localSource = options.localSource === true ||
     (resuming && options.allowSource === undefined && saved.policy?.localSource === true);
   if (allowSource === undefined) {
-    write('Source mode sends locally filtered source excerpts and public messages to the decision provider (Jev by default). Local mode parses code on this machine without sending it. Metadata mode reads no source content. Local and metadata need no key.\n');
+    write(needsKey(saved)
+      ? 'Source mode sends locally filtered source excerpts and public messages to the decision provider (Jev by default). Local mode parses code on this machine without sending it. Metadata mode reads no source content. Local and metadata need no key.\n'
+      : 'Source mode sends locally filtered source excerpts and public messages to the decider endpoint in your AWS account, through the local tunnel. The decider provider is experimental and needs no key. Local mode parses code on this machine without sending it. Metadata mode reads no source content.\n');
     const mode = await choose('For this project, choose source, local, or metadata: ', ['source', 'local', 'metadata'], prompt);
     allowSource = mode === 'source';
     localSource = mode === 'local';
@@ -413,10 +418,11 @@ export async function initOnboarding(options, dependencies = {}) {
   else delete policy.localSource;
   // Explicit setup plus source consent authorizes saving the supplied key so
   // later launches do not depend on this terminal's environment.
-  let apiKey = allowSource && env.TYPESAFE_API_KEY ? env.TYPESAFE_API_KEY : undefined;
-  if (allowSource && env.TYPESAFE_API_KEY === '' && !options.replaceKey) throw fail('empty_environment_key',
+  const keyed = allowSource && needsKey(saved);
+  let apiKey = keyed && env.TYPESAFE_API_KEY ? env.TYPESAFE_API_KEY : undefined;
+  if (keyed && env.TYPESAFE_API_KEY === '' && !options.replaceKey) throw fail('empty_environment_key',
     'TYPESAFE_API_KEY is set but empty. Unset it to use a saved key or the masked prompt, or choose --no-source.');
-  if (options.replaceKey || allowSource && !(env.TYPESAFE_API_KEY ?? saved.apiKey)) {
+  if (options.replaceKey || keyed && !(env.TYPESAFE_API_KEY ?? saved.apiKey)) {
     if (!interactive) throw fail('key_required',
       'Source mode needs a key. Run graphlin init in a terminal for the masked prompt, provide TYPESAFE_API_KEY through your environment, or choose --no-source.');
     apiKey = await prompt('TypeSafe API key (masked; saved in this Graphlin data directory): ', { secret: true });

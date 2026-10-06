@@ -97,10 +97,16 @@ export function createPipeline({
   projectRoot, policy: policyOptions, decisionService, onChange = () => {},
   onDiagnostic = () => {}, restoredState, restoredModel, mode = 'live', clock = Date.now,
   classificationDeadlineMs = DEADLINE_MS, missingKey = false,
+  activityTargetDeadlineMs = ACTIVITY_TARGET_LIMITS.deadlineMs,
 } = {}) {
   if (!Number.isSafeInteger(classificationDeadlineMs) ||
       classificationDeadlineMs < DEADLINE_MS || classificationDeadlineMs > 10_000) {
     throw new TypeError('INVALID_CLASSIFICATION_DEADLINE');
+  }
+  // The deadline of an activity target comes from the provider limits.
+  if (!Number.isSafeInteger(activityTargetDeadlineMs) ||
+      activityTargetDeadlineMs < 1 || activityTargetDeadlineMs > 10_000) {
+    throw new TypeError('INVALID_ACTIVITY_TARGET_DEADLINE');
   }
   const root = realpathSync(projectRoot);
   const inputRoot = path.resolve(projectRoot);
@@ -734,7 +740,7 @@ export function createPipeline({
       artifactIds: versions.map(ref => ref.artifactId),
       namedEntityIds: platform.currentActivityTargets(call.paths).entityIds.slice(0, ACTIVITY_TARGET_LIMITS.namedEntities),
       lineRanges: lineRanges.filter(range => versions.some(ref => ref.artifactId === range.artifactId)),
-      signal: controller.signal,
+      signal: controller.signal, deadlineMs: activityTargetDeadlineMs,
     };
     const result = await classifyActivityTargets(input);
     if (result.status !== 'accepted' || !result.entityIds.length) { traceActivityMapping(call, result); return; }

@@ -5,7 +5,8 @@ import { readFile, chmod, rm } from 'node:fs/promises';
 import { createPipeline } from '../pipeline.mjs';
 import { createPolicy, materializeBundle, buildRelationProposals } from '../core/index.mjs';
 import { createDecisionService } from '../decisions/index.mjs';
-import { createJevProvider } from '../jev/provider.mjs';
+import { resolveProviderConfig, createConfiguredProvider, decisionServiceOptions, describeProvider, providerNeedsKey,
+  activityTargetDeadline } from './providers.mjs';
 import { createAnalysisBroker } from '../decisions/broker.mjs';
 import { projectPaths, canonicalProjectRoot, MAX_IPC_BYTES, MAX_STATE_BYTES, PROTOCOL, runtimeError } from './paths.mjs';
 import { acquireLock } from './lock.mjs';
@@ -71,9 +72,12 @@ async function bodyJSON(req) {
 }
 
 export async function startServer({ projectRoot, dataDir, policy: policyOptions,
-  decisionService, decisionProvider, apiKey: configuredKey, mode = 'live', port = 0, dashboardInfoDependencies } = {}) {
+  decisionService, decisionProvider, provider: providerSetting, apiKey: configuredKey, mode = 'live', port = 0,
+  dashboardInfoDependencies } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw runtimeError('invalid_port');
   if (!['live', 'demo'].includes(mode)) throw runtimeError('invalid_mode');
+  // A provider configuration that is not valid stops the start. No fallback to Jev.
+  const providerConfig = resolveProviderConfig(providerSetting);
   const paths = await projectPaths(projectRoot, dataDir, { create: true });
   const readLineage = createLineageReader({ projectRoot: paths.projectRoot, projectId: paths.projectId });
   const dashboardInfo = createDashboardInfoProvider({
@@ -89,14 +93,16 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
   const persistence = createPersistence(paths.state);
   const modelPersistence = createModelPersistence(path.join(paths.directory, 'model-state.json'), { projectId: paths.projectId });
   const policy = createPolicy(policyOptions ?? {});
-  const apiKey = !decisionService && !decisionProvider && policy.transmitSource && mode === 'live'
+  const usesKey = !decisionService && !decisionProvider && providerNeedsKey(providerConfig);
+  const apiKey = usesKey && policy.transmitSource && mode === 'live'
     ? configuredKey ?? process.env.TYPESAFE_API_KEY : undefined;
-  const missingKey = !decisionService && !decisionProvider && policy.transmitSource && mode === 'live' && !apiKey;
+  const missingKey = usesKey && policy.transmitSource && mode === 'live' && !apiKey;
   function snapshot(persistent = false) {
     const state = pipeline.getState({ persistent });
     return { ...state,
       ...(!persistent ? {
         sourceMode: policy.transmitSource ? 'source' : policy.readSource ? 'local' : 'metadata',
+        decisionProvider: providerConfig.id,
         discovery: pipeline.getDiscoveryStatus(),
       } : {}),
       status: { ...state.status,
@@ -168,13 +174,15 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
     diagnostics = await createDiagnostics({ directory: paths.directory, projectRoot: paths.projectRoot, policy });
     // Reading the key is conditional on explicit source-transmission permission.
     // Test/demo services are injected; this module never logs request bodies.
+    // runtime/daemon/providers.mjs is the only provider selection point.
     const service = decisionService ?? createDecisionService({
-      provider: decisionProvider ?? createJevProvider({ apiKey }),
+      provider: decisionProvider ?? createConfiguredProvider(providerConfig,
+        { apiKey, transmitSource: policy.transmitSource && mode === 'live' }),
       materializeBundle, buildRelationProposals, profiles: ARCHITECTURE_PROFILES,
-      limits: { eventDeadlineMs: 5000 },
+      ...decisionServiceOptions(providerConfig),
     });
     pipeline = createPipeline({ projectRoot: paths.projectRoot, policy, decisionService: service,
-      classificationDeadlineMs: 5000, missingKey,
+      classificationDeadlineMs: 5000, activityTargetDeadlineMs: activityTargetDeadline(providerConfig), missingKey,
       mode, restoredState: await persistence.load(), restoredModel: await modelPersistence.load(),
       onChange: notify, onDiagnostic: diagnostics.record });
     modelAPI = createModelAPI({ projectId: paths.projectId, getSnapshot: pipeline.getModelState,
@@ -242,7 +250,8 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
         if (req.method === 'GET' && req.url === '/api/connection-info') {
           try {
             const { createConnectionInfo } = await import('./connection-info.mjs');
-            const info = await createConnectionInfo({ projectRoot: paths.projectRoot, dataDir: paths.dataDir, mode });
+            const info = await createConnectionInfo({ projectRoot: paths.projectRoot, dataDir: paths.dataDir, mode,
+              provider: providerConfig.id });
             if (Buffer.byteLength(JSON.stringify(info)) > 64 * 1024) throw runtimeError('connection_info_too_large');
             return json(res, 200, info);
           } catch { return json(res, 503, { error: 'connection_info_unavailable' }); }
@@ -286,9 +295,25 @@ export async function startServer({ projectRoot, dataDir, policy: policyOptions,
     const actualPort = web.address().port, origin = `http://127.0.0.1:${actualPort}`;
     auth = createAuth({ origin, instanceId: lock.owner.instanceId });
     const launchURL = () => `${origin}/#token=${auth.launchToken()}`;
+    // The provider and the limits that the decision service really uses. They
+    // come from the service, not from the configuration, so that a test finds
+    // a composition root that loses them.
+    function decisionSummary() {
+      const stats = service.stats?.() ?? {};
+      const limits = stats.limits !== null && typeof stats.limits === 'object' ? stats.limits : {};
+      return {
+        provider: stats.provider ? { id: stats.provider.id, version: stats.provider.version } : null,
+        model: typeof stats.model === 'string' ? stats.model : null,
+        limits: Object.fromEntries(['concurrency', 'eventDeadlineMs', 'maxCandidates', 'maxRequestBytes']
+          .map(key => [key, Number.isSafeInteger(limits[key]) ? limits[key] : null])),
+        intakePolicyVersion: typeof stats.intakePolicyVersion === 'string' ? stats.intakePolicyVersion : null,
+        admissionPolicyVersion: typeof stats.admissionPolicyVersion === 'string' ? stats.admissionPolicyVersion : null,
+      };
+    }
     function describe() {
       return { ok: true, protocol: PROTOCOL, instanceId: lock.owner.instanceId,
         projectId: paths.projectId, pid: process.pid, port: actualPort, mode,
+        provider: describeProvider(providerConfig), decisionService: decisionSummary(),
         policy: { readSource: policy.readSource, transmitSource: policy.transmitSource, displayEvidence: policy.displayEvidence,
           persistEvidence: policy.persistEvidence, version: policy.version },
         status: snapshot().status, ...persistence.stats(), captureDropped: drops,

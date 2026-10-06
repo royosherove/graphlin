@@ -1,10 +1,14 @@
 import { startServer } from '../runtime/daemon/server.mjs';
 import { parseArguments } from './arguments.mjs';
+import { providerFromArguments } from '../runtime/daemon/providers.mjs';
 
 process.umask(0o077);
 let server;
 try {
-  const options = parseArguments(process.argv.slice(2), { worker: true });
+  const { provider: providerId, deciderEndpoint, deciderModel, ...options } =
+    parseArguments(process.argv.slice(2), { worker: true });
+  // A configuration that is not valid stops the worker. It never falls back to Jev.
+  const provider = providerFromArguments({ provider: providerId, deciderEndpoint, deciderModel });
   const policy = { readSource: options.localSource || options.allowSource,
     transmitSource: options.allowSource, persistEvidence: options.persistEvidence,
     displayEvidence: options.displayEvidence };
@@ -13,7 +17,7 @@ try {
     const { demoDecisionService } = await import('../runtime/daemon/demo.mjs');
     decisionService = demoDecisionService();
   }
-  server = await startServer({ ...options, policy, decisionService });
+  server = await startServer({ ...options, provider, policy, decisionService });
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
     void server.close().then(() => process.exit(0), () => process.exit(1));
   });

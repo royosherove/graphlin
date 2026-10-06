@@ -372,6 +372,7 @@ export function createDecisionService(options = {}) {
         code: code ?? 'ok',
         codes: code === 'ok' ? [] : [code],
         mode,
+        provider: provider.id,
         durationMs: Math.max(0, clock.now() - job.startedAt),
         calls: job.calls ?? 0,
         candidatesOmitted: job.candidatesOmitted ?? 0,
@@ -802,6 +803,9 @@ export function createDecisionService(options = {}) {
     stats: () => ({
       ...counters, ...evaluation.stats(), active, queued: queue.length, closed, mode,
       provider: { id: provider.id, version: provider.version },
+      // The values that this service really uses, for health and doctor.
+      model: auditModel, limits: { ...limits }, intakePolicyVersion: intakePolicy.version,
+      admissionPolicyVersion: admissionPolicy.version,
       cooldownRemainingMs: Math.max(0, cooldownUntil - clock.now()),
       statuses: { ...statuses },
     }),

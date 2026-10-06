@@ -406,8 +406,20 @@ need not call it. Providers are trusted daemon code, not sandboxed extensions.
 ## Packaging and verification
 
 The parent owns pipeline/server integration and package allowlists. Include all
-`runtime/decisions/*.mjs` files and `runtime/jev/provider.mjs` in the root package
-file list and generated host packages. No version bump or release is made here.
+`runtime/decisions/*.mjs` files, `runtime/jev/provider.mjs`,
+`runtime/systemone/wire.mjs`, `runtime/decider/provider.mjs` and
+`runtime/daemon/providers.mjs` in the root package file list and generated host
+packages.
+
+`runtime/daemon/providers.mjs` is the only provider selection point. The
+in-process start, the background worker, MCP `start` and the evaluation script
+make their provider there. Jev and the experimental decider provider share the
+System One wire rules in `runtime/systemone/wire.mjs`. Each provider keeps its
+own endpoint, credential and model policy. The decider limits are in
+`DECIDER_LIMITS` in that file. The decider intake policy is in
+`DECIDER_INTAKE_POLICY`, and the decider admission policy is in
+`DECIDER_ADMISSION_POLICY`. `decisionServiceOptions` gives them to each
+decider decision service. See the [user guide](usage.md) for the set-up. No version bump or release is made here.
 
 Run `npm test -- tests/decisions/*.test.mjs tests/jev/*.test.mjs` plus the
 pipeline/runtime integration tests. The unchanged Jev wire fixtures pin exact

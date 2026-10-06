@@ -247,7 +247,10 @@ export async function classifyActivityTargets(input = {}) {
     requireValue(signal === undefined || signal && typeof signal.aborted === 'boolean'
       && typeof signal.addEventListener === 'function' && typeof signal.removeEventListener === 'function');
     if (signal?.aborted) return result('cancelled', 'cancelled');
-    const deadlineAt = Math.min(input.deadlineAt ?? Date.now() + L.deadlineMs, Date.now() + L.deadlineMs);
+    // The caller can give the deadline of its provider. The default is L.deadlineMs.
+    const deadlineMs = input.deadlineMs ?? L.deadlineMs;
+    requireValue(Number.isSafeInteger(deadlineMs) && deadlineMs >= 1 && deadlineMs <= 10_000);
+    const deadlineAt = Math.min(input.deadlineAt ?? Date.now() + deadlineMs, Date.now() + deadlineMs);
     requireValue(Number.isFinite(deadlineAt));
     if (deadlineAt <= Date.now()) return result('unavailable', 'deadline_exceeded');
     prepared = prepare(input);

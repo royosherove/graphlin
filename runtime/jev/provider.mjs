@@ -1,9 +1,11 @@
 import { DecisionFault } from '../decisions/faults.mjs';
-import { CONTRACT_VERSION, validateQuestions } from '../decisions/contracts.mjs';
+import { CONTRACT_VERSION } from '../decisions/contracts.mjs';
 import { JevFault, readResponse, validateResponse, withAbort } from './wire.mjs';
+import { toSystemOneRequest, fromSystemOneResponse, retryAfter } from '../systemone/wire.mjs';
 import { FIXTURE_TRANSPORT } from './fixture.mjs';
 
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
+export { ENDPOINT as JEV_ENDPOINT };
 
 function endpointFor(value, injected) {
   let url;
@@ -16,42 +18,9 @@ function endpointFor(value, injected) {
   return url.href;
 }
 
-export function toJevRequest(model, request) {
-  validateQuestions(request.questions);
-  return {
-    model, state: request.state,
-    questions: Object.fromEntries(Object.entries(request.questions).map(([id, question]) => [id, {
-      type: question.type === 'boolean' ? 'noul' : question.type,
-      instructions: question.instructions, criteria: question.criteria,
-    }])),
-  };
-}
-
-export function fromJevResponse(value) {
-  return {
-    answers: Object.fromEntries(Object.entries(value.answers).map(([id, answer]) => [id,
-      answer.type === 'noul' ? { type: 'boolean', probability: answer.noul }
-        : answer.type === 'choice' ? {
-          type: 'choice', choice: answer.choice,
-          probabilities: answer.probabilities, confidence: answer.confidence,
-        } : {
-          type: 'score', score: answer.score,
-          probabilities: answer.probabilities, confidence: answer.confidence,
-        },
-    ])),
-    usage: { inputTokens: value.usage.input_tokens, outputTokens: value.usage.output_tokens },
-  };
-}
-
-function retryAfter(response, now) {
-  const milliseconds = response.headers?.get('retry-after-ms');
-  const seconds = response.headers?.get('retry-after');
-  if (milliseconds && milliseconds.length <= 128 && Number.isFinite(Number(milliseconds))) return Number(milliseconds);
-  if (seconds && seconds.length <= 128) {
-    return /^\d+(?:\.\d+)?$/.test(seconds) ? Number(seconds) * 1000 : Date.parse(seconds) - now();
-  }
-  return undefined;
-}
+// The System One wire rules are shared with other providers.
+export const toJevRequest = toSystemOneRequest;
+export const fromJevResponse = fromSystemOneResponse;
 
 export function createJevProvider(options = {}) {
   const { apiKey, model = 'jev-1.13.0', fetchImpl = globalThis.fetch, endpoint = ENDPOINT } = options;

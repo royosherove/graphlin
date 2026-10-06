@@ -2,7 +2,9 @@
 import { startDaemon, runForeground, stopDaemon, daemonStatus, doctor, exportDaemon, diagnosticLogs, publicError } from '../runtime/daemon/manager.mjs';
 import { parseArguments } from './arguments.mjs';
 import { initOnboarding, uninstallOnboarding, needsOnboarding, openViewer, agentInstructions } from './onboarding.mjs';
-import { readSettings } from '../runtime/daemon/settings.mjs';
+import { readSettings, saveSettings, removeProviderSetting, UNSAFE_SETTINGS_STEP } from '../runtime/daemon/settings.mjs';
+import { resolveProviderConfig, deciderConfig, describeProviderDetails, sameProvider, JEV_PROVIDER, INVALID_PROVIDER_STEP,
+} from '../runtime/daemon/providers.mjs';
 import { projectPaths } from '../runtime/daemon/paths.mjs';
 import { prepareProjectState } from '../runtime/daemon/migration.mjs';
 import { runExtensions } from './extensions.mjs';
@@ -16,6 +18,8 @@ const HELP = `Graphlin — local architecture and activity viewer (Node.js 22.14
   stop --project PATH
   status --project PATH
   doctor --project PATH
+  provider [jev|decider] [--endpoint URL] [--model NAME]
+                                     Show or save the decision provider (decider is experimental)
   demo [--data-dir PATH] [--background]
   export --project PATH
   logs --project PATH [--file PATH]
@@ -31,7 +35,8 @@ by Git. Subfolders share that root; worktrees have separate state. Keys, setting
 diagrams, logs, plugin packages and extensions stay there unless overridden.
 init installs for your user account using the host CLIs; it saves project consent
 and offers a masked key prompt only in a terminal. Non-interactive init requires
---host and one source mode; remote source also needs a saved/environment key.
+--host and one source mode; remote source also needs a saved/environment key
+with Jev (the experimental decider provider needs no key).
 init --replace-key replaces a saved key at the masked prompt; it requires a terminal.
 uninstall removes only Graphlin host plugins for all projects, retaining keys,
 history, packages and marketplace registrations; it resets current project consent.
@@ -40,7 +45,9 @@ joined instance. --background explicitly detaches. Repeated starts for the same
 canonical project/data directory reuse its port and issue a fresh one-use URL.
 Omitted policy flags reuse current/saved consent. Without consent: metadata only.
 --no-source explicitly opts out; --allow-source permits sanitized source/public
-intent to TypeSafe using TYPESAFE_API_KEY or the privately saved key. Approved evidence
+intent to the decision provider: TypeSafe (Jev, the default) with TYPESAFE_API_KEY or
+the privately saved key, or, with the experimental decider provider, the decider
+endpoint in your AWS account through a loopback tunnel (no key). Approved evidence
 is displayed by default; excerpts are persisted only with --persist-evidence.
 --local-source parses supported source on this machine, without remote decisions.
 Metadata mode inventories paths without opening source files. Visualizers require
@@ -58,6 +65,40 @@ and labels require source permission and their display/persistence settings.
 logs also works stopped, with paths and labels hidden; --file matches retained
 artifact identity, including files since deleted.
 `;
+
+// The provider value is in the user settings file of the data directory,
+// thus it applies to each project that uses that directory.
+const PROVIDER_SCOPE = 'The provider applies to all projects that use this Graphlin data directory (--data-dir or '
+  + 'GRAPHLIN_DATA_DIR), at their next start. Their source consent does not change.';
+
+// Show or save the decision provider. A change applies at the next start.
+async function providerCommand(options) {
+  const paths = await projectPaths(options.projectRoot, options.dataDir);
+  let removedInvalid = false;
+  if (options.providerId === 'jev') {
+    // Jev is the default. Remove the saved value, also a value that is not
+    // valid, so older Graphlin versions can read the settings again.
+    ({ removedInvalid } = await removeProviderSetting(paths));
+  }
+  const saved = await readSettings(paths);
+  let provider;
+  if (options.providerId === 'decider') {
+    // Save first: this also repairs a saved value that is not valid.
+    provider = deciderConfig({ endpoint: options.endpoint, model: options.model });
+    await saveSettings(paths, { decisionProvider: provider });
+  } else provider = resolveProviderConfig(saved.decisionProvider);
+  const status = await daemonStatus(paths);
+  return {
+    // For decider, also the limits and the policy versions.
+    provider: describeProviderDetails(provider), saved: Boolean(options.providerId),
+    ...(removedInvalid ? { removedInvalidValue: true } : {}),
+    note: provider.id === 'decider'
+      ? `Experimental. Source goes to the decider endpoint in your AWS account through the local tunnel. Start the tunnel before Graphlin. Graphlin sends no probe. ${PROVIDER_SCOPE}`
+      : PROVIDER_SCOPE,
+    ...(status.running && !sameProvider(status.provider ?? JEV_PROVIDER, provider)
+      ? { restartRequired: true, nextStep: 'Stop the running viewer and start Graphlin again to use this provider.' } : {}),
+  };
+}
 
 try {
   const args = process.argv.slice(2);
@@ -131,6 +172,7 @@ try {
     } else if (options.command === 'stop') result = await stopDaemon(options);
     else if (options.command === 'status') result = await daemonStatus(options);
     else if (options.command === 'doctor') result = await doctor(options);
+    else if (options.command === 'provider') result = await providerCommand(options);
     else if (options.command === 'export') result = await exportDaemon(options);
     else if (options.command === 'logs') result = await diagnosticLogs(options);
     else throw new Error('unknown_command');
@@ -146,8 +188,11 @@ try {
       ? 'Graphlin could not verify that .graphlin/ is untracked. Make Git available and review any tracked files there; remove them from the index while keeping local copies before retrying.'
     : /legacy|migration/.test(message)
       ? 'The previous data remains in its original location. Stop older viewers and retry, or use --data-dir PATH to inspect that location.'
-    : message === 'policy_restart_required'
+    : ['policy_restart_required', 'provider_restart_required'].includes(message)
     ? 'Stop the current viewer with Ctrl+C or graphlin stop, then run Graphlin again to apply the saved settings.'
+    : message === 'invalid_provider'
+      ? INVALID_PROVIDER_STEP
+    : message === 'unsafe_settings' ? UNSAFE_SETTINGS_STEP
     : 'Run with --help for usage.';
   process.stderr.write(`Graphlin: ${message}. ${nextStep}\n`);
   process.exitCode = error?.code === 'cancelled' ? 130 : 1;
