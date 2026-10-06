@@ -117,6 +117,135 @@ To reopen the viewer with a fresh one-use browser URL, use `graphlin open`
 (or append `open` to the npm command). It starts a detached viewer
 if needed. Use `graphlin stop` to stop it.
 
+## Decider provider (experimental)
+
+Jev (TypeSafe) is the default decision provider. As an alternative, Graphlin
+can send its decision requests to a Strands Decider server that you operate
+in your own AWS account. This provider is experimental in version 1.
+
+### Set up the tunnel
+
+The Decider server listens only on the loopback interface of its instance.
+Graphlin connects to it through an AWS Systems Manager port forward:
+
+1. Start the Decider instance. Wait until its `GET /ready` check answers 200.
+2. Start the tunnel from local port 8099 to port 8000 on the instance. For
+   example, use `bin/decider-aws tunnel start` from
+   [graphlin-decider-infra](https://github.com/royosherove/graphlin-decider-infra).
+3. Select the provider for the Graphlin data directory:
+
+   ```sh
+   graphlin provider decider
+   ```
+
+   The default endpoint is `http://127.0.0.1:8099/v1/systemone`. The default
+   model name is `strands-decider-2B-hobson-v19-bb282d7-b1485b2`. Use
+   `--endpoint URL` and `--model NAME` to change them.
+4. Stop and start Graphlin. A running viewer keeps its provider until it stops.
+   A start that finds a viewer with a different provider stops with
+   `provider_restart_required`.
+
+Use `graphlin provider` to show the current value. Use `graphlin provider jev`
+to go back to Jev. The setting is saved in `<data directory>/settings.json` (by
+default `.graphlin/settings.json` at the repository root).
+`graphlin doctor` shows the provider, the endpoint, `credential: "not_required"`
+and a tunnel hint. Doctor sends no request to the endpoint.
+For decider, `graphlin doctor` and `graphlin provider` also show `limits`,
+`intakePolicy` and `admissionPolicyVersion`. These values come from this
+Graphlin version, not from a running daemon. `graphlin status` shows the
+values of the running daemon.
+
+The provider value applies to the Graphlin data directory, not to one project.
+It is in `<data directory>/settings.json`, together with the key. The source
+consent is in the settings of each project. When projects share a data
+directory (`--data-dir PATH` or `GRAPHLIN_DATA_DIR`), one `graphlin provider`
+command changes the destination of source for all of these projects, at their
+next start. These projects keep their consent and do not ask again. Thus, run
+`graphlin provider` before you give consent in a shared data directory, and
+examine the value with `graphlin provider` in each project.
+
+If `decisionProvider` in `settings.json` is not valid, all starts stop with
+`unsafe_settings`. `graphlin provider jev` removes a value that is not valid,
+when all other keys in the file and the project file are valid. Else the
+command stops with `unsafe_settings` and changes no file.
+
+The endpoint must be `http://127.0.0.1:<port>/v1/systemone`. The tunnel
+carries plain HTTP, thus Graphlin refuses `https://`. Graphlin refuses
+`localhost`, because its address comes from the resolver. Graphlin refuses
+`[::1]`, because the decider server accepts only the host `127.0.0.1` or
+`localhost` in the `Host` header. A configuration that is not valid stops the
+start. Graphlin does not fall back to Jev.
+
+With a saved endpoint of the form `http://[::1]:<port>/v1/systemone`, each
+start stops with `invalid_provider`. To repair it, run
+`graphlin provider decider` (this saves the default endpoint), or
+`graphlin provider jev` to go back to Jev.
+
+### Consent
+
+The decider provider uses the same consent as Jev. Without `--allow-source`,
+the provider sends nothing. With source consent, Graphlin sends locally
+filtered source excerpts, user prompts and public agent messages to the
+decider endpoint in your AWS account, through the tunnel. The local secret
+filter, the A-to-B evidence boundary and the evidence checks do not change.
+The decider provider connects with `node:http` and a private agent. It does
+not use an environment proxy (`NODE_USE_ENV_PROXY`, `HTTP_PROXY`), thus a
+proxy host does not get the source.
+
+The decider provider needs no key. Graphlin does not give `TYPESAFE_API_KEY`
+to a decider daemon, and `init` does not ask for a key. The server has no
+authentication. The model name check is a label check, not authentication.
+When the tunnel is down, a different local process on port 8099 can receive
+the source. Stop Graphlin before you stop the tunnel, or use metadata mode.
+
+### Limits
+
+- One request at a time (concurrency 1). An event deadline of 5000 ms,
+  including the time in the queue.
+- An activity target (the highlight of the symbols that a tool call changed)
+  has a deadline of 5000 ms with decider, and 1500 ms with Jev. With one
+  request at a time, a target waits behind the event classifications and the
+  architecture analysis of the changed files. A hook does not wait for the
+  target result, thus this deadline does not stop the coding agent.
+- A maximum of 7 candidates for each event, and 65536 bytes for each request.
+  A larger request stops on this machine as `request_too_large`, and no source
+  leaves the machine.
+- The server refuses a state that is longer than its 4096-token window with
+  HTTP 422. A request below the byte limit can get this result. Then its source
+  went to your instance, the event fails closed (`request_too_large`), and the
+  graph gets no update for that event. A 422 does not start a cooldown.
+- HTTP 429 or 503 starts a cooldown with the `Retry-After` value
+  (`remote_cooldown`). HTTP 400, and HTTP 422 for a different reason, give
+  `request_rejected`. HTTP 401, 403, 500 and other codes give `http_error`.
+  A tunnel that is down gives `transport_failure`. Hooks continue to fail open.
+- A client abort does not stop the GPU work on the server.
+- Decider uses the Jev thresholds with the policy version
+  `admission-policy-v1-decider-experimental`. Decider gives the confidence of
+  a choice as (N × pmax − 1) / (N − 1). N is the number of options. pmax is
+  the highest option probability. Thus the role confidence threshold adds no
+  check. Later evaluation data will set decider thresholds.
+- Decider has its own intake policy, `intake-policy-v1-decider-experimental`:
+  `relevantMin` 0.5 and `sensitiveMax` 0.16. For normal source, the decider
+  model gives `sensitive` values above the Jev value 0.1. The Jev value thus
+  refuses each candidate, and the graph gets no update. The value 0.16 is
+  experimental. It comes from a calibration with the model Strands Decider
+  v19, and it applies only to that model. A different model needs a new
+  calibration. At each value, the local secret filter runs first, thus the
+  decider gets only filtered source. Jev keeps `intake-policy-v1`
+  (`sensitiveMax` 0.1). The decision records show the version of the intake
+  policy.
+- With Strands Decider v19, the graph gets few or no updates, because the
+  model does not give useful answers to the Graphlin questions. The provider
+  is experimental.
+
+### Older Graphlin versions
+
+Graphlin versions before the decider provider refuse unknown keys in
+`settings.json`. When the file contains `decisionProvider`, such a version stops
+with `unsafe_settings`. This result is fail closed: the older version sends
+nothing to a provider that it does not know. To use an older version again, run
+`graphlin provider jev` first. This command removes the saved value.
+
 ## Uninstall
 
 ```sh
@@ -465,6 +594,17 @@ project source. It reports missing candidates/questions and timeouts as
 inconclusive. The default request cap is 128; explicit repeats keep their
 earlier failures in the report. These examples are a smoke evaluation, not a
 calibrated benchmark. See [live findings](jev-integration-findings.md).
+
+To run the same cases against the experimental decider provider, start the
+tunnel and add `--provider decider`. This run needs no key and does not read
+`.env.local`. `--endpoint URL` is accepted only with `--provider decider`, and
+only for a loopback endpoint, because the Jev provider sends its key to the URL
+that it gets. Both providers use a 5000 ms deadline. The report name and each
+record contain the provider and the model.
+
+```sh
+node scripts/evaluate-jev.mjs --provider decider
+```
 
 The implementation uses JavaScript ES modules on Node.js, with HTML, CSS,
 and JavaScript in the viewer. TypeSafe provides an official JavaScript/TypeScript

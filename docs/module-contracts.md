@@ -125,6 +125,12 @@ Intake policy v1 uses `sensitiveMax:0.1`, `relevantMin:0.5`. Approval requires
 both finite probabilities in [0,1], sensitivity <= maximum, relevance >= minimum,
 and an exact digest match. Missing, duplicate, mismatched or invalid verdicts
 exclude the entire candidate. These are experimental thresholds.
+The decider provider uses `intake-policy-v1-decider-experimental`
+(`sensitiveMax:0.16`, `relevantMin:0.5`) from `runtime/daemon/providers.mjs`.
+The value 0.16 is experimental. It comes from a calibration with Strands
+Decider v19, and it applies only to that model. A different model needs a new
+calibration. At each value, the local secret filter runs first. Jev keeps
+intake policy v1.
 
 ## Jev worker — `runtime/jev/index.mjs`
 
@@ -234,8 +240,13 @@ session.
 ## Runtime worker
 
 `runtime/daemon/server.mjs` exports `startServer({ projectRoot, dataDir,
-policy, decisionService?, mode?, port? })`, returning `{ url, port, close,
-pipeline }`. Imports `createPipeline` from `../pipeline.mjs` and the Jev factory.
+policy, decisionService?, decisionProvider?, provider?, apiKey?, mode?, port? })`,
+returning `{ url, port, close, pipeline, whenClosed }`. `provider` is the plain
+provider configuration (`{ id: 'jev' }` or `{ id: 'decider', endpoint, model }`);
+a value that is not valid stops the start with `invalid_provider`. Imports
+`createPipeline` from `../pipeline.mjs` and the provider selection module
+`./providers.mjs`, the only place that makes the decision provider and its
+service limits.
 Coordinator implements that file to the interface above.
 
 Private local IPC accepts bounded JSON `{ host, payload }`. It never accepts

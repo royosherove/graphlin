@@ -20,6 +20,23 @@ private and do not expose the service through a public tunnel. Live classificati
 sends filtered snippets to TypeSafe only after explicit source consent. The demo
 is offline. See the README for evidence display, persistence, and log controls.
 
+The experimental decider provider sends the same filtered snippets, after the
+same consent, to a Decider server in your AWS account, through a local SSM
+tunnel on a loopback endpoint (default `http://127.0.0.1:8099/v1/systemone`).
+Know these risks:
+
+- The Decider server has no authentication. The tunnel controls the access, and
+  the model name check is a label check only.
+- When the tunnel is down, a different local process on port 8099 can receive
+  the source. Stop Graphlin before you stop the tunnel, or use metadata mode.
+- Node.js can send `fetch` requests through an environment proxy
+  (`NODE_USE_ENV_PROXY=1` or `--use-env-proxy`, with `HTTP_PROXY`). The decider
+  provider does not use `fetch` or the global agent: it connects with
+  `node:http` and a private agent to the loopback endpoint only, thus a proxy
+  does not get the source. A test examines this in a child process.
+- The provider value applies to all projects that share a Graphlin data
+  directory. See `docs/usage.md`.
+
 ## Repository checks
 
 Run `npm run security:install` in a source checkout to install the pinned AWS

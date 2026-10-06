@@ -837,3 +837,32 @@ test('bare CLI resumes a partial first install using saved consent without extra
   assert.deepEqual(completed.installation.hosts, ['claude', 'codex']);
   assert.equal(completed.installation.pendingHosts, undefined);
 });
+
+test('with the decider provider, init asks for no key and init, --replace-key and uninstall keep the provider', async t => {
+  const setup = await workspace(t), h = harness();
+  const decider = { id: 'decider', endpoint: 'http://127.0.0.1:8099/v1/systemone',
+    model: 'strands-decider-2B-hobson-v19-bb282d7-b1485b2' };
+  await saveSettings(setup, { decisionProvider: decider });
+  const settings = { readSettings, saveSettings };
+  // Noninteractive source setup needs no key with decider (Jev stops with key_required).
+  const result = await initOnboarding({ ...setup, host: 'codex', allowSource: true }, { ...h.dependencies, settings });
+  assert.equal(result.policy.allowSource, true);
+  let saved = await readSettings(setup);
+  assert.deepEqual(saved.decisionProvider, decider);
+  assert.equal(saved.apiKey, undefined);
+  assert.match(h.output.join(''), /Graphlin installed for codex/);
+  const guided = harness();
+  await initOnboarding({ ...setup, host: 'codex' }, { ...guided.dependencies, settings, interactive: true,
+    prompt: async (_, options) => { assert.equal(options?.secret, undefined, 'no key prompt'); return 'source'; } });
+  assert.match(guided.output.join(''), /decider endpoint in your AWS account/);
+  const replace = harness();
+  await initOnboarding({ ...setup, host: 'codex', allowSource: true, replaceKey: true }, { ...replace.dependencies,
+    settings, interactive: true, prompt: async () => 'SYNTHETIC_REPLACEMENT' });
+  saved = await readSettings(setup);
+  assert.deepEqual(saved.decisionProvider, decider);
+  assert.equal(saved.apiKey, 'SYNTHETIC_REPLACEMENT');
+  await uninstallOnboarding(setup, { ...harness().dependencies, settings });
+  saved = await readSettings(setup);
+  assert.deepEqual(saved.decisionProvider, decider);
+  assert.equal(saved.policy.allowSource, false);
+});

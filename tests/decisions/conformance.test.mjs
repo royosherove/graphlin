@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createDecisionService } from '../../runtime/decisions/index.mjs';
 import { jevProvider } from './jev-provider.mjs';
+import { deciderProvider } from './decider-provider.mjs';
 import { createPipeline } from '../../runtime/pipeline.mjs';
 import {
   createPolicy, metadataEvent, buildCandidates, compileDecision, emptyGraph, applyPatch,
@@ -18,6 +19,7 @@ import { createRecordedProvider } from './recorded-provider.mjs';
 const providers = [
   ['recorded', transform => createRecordedProvider({ transform })],
   ['jev', jevProvider],
+  ['decider', deciderProvider],
 ];
 const profile = {
   id: 'example.area', version: 'area-v1', scope: 'entity',

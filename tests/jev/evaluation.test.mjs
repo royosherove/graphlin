@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -14,8 +14,10 @@ import { buildGraphRequest } from '../../runtime/jev/questions.mjs';
 import { createDecisionService, createFixtureTransport } from '../../runtime/jev/index.mjs';
 import {
   EVALUATION_CASES, inspectRequest, assessCoverage, preflightCase, scoreCase,
-  selectNumericAnswers, observeNumericResponse, parseEvaluationOptions,
+  selectNumericAnswers, observeNumericResponse, parseEvaluationOptions, main,
 } from '../../scripts/evaluate-jev.mjs';
+import { DEFAULT_DECIDER_ENDPOINT, DEFAULT_DECIDER_MODEL } from '../../runtime/decider/provider.mjs';
+import { fakeDeciderServer } from '../decider/fake-server.mjs';
 
 const policy = createPolicy({ transmitSource: true });
 const event = metadataEvent({
@@ -358,7 +360,7 @@ test('observer byte limit stops before parsing and does not await cancellation',
 
 test('CLI parsing retains explicit repeats and diagnostic deadlines without executing live work', () => {
   const defaults = parseEvaluationOptions([]);
-  assert.equal(defaults.deadlineMs, 2000);
+  assert.equal(defaults.deadlineMs, 5000);
   assert.equal(defaults.repeats, 1);
   assert.equal(defaults.selectedCases.length, 14);
   const diagnostic = parseEvaluationOptions(['--case', 'postgres-write', '--repeat', '3',
@@ -371,4 +373,81 @@ test('CLI parsing retains explicit repeats and diagnostic deadlines without exec
   assert.throws(() => parseEvaluationOptions(['--repeat', '0']), /INVALID_REPEAT/);
   assert.throws(() => parseEvaluationOptions(['--deadline-ms', '1999']), /INVALID_DEADLINE/);
   assert.throws(() => parseEvaluationOptions(['--request-limit', '1']), /EVALUATION_EXCEEDS_REQUEST_LIMIT/);
+});
+
+test('CLI parsing of the provider options gives a fixed error code for each bad input', () => {
+  assert.deepEqual(parseEvaluationOptions([]).provider, { id: 'jev' });
+  assert.deepEqual(parseEvaluationOptions(['--provider', 'decider']).provider,
+    { id: 'decider', endpoint: DEFAULT_DECIDER_ENDPOINT, model: DEFAULT_DECIDER_MODEL });
+  assert.deepEqual(parseEvaluationOptions(['--provider', 'decider', '--endpoint', 'http://127.0.0.1:9/v1/systemone',
+    '--model', 'strands-decider-test-eval']).provider,
+  { id: 'decider', endpoint: 'http://127.0.0.1:9/v1/systemone', model: 'strands-decider-test-eval' });
+  const cases = [
+    [['--provider', 'other'], 'UNKNOWN_EVALUATION_PROVIDER'],
+    [['--provider'], 'UNKNOWN_EVALUATION_PROVIDER'],
+    [['--endpoint', DEFAULT_DECIDER_ENDPOINT], 'ENDPOINT_REQUIRES_DECIDER'],
+    [['--provider', 'jev', '--endpoint', DEFAULT_DECIDER_ENDPOINT], 'ENDPOINT_REQUIRES_DECIDER'],
+    [['--model', DEFAULT_DECIDER_MODEL], 'MODEL_REQUIRES_DECIDER'],
+    [['--provider', 'jev', '--model', 'jev-1.13.0'], 'MODEL_REQUIRES_DECIDER'],
+    [['--provider', 'decider', '--endpoint'], 'INVALID_EVALUATION_ENDPOINT'],
+    // Only 127.0.0.1 is a valid decider host.
+    [['--provider', 'decider', '--endpoint', 'http://[::1]:9/v1/systemone'], 'INVALID_EVALUATION_ENDPOINT'],
+    [['--provider', 'decider', '--endpoint', '--case', 'postgres-write'], 'INVALID_EVALUATION_ENDPOINT'],
+    [['--provider', 'decider', '--endpoint', 'http://localhost:8099/v1/systemone'], 'INVALID_EVALUATION_ENDPOINT'],
+    [['--provider', 'decider', '--endpoint', 'https://127.0.0.1:8099/v1/systemone'], 'INVALID_EVALUATION_ENDPOINT'],
+    [['--provider', 'decider', '--endpoint', 'https://api.typesafe.ai/v1/systemone'], 'INVALID_EVALUATION_ENDPOINT'],
+    [['--provider', 'decider', '--model'], 'INVALID_EVALUATION_MODEL'],
+    [['--provider', 'decider', '--model', '--endpoint', DEFAULT_DECIDER_ENDPOINT], 'INVALID_EVALUATION_MODEL'],
+    [['--provider', 'decider', '--model', 'jev-1.13.0'], 'INVALID_EVALUATION_MODEL'],
+    [['--provider', 'decider', '--model', `strands-decider-${'x'.repeat(49)}`], 'INVALID_EVALUATION_MODEL'],
+  ];
+  for (const [argv, code] of cases) {
+    assert.throws(() => parseEvaluationOptions(argv), new RegExp(`^Error: ${code}$`), argv.join(' '));
+  }
+});
+
+test('decider evaluation needs no key, sends no authorization header, and names the provider and model', async t => {
+  const fake = await fakeDeciderServer(t);
+  const outputDir = await mkdtemp(path.join(tmpdir(), 'graphlin-evaluation-output-'));
+  t.after(() => rm(outputDir, { recursive: true, force: true }));
+  const previousKey = process.env.TYPESAFE_API_KEY, previousExitCode = process.exitCode;
+  delete process.env.TYPESAFE_API_KEY;
+  t.after(() => { if (previousKey !== undefined) process.env.TYPESAFE_API_KEY = previousKey; });
+  const printed = [];
+  t.mock.method(console, 'log', value => { printed.push(value); });
+  t.mock.method(console, 'error', value => { printed.push(value); });
+  // The decider evaluation must never use global fetch, because global
+  // fetch can use an environment proxy. The provider uses deciderFetch.
+  const globalFetch = t.mock.method(globalThis, 'fetch', () => { throw new Error('global fetch used'); });
+  const model = 'strands-decider-test-eval';
+  try {
+    await main(['--provider', 'decider', '--endpoint', fake.endpoint, '--model', model, '--case', 'postgres-write'],
+      { outputDir });
+  } finally {
+    // A failed or inconclusive case sets the exit code; this test examines the report instead.
+    process.exitCode = previousExitCode;
+  }
+  assert.equal(globalFetch.mock.callCount(), 0, 'the decider evaluation does not use global fetch');
+  assert.equal(process.env.TYPESAFE_API_KEY, undefined, 'the decider path loads no key file');
+  assert.ok(fake.requests.length >= 1);
+  for (const request of fake.requests) {
+    assert.equal(request.url, '/v1/systemone');
+    assert.equal(request.headers.authorization, undefined);
+    assert.equal(JSON.parse(request.body).model, model);
+  }
+  const summary = JSON.parse(printed[0]);
+  assert.equal(summary.provider, 'decider');
+  assert.equal(summary.model, model);
+  assert.equal(summary.requests, fake.requests.length);
+  assert.equal(path.dirname(summary.report), outputDir);
+  assert.match(path.basename(summary.report), new RegExp(`^decider-${model}-live-evaluation-postgres-write-\\d+\\.json$`));
+  const report = JSON.parse(await readFile(summary.report, 'utf8'));
+  assert.equal(report.provider, 'decider');
+  assert.equal(report.model, model);
+  assert.equal(report.experimental, true);
+  assert.ok(report.results.every(result => result.provider === 'decider' && result.model === model));
+  // The evaluation makes its decision service with the decider intake policy.
+  assert.ok(report.results.every(result =>
+    result.diagnostics?.intakePolicyVersion === 'intake-policy-v1-decider-experimental'), JSON.stringify(
+    report.results.map(result => result.diagnostics?.intakePolicyVersion)));
 });

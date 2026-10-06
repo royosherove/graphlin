@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import path from 'node:path';
+import { PROVIDER_IDS } from './providers.mjs';
 
 const PROFILES = new Set(['claude', 'codex', 'portable']);
 const MAX_PATH_BYTES = 4096;
@@ -98,7 +99,7 @@ export async function inspectInstalledPackages({ dataDir, version: currentVersio
 // Connection guidance uses only the current instance's trusted startup context.
 // npm onboarding owns package installation; the guide neither discovers local
 // package paths nor reads project settings, credentials, or host configuration.
-function format({ projectRoot, dataDir, mode }) {
+function format({ projectRoot, dataDir, mode, provider = 'jev' }) {
   const result = { projectRoot, mode, instructions: [], notes: [] };
   const demo = mode === 'demo';
   // defaultDataDir() includes the daemon's environment override. Comparing to
@@ -142,7 +143,10 @@ function format({ projectRoot, dataDir, mode }) {
     ? 'Commands preserve this viewer’s custom data directory. Use the same GRAPHLIN_DATA_DIR for future viewer launches.'
     : 'Default state, settings, saved keys, and Graphlin plugin packages are repo-local: .graphlin at the canonical project root. Unset GRAPHLIN_DATA_DIR in both terminals to use it.' +
       (demo ? ' For an intentional custom location, set the same GRAPHLIN_DATA_DIR in both terminals.' : ''));
-  result.notes.push('Your host manages plugin registrations and caches across projects; source consent is per project. Source mode sends locally filtered source excerpts, user prompts, and public agent messages to TypeSafe.');
+  result.notes.push('Your host manages plugin registrations and caches across projects; source consent is per project. ' +
+    (provider === 'decider'
+      ? 'Source mode sends locally filtered source excerpts, user prompts, and public agent messages to the decider endpoint in your AWS account, through the local tunnel. The decider provider is experimental.'
+      : 'Source mode sends locally filtered source excerpts, user prompts, and public agent messages to TypeSafe.'));
   result.notes.push('Installation does not confirm hook activation. After setup and trust, ask: “Orient yourself in this project: read its main files and explain how the components connect.” Watch for hook delivery and diagram updates.');
   return result;
 }
@@ -153,7 +157,7 @@ function format({ projectRoot, dataDir, mode }) {
  * body/query. projectRoot and dataDir are already canonicalized by projectPaths.
  * No environment, graph, launch URL, or credential is copied into the result.
  */
-export async function createConnectionInfo({ projectRoot, dataDir, mode = 'live' } = {}) {
-  if (!['live', 'demo'].includes(mode)) throw new TypeError('invalid_connection_info');
-  return format({ projectRoot: absolute(projectRoot), dataDir: absolute(dataDir), mode });
+export async function createConnectionInfo({ projectRoot, dataDir, mode = 'live', provider = 'jev' } = {}) {
+  if (!['live', 'demo'].includes(mode) || !PROVIDER_IDS.includes(provider)) throw new TypeError('invalid_connection_info');
+  return format({ projectRoot: absolute(projectRoot), dataDir: absolute(dataDir), mode, provider });
 }

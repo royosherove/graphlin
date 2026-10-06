@@ -1,3 +1,5 @@
+import { PROVIDER_IDS } from '../runtime/daemon/providers.mjs';
+
 export function parseArguments(args, { worker = false } = {}) {
   const guided = !worker && (!args.length || args[0].startsWith('-'));
   args = [...args];
@@ -8,6 +10,10 @@ export function parseArguments(args, { worker = false } = {}) {
   if (!worker && (command === 'init' || command === 'uninstall' || guided)) strings.set('--host', 'host');
   if (!worker && command === 'logs') strings.set('--file', 'file');
   if (worker) strings.set('--mode', 'mode');
+  // Worker-only, non-secret provider configuration. The key is never an argument.
+  if (worker) for (const [flag, key] of [['--provider', 'provider'], ['--decider-endpoint', 'deciderEndpoint'],
+    ['--decider-model', 'deciderModel']]) strings.set(flag, key);
+  if (!worker && command === 'provider') { strings.set('--endpoint', 'endpoint'); strings.set('--model', 'model'); }
   const seen = new Set();
   while (args.length) {
     const argument = args.shift();
@@ -34,8 +40,14 @@ export function parseArguments(args, { worker = false } = {}) {
     else if (argument === '--background' && !worker && ['start', 'demo'].includes(command)) values.background = true;
     else if (argument === '--no-open' && !worker && ['start', 'demo', 'open'].includes(command)) values.openBrowser = false;
     else if (argument === '--replace-key' && !worker && command === 'init') values.replaceKey = true;
+    else if (!worker && command === 'provider' && values.providerId === undefined && PROVIDER_IDS.includes(argument)) {
+      values.providerId = argument;
+    }
     else throw new Error('unknown_argument');
   }
   if (values.host !== undefined && !['claude', 'codex', 'both'].includes(values.host)) throw new Error('invalid_host');
+  // --endpoint and --model select a decider; they are not valid for Jev.
+  if (command === 'provider' && (values.endpoint !== undefined || values.model !== undefined) &&
+    values.providerId !== 'decider') throw new Error('conflicting_arguments');
   return { command, ...(!worker ? { guided: Boolean(guided) } : {}), ...values };
 }

@@ -8,7 +8,12 @@ import {
   normalizeHostEvent,
   emptyGraph, compileDecision, applyPatch,
 } from '../runtime/core/index.mjs';
-import { createDecisionService } from '../runtime/jev/index.mjs';
+import { createDecisionService } from '../runtime/decisions/index.mjs';
+import {
+  createConfiguredProvider, decisionServiceOptions, deciderConfig, JEV_PROVIDER, PROVIDER_IDS,
+} from '../runtime/daemon/providers.mjs';
+import { deciderFetch, validDeciderModel } from '../runtime/decider/provider.mjs';
+import { JEV_ENDPOINT } from '../runtime/jev/provider.mjs';
 import { buildGraphRequest, evidenceState, ROLES } from '../runtime/jev/questions.mjs';
 import { shapeProbes } from '../tests/jev/fixtures/shape-probes.mjs';
 export { shapeProbes };
@@ -448,22 +453,53 @@ export function parseEvaluationOptions(argv) {
   const repeats = repeatArg < 0 ? 1 : Number(argv[repeatArg + 1]);
   if (!Number.isInteger(repeats) || repeats < 1 || repeats > 10) throw new Error('INVALID_REPEAT');
   const deadlineArg = argv.indexOf('--deadline-ms');
-  const deadlineMs = deadlineArg < 0 ? 2000 : Number(argv[deadlineArg + 1]);
+  // Both providers run at the 5000 ms event deadline of the daemon.
+  const deadlineMs = deadlineArg < 0 ? 5000 : Number(argv[deadlineArg + 1]);
   if (!Number.isInteger(deadlineMs) || deadlineMs < 2000 || deadlineMs > 10000) throw new Error('INVALID_DEADLINE');
   if (selectedCases.length * repeats * 2 > requestLimit) throw new Error('EVALUATION_EXCEEDS_REQUEST_LIMIT');
-  return { suite, selectedCase, selectedCases, requestLimit, repeats, deadlineMs };
+  const providerArg = argv.indexOf('--provider');
+  const providerId = providerArg < 0 ? 'jev' : argv[providerArg + 1];
+  if (!PROVIDER_IDS.includes(providerId)) throw new Error('UNKNOWN_EVALUATION_PROVIDER');
+  const endpointArg = argv.indexOf('--endpoint');
+  const modelArg = argv.indexOf('--model');
+  // The Jev provider sends its key to the URL that it gets. Thus only the
+  // decider provider accepts another endpoint, and only a loopback one.
+  if (endpointArg >= 0 && providerId !== 'decider') throw new Error('ENDPOINT_REQUIRES_DECIDER');
+  if (modelArg >= 0 && providerId !== 'decider') throw new Error('MODEL_REQUIRES_DECIDER');
+  // An option with no value, or with a next option as its value, is an error.
+  const optionValue = index => {
+    const value = argv[index + 1];
+    return typeof value === 'string' && !value.startsWith('--') ? value : null;
+  };
+  let provider = JEV_PROVIDER;
+  if (providerId === 'decider') {
+    const endpoint = endpointArg < 0 ? undefined : optionValue(endpointArg);
+    if (endpoint === null) throw new Error('INVALID_EVALUATION_ENDPOINT');
+    // The same model pattern as graphlin provider decider --model NAME.
+    const model = modelArg < 0 ? undefined : optionValue(modelArg);
+    if (model === null || (model !== undefined && !validDeciderModel(model))) throw new Error('INVALID_EVALUATION_MODEL');
+    try { provider = deciderConfig({ endpoint, model }); }
+    catch { throw new Error('INVALID_EVALUATION_ENDPOINT'); }
+  }
+  return { suite, selectedCase, selectedCases, requestLimit, repeats, deadlineMs, provider };
 }
 
-export async function main(argv = process.argv.slice(2)) {
-  const { suite, selectedCase, selectedCases, requestLimit, repeats, deadlineMs } = parseEvaluationOptions(argv);
-  // Only this explicit evaluation command reads the optional local key file.
-  if (!process.env.TYPESAFE_API_KEY) {
+// Each provider has its own fixed URL.
+export const evaluationEndpoint = provider => provider.id === 'decider' ? provider.endpoint : JEV_ENDPOINT;
+
+// outputDir is a test seam. The CLI writes the report to .graphlin/ in the repository.
+export async function main(argv = process.argv.slice(2), { outputDir = path.join(root, '.graphlin') } = {}) {
+  const { suite, selectedCase, selectedCases, requestLimit, repeats, deadlineMs, provider } = parseEvaluationOptions(argv);
+  const keyed = provider.id === 'jev';
+  const endpoint = evaluationEndpoint(provider);
+  // Only this explicit Jev evaluation reads the optional local key file. Decider needs no key.
+  if (keyed && !process.env.TYPESAFE_API_KEY) {
     try {
       await access(path.join(root, '.env.local'));
       process.loadEnvFile(path.join(root, '.env.local'));
     } catch { /* The fixed missing-key message below does not disclose file contents. */ }
   }
-  if (!process.env.TYPESAFE_API_KEY) {
+  if (keyed && !process.env.TYPESAFE_API_KEY) {
     console.error('A TypeSafe API key is required. Set TYPESAFE_API_KEY or add it to .env.local.');
     process.exitCode = 2;
     return;
@@ -475,7 +511,7 @@ export async function main(argv = process.argv.slice(2)) {
   let attempts = 0;
   const fetchImpl = async (url, options) => {
     if (++attempts > requestLimit) throw new Error('LIVE_EVALUATION_REQUEST_LIMIT');
-    if (String(url) !== 'https://api.typesafe.ai/v1/systemone') throw new Error('LIVE_EVALUATION_ENDPOINT');
+    if (String(url) !== endpoint) throw new Error('LIVE_EVALUATION_ENDPOINT');
     const body = JSON.parse(options.body);
     const entry = {
       attempt: attempts, model: body.model,
@@ -485,7 +521,9 @@ export async function main(argv = process.argv.slice(2)) {
     requests.push(entry);
     const start = performance.now();
     try {
-      const response = await fetch(url, options);
+      // Decider uses node:http with a private agent and never an environment
+      // proxy. The Jev transport does not change.
+      const response = keyed ? await fetch(url, options) : await deciderFetch(url, options);
       entry.httpStatus = response.status;
       entry.headersMs = Math.round(performance.now() - start);
       if (response.ok) {
@@ -504,10 +542,16 @@ export async function main(argv = process.argv.slice(2)) {
     }
   };
   const policy = createPolicy({ transmitSource: true, displayEvidence: false, persistEvidence: false });
+  // The provider comes from the same selection point as the daemon.
+  const serviceOptions = decisionServiceOptions(provider);
+  const decisionProvider = createConfiguredProvider(provider, {
+    apiKey: keyed ? process.env.TYPESAFE_API_KEY : undefined, transmitSource: true, fetchImpl,
+  });
+  const { model } = decisionProvider;
   const service = createDecisionService({
-    apiKey: process.env.TYPESAFE_API_KEY,
-    materializeBundle, buildRelationProposals, fetchImpl,
-    limits: { eventDeadlineMs: deadlineMs },
+    provider: decisionProvider,
+    materializeBundle, buildRelationProposals,
+    ...serviceOptions, limits: { ...serviceOptions.limits, eventDeadlineMs: deadlineMs },
   });
   const results = [];
   try {
@@ -531,7 +575,8 @@ export async function main(argv = process.argv.slice(2)) {
       const preflight = preflightCase({ item, artifactId, event, candidates, policy });
       if (!preflight.routable) {
         results.push({
-          case: item.id, repeat: item.repeat, expectation: item.expectation, expected: item.expected,
+          case: item.id, repeat: item.repeat, provider: provider.id, model,
+          expectation: item.expectation, expected: item.expected,
           outcome: 'inconclusive', reason: `preflight_${preflight.reason}`, preflight,
           status: 'not_called', requests: 0, durationMs: 0, writeQuestionAsked: false,
           inputCandidates: candidates.length, approvedCandidates: 0,
@@ -554,7 +599,8 @@ export async function main(argv = process.argv.slice(2)) {
       const renderedWrites = graph.edges.filter(edge => edge.relation === 'writes');
       const labels = new Map((decision.bundle?.candidates ?? []).map(candidate => [candidate.id, candidate.label]));
       results.push({
-        case: item.id, repeat: item.repeat, expectation: item.expectation, expected: item.expected,
+        case: item.id, repeat: item.repeat, provider: provider.id, model,
+        expectation: item.expectation, expected: item.expected,
         ...score, preflight, status: decision.status, durationMs,
         inputCandidates: candidates.length, approvedCandidates: decision.bundle?.candidates.length ?? 0,
         requests: calls.length, writeQuestionAsked: item.expectation !== 'kinds' && score.coverage.asked,
@@ -588,6 +634,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const report = {
     evaluatedAt: new Date().toISOString(), mode: 'live', syntheticSourceOnly: true,
+    provider: provider.id, model, ...(keyed ? {} : { experimental: true }),
     suite, requestLimit, deadlineMs, repeats, scoring: EVALUATION_SCORING,
     actualRequests: requests.length, requests, results,
     summary: {
@@ -599,21 +646,20 @@ export async function main(argv = process.argv.slice(2)) {
       'Synthetic cases are a smoke evaluation, not a calibrated accuracy benchmark.',
       'Source classification does not prove a database connection or write succeeded at runtime.',
       'An unasked relation or missing candidate is inconclusive, not a negative classification.',
-      'Routing preflight assumes approval only to test coverage; live intake and scoring use actual Jev answers.',
+      `Routing preflight assumes approval only to test coverage; live intake and scoring use actual ${keyed ? 'Jev' : 'decider'} answers.`,
       'Known negatives require write support below 0.5, context at most 0.1, and no drawn write.',
       'Uncertain cases require no accepted write and context above 0.1; context above 0.5 is reported separately.',
       'Kind cases score exact accepted entities in the compiled graph; they do not exercise SVG rendering.',
-      deadlineMs === 2000
-        ? 'The production 2000 ms event deadline is retained; timeouts are reported, not retried.'
+      deadlineMs === 5000
+        ? 'The daemon 5000 ms event deadline is used; timeouts are reported, not retried.'
         : 'A diagnostic deadline override is used; these results do not establish production latency.',
       'Explicit repeats are separate measurements; earlier failures and timeouts remain in the report.',
     ],
   };
-  const outputDir = path.join(root, '.graphlin');
   await mkdir(outputDir, { recursive: true, mode: 0o700 });
-  const output = path.join(outputDir, `jev-live-evaluation-${selectedCase ?? suite}-${Date.now()}.json`);
+  const output = path.join(outputDir, `${provider.id}-${model}-live-evaluation-${selectedCase ?? suite}-${Date.now()}.json`);
   await writeFile(output, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
-  console.log(JSON.stringify({ report: output, requests: requests.length, ...report.summary,
+  console.log(JSON.stringify({ report: output, provider: provider.id, model, requests: requests.length, ...report.summary,
     cases: results.map(({ case: name, outcome, status, durationMs }) => ({ name, outcome, status, durationMs })) }, null, 2));
   if (report.summary.failed || report.summary.inconclusive) process.exitCode = 1;
 }

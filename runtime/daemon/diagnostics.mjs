@@ -6,6 +6,8 @@ import { CATEGORIES, KINDS, ROLES, RELATIONS, isId, opaque, plain } from '../cor
 import { createPolicy, excluded, privateText, safeLabel } from '../core/privacy.mjs';
 import { ACTIVITIES } from '../decisions/questions.mjs';
 import { runtimeError, uid } from './paths.mjs';
+import { PROVIDER_IDS } from './providers.mjs';
+import { DECIDER_MODEL_PATTERN } from '../decider/provider.mjs';
 
 export const DIAGNOSTIC_LIMITS = Object.freeze({
   records: 300, ringBytes: 512 * 1024, recordBytes: 32 * 1024,
@@ -118,7 +120,9 @@ function traceEntry(input) {
   if (RELATIONS.includes(input.relation)) result.relation = input.relation;
   if (plain(input.roleProbabilities)) result.roleProbabilities = copyFields(input.roleProbabilities, [...ROLES, 'unknown'], probability);
   if (['A', 'B'].includes(input.stage)) result.stage = input.stage;
-  if (input.model === 'unknown' || (typeof input.model === 'string' && /^jev-\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(input.model))) result.model = input.model;
+  // A Jev version, or a decider model name of 64 characters or fewer (runtime/decider/provider.mjs).
+  if (input.model === 'unknown' || (typeof input.model === 'string' && (/^jev-\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(input.model) ||
+    DECIDER_MODEL_PATTERN.test(input.model)))) result.model = input.model;
   if (typeof input.rubricVersion === 'string' && /^(?:intake|architecture)-v[1-9]\d{0,3}$/.test(input.rubricVersion)) result.rubricVersion = input.rubricVersion;
   if (input.httpStatus === null || (Number.isInteger(input.httpStatus) && input.httpStatus >= 100 && input.httpStatus <= 599)) result.httpStatus = input.httpStatus;
   if (input.usage === null) result.usage = null;
@@ -165,12 +169,13 @@ function decisionDiagnostics(input) {
   if (typeof input.code === 'string') result.code = code(input.code);
   if (Array.isArray(input.codes)) result.codes = list(input.codes, 16).map(code);
   if (['demo', 'live'].includes(input.mode)) result.mode = input.mode;
+  if (PROVIDER_IDS.includes(input.provider)) result.provider = input.provider;
   for (const key of ['questionCounts', 'stageDurationMs']) {
     if (plain(input[key])) result[key] = copyFields(input[key], ['A', 'B'], finite);
   }
   if (plain(input.usage)) result.usage = copyFields(input.usage, ['input_tokens', 'output_tokens'], count);
   for (const key of ['intakePolicyVersion', 'admissionPolicyVersion']) {
-    if (typeof input[key] === 'string' && /^(?:intake|admission)-policy-v[1-9]\d{0,3}$/.test(input[key])) result[key] = input[key];
+    if (typeof input[key] === 'string' && /^(?:intake|admission)-policy-v[1-9]\d{0,3}(?:-decider-experimental)?$/.test(input[key])) result[key] = input[key];
   }
   if (plain(input.trace)) result.trace = trace(input.trace);
   if (plain(input.queue)) result.queue = copyFields(input.queue,

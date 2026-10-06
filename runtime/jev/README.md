@@ -245,8 +245,8 @@ the proposal budget. Actual A may still exclude a candidate, making the live cas
 inconclusive.
 
 A live runner must use the real service and core capture, never the demo transport.
-Keep explicit request limits, no automatic retries, and the production 2000 ms
-deadline. Determine coverage from the exact `(sourceEntityIndex,
+Keep explicit request limits, no automatic retries, and the 5000 ms event
+deadline of the daemon. Determine coverage from the exact `(sourceEntityIndex,
 targetEntityIndex,relation)` in `state.proposals`, resolving names directly from
 `state.entities`. Decision edges still use original core candidate IDs.
 Do not search instruction text for “write”: relation and context rubrics may mention

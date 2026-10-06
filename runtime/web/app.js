@@ -374,6 +374,7 @@ export function normalizeSnapshot(value, { includeExcerpts = true } = {}) {
     sessionId,
     mode: token(value.mode, ['live', 'demo', 'replay'], 'live'),
     sourceMode: token(value.sourceMode, ['metadata', 'local', 'source'], 'unknown'),
+    decisionProvider: token(value.decisionProvider, ['jev', 'decider'], 'jev'),
     discovery: normalizeDiscoveryProgress(value.discovery),
     paused: value.paused === true,
     sessions,
@@ -977,7 +978,8 @@ export function onboardingProgress(snapshot, connection = 'connecting') {
     : 'Check that the Graphlin server is running for this project, then reconnect.', 'Reconnect', 'reconnect'];
   else if (demo) next = ['This is an offline demo. Start a live viewer for your project to connect an agent.', 'How to connect', 'connect'];
   else if (classifier === 'missing_key') next = ['Run graphlin init in this project’s terminal to save a TypeSafe API key at the masked prompt. Then stop and restart the Graphlin server.', 'How to connect', 'connect'];
-  else if (classifier === 'metadata_only') next = ['Run graphlin init and choose source mode if you consent to sending locally filtered source and public messages to TypeSafe. Then stop and restart the Graphlin server.', 'How to connect', 'connect'];
+  else if (classifier === 'metadata_only') next = [`Run graphlin init and choose source mode if you consent to sending locally filtered source and public messages to ${snapshot?.decisionProvider === 'decider'
+    ? 'the decider endpoint in your AWS account (experimental)' : 'TypeSafe'}. Then stop and restart the Graphlin server.`, 'How to connect', 'connect'];
   else if (classifier === 'paused') next = ['Resume classification, then ask your agent to read the main project files.', 'Resume classification', 'resume'];
   else if (['unavailable', 'timeout'].includes(classifier)) next = ['Open the classification log for the reported failure. Check the server’s classifier connection, then let your agent read a file again.', 'View classification log', 'diagnostics'];
   else if (!hooks) next = [Array.isArray(snapshot?.hookEvents)
